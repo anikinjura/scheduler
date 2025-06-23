@@ -7,6 +7,7 @@ Author: anikinjura
 """
 __version__ = '0.0.1'
 
+from config.base_config import BASE_DIR
 MODULE_PATH = "scheduler_runner.tasks.system.UpdaterScript"
 
 SCRIPT_CONFIG = {
@@ -14,7 +15,8 @@ SCRIPT_CONFIG = {
     "DETAILED_LOGS": True,
     "USER": "system",
     "TASK_NAME": "UpdaterScript",
-    "REPO_DIR": ".",  # относительный путь к корню репозитория
+    "REPO_DIR": str(BASE_DIR),  # относительный путь к корню репозитория
+    "REPO_URL": "https://github.com/anikinjura/scheduler.git",
 }
 
 # Расписание для ядра планировщика (раз в сутки в 10:00)

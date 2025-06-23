@@ -66,6 +66,36 @@ def pull_updates(repo_dir: Path, branch: str, logger) -> bool:
         return False
     return True
 
+def ensure_origin(repo_dir: Path, repo_url: str, logger) -> None:
+    """
+    Проверяет наличие origin и при необходимости настраивает его на repo_url.
+    Если origin уже настроен, но url отличается — выводит предупреждение.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_dir,
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            # origin не настроен, добавляем
+            logger.info(f"origin не найден, настраиваем на {repo_url}")
+            add_result = subprocess.run(
+                ["git", "remote", "add", "origin", repo_url],
+                cwd=repo_dir,
+                capture_output=True, text=True
+            )
+            if add_result.returncode != 0:
+                logger.error(f"Не удалось добавить origin: {add_result.stderr.strip()}")
+                sys.exit(5)
+        else:
+            current_url = result.stdout.strip()
+            if current_url != repo_url:
+                logger.warning(f"origin уже настроен на {current_url}, а не на {repo_url}")
+    except Exception as e:
+        logger.error(f"Ошибка при проверке/установке origin: {e}")
+        sys.exit(6)
+
 def main():
     args = parse_arguments()
     repo_dir = Path(SCRIPT_CONFIG["REPO_DIR"]).resolve()
@@ -78,6 +108,9 @@ def main():
 
     logger.info("Проверка обновлений проекта...")
     branch = args.branch
+
+    # Проверка и установка origin
+    ensure_origin(repo_dir, SCRIPT_CONFIG["REPO_URL"], logger)
 
     if not (repo_dir / ".git").exists():
         logger.error("В текущей директории не найден git-репозиторий!")
