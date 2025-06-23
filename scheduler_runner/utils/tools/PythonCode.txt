@@ -1,0 +1,1186 @@
+# Содержимое файла: scheduler_runner\utils\logging.py
+import logging
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Dict, Optional
+
+# Глобальный кеш логгеров для предотвращения дублирования хендлеров
+_LOGGERS: Dict[str, logging.Logger] = {}
+
+
+def configure_logger(
+    user: str, 
+    task_name: Optional[str] = None, 
+    detailed: bool = False,
+    logs_dir: str = "logs", 
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5
+) -> logging.Logger:
+    """
+    Конфигурирует и возвращает логгер для заданного пользователя и задачи.
+    
+    Создает структуру папок logs/{user}/{task_name}/ и настраивает ротацию файлов.
+    Основной лог-файл содержит сообщения уровня INFO и выше.
+    При включенном detailed режиме создается дополнительный файл с DEBUG сообщениями.
+    
+    :param user: имя системного пользователя
+    :param task_name: опциональный идентификатор задачи
+    :param detailed: если True, добавляется отдельный DEBUG-лог файл
+    :param logs_dir: базовая директория для лог-файлов
+    :param max_bytes: размер файла для ротации в байтах
+    :param backup_count: количество backup-файлов для хранения
+    :return: сконфигурированный экземпляр Logger
+    """
+    # Формируем уникальное имя логгера
+    logger_name = user if not task_name else f"{user}.{task_name}"
+    
+    # Возвращаем существующий логгер из кеша
+    if logger_name in _LOGGERS:
+        return _LOGGERS[logger_name]
+
+    # Создаем новый логгер
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
+    
+    # Создаем структуру директорий: logs/user/task_name
+    log_path = Path(logs_dir) / user
+    if task_name:
+        log_path = log_path / task_name
+    log_path.mkdir(parents=True, exist_ok=True)
+
+    # Формат сообщений: время, уровень, [пользователь.задача], сообщение
+    log_format = f"%(asctime)s %(levelname)s [{logger_name}] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(log_format, date_format)
+
+    # Получаем текущую дату для имени файла
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Основной лог-файл (INFO и выше)
+    main_log_file = log_path / f"{today}.log"
+    main_handler = RotatingFileHandler(
+        filename=main_log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8"
+    )
+    main_handler.setLevel(logging.INFO)
+    main_handler.setFormatter(formatter)
+    
+    # Добавляем хендлеры к логгеру с проверкой на наличие хендлеров перед добавлением новых
+    if not logger.handlers:
+        logger.addHandler(main_handler)
+        # Детальный DEBUG лог-файл (опционально)
+        if detailed:
+            detailed_log_file = log_path / f"{today}_detailed.log"
+            debug_handler = RotatingFileHandler(
+                filename=detailed_log_file,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8"
+            )
+            debug_handler.setLevel(logging.DEBUG)
+            debug_handler.setFormatter(formatter)
+            logger.addHandler(debug_handler)
+
+    # Очистка старых лог-файлов (старше backup_count дней)
+    _cleanup_old_logs(log_path, backup_count)
+
+    # Сохраняем логгер в кеш
+    _LOGGERS[logger_name] = logger
+    return logger
+
+
+def _cleanup_old_logs(log_path: Path, days_to_keep: int) -> None:
+    """
+    Удаляет лог-файлы старше указанного количества дней.
+    
+    :param log_path: путь к директории с лог-файлами
+    :param days_to_keep: количество дней для хранения файлов
+    """
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+        
+        for log_file in log_path.glob("*.log"):
+            # Извлекаем дату из имени файла (формат YYYY-MM-DD.log или YYYY-MM-DD_detailed.log)
+            try:
+                date_part = log_file.stem.split('_')[0]  # Убираем _detailed если есть
+                file_date = datetime.strptime(date_part, "%Y-%m-%d")
+                
+                if file_date < cutoff_date:
+                    log_file.unlink()
+            except (ValueError, IndexError):
+                # Пропускаем файлы с неожиданным форматом имени
+                continue
+    except Exception:
+        # Ошибки очистки не должны прерывать основную работу
+        pass
+
+
+# Содержимое файла: scheduler_runner\utils\subprocess.py
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from logging import Logger
+from typing import List, Dict, Optional
+
+
+def run_subprocess(
+    script_name: str, 
+    args: List[str], 
+    env: Dict[str, str], 
+    logger: Logger, 
+    timeout: int = 60,
+    working_dir: Optional[str] = None
+) -> bool:
+    """
+    Запускает Python модуль как подпроцесс с защитой от двойного запуска.
+    
+    Использует lock-файл для предотвращения одновременного выполнения одной задачи.
+    Запускает процесс через pythonw для фонового выполнения без консоли.
+    Логирует stdout и stderr на уровне DEBUG.
+    
+    :param script_name: имя модуля без .py (например, 'tasks.MyTask')
+    :param args: список аргументов командной строки
+    :param env: словарь переменных окружения для добавления
+    :param logger: экземпляр Logger для записи событий
+    :param timeout: таймаут выполнения в секундах
+    :param working_dir: рабочая директория для процесса
+    :return: True если код выхода 0, False в остальных случаях или при ошибке
+    """
+    # Создаем lock-файл для предотвращения параллельного выполнения
+    lock_dir = Path(tempfile.gettempdir())
+    # Безопасное имя для lock-файла (заменяем точки на подчеркивания)
+    safe_logger_name = logger.name.replace('.', '_').replace('/', '_')
+    lock_file = lock_dir / f"{safe_logger_name}_{script_name.replace('.', '_')}.lock"
+    
+    # Проверяем, не выполняется ли уже эта задача
+    if lock_file.exists():
+        try:
+            with lock_file.open('r') as f:
+                pid_str = f.read().strip()
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    if _is_process_running(pid):
+                        logger.warning(f"Задача уже выполняется с PID {pid}, пропускаем")
+                        return False
+        except (OSError, ValueError):
+            # Если не можем прочитать PID или файл поврежден, продолжаем
+            pass
+    
+    # Подготавливаем команду для запуска
+    python_executable = 'pythonw'  # Фоновое выполнение без консоли
+    command = [python_executable, '-m', script_name] + args
+    
+    # Объединяем переменные окружения
+    process_env = {**os.environ, **env}
+    
+    # Определяем рабочую директорию
+    cwd = working_dir or env.get('PWD') or os.getcwd()
+    
+    process = None
+    try:
+        # Запускаем процесс
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=process_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Записываем PID в lock-файл
+        try:
+            with lock_file.open('w') as f:
+                f.write(str(process.pid))
+            logger.info(f"Запущен подпроцесс PID={process.pid}, команда: {' '.join(command)}")
+        except OSError as e:
+            logger.warning(f"Не удалось создать lock-файл: {e}")
+        
+        # Ожидаем завершения с таймаутом
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            
+            # Логируем вывод процесса
+            if stdout and stdout.strip():
+                for line in stdout.strip().split('\n'):
+                    logger.debug(f"STDOUT: {line}")
+            
+            if stderr and stderr.strip():
+                for line in stderr.strip().split('\n'):
+                    logger.debug(f"STDERR: {line}")
+                    
+        except subprocess.TimeoutExpired:
+            logger.error(f"Подпроцесс превысил таймаут {timeout}с, принудительное завершение")
+            process.kill()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return False
+        
+        # Проверяем код выхода
+        if process.returncode != 0:
+            logger.error(f"Подпроцесс завершился с кодом {process.returncode}")
+            return False
+        
+        logger.info("Подпроцесс успешно завершен")
+        return True
+        
+    except Exception as e:
+        logger.exception(f"Ошибка при запуске подпроцесса: {e}")
+        return False
+        
+    finally:
+        # Очищаем lock-файл
+        try:
+            if lock_file.exists():
+                lock_file.unlink()
+        except OSError:
+            pass
+
+
+def _is_process_running(pid: int) -> bool:
+    """
+    Проверяет, выполняется ли процесс с указанным PID.
+    
+    Работает на Windows и Unix-подобных системах.
+    
+    :param pid: идентификатор процесса
+    :return: True если процесс активен, False иначе
+    """
+    try:
+        # На Windows и Unix os.kill(pid, 0) не убивает процесс,
+        # а только проверяет его существование
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+# Содержимое файла: scheduler_runner\utils\timing.py
+from datetime import datetime
+from typing import Dict, Any
+
+
+def should_run_now(task: Dict[str, Any], now: datetime) -> bool:
+    """
+    Определяет, должна ли задача выполняться в указанное время.
+    
+    Поддерживаемые типы расписания:
+    - 'hourly': выполняется каждый раз при вызове
+    - 'daily': выполняется только в точно указанное время HH:MM
+    - 'once': зарезервировано для будущей реализации
+    
+    :param task: словарь с ключами 'schedule' и опционально 'time'
+    :param now: текущее время datetime
+    :return: True, если задача должна выполняться сейчас
+    :raises ValueError: при неподдерживаемом типе расписания или неверном формате времени
+    """
+    schedule_type = task.get('schedule')
+    
+    if schedule_type == 'hourly':
+        # Выполняется каждый раз при вызове
+        return True
+    
+    elif schedule_type == 'daily':
+        # Требуется точное время в формате HH:MM
+        time_str = task.get('time')
+        if not time_str:
+            raise ValueError("Ежедневное расписание требует параметр 'time' в формате 'HH:MM'")
+        
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError(f"Время вне допустимого диапазона: {time_str}")
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Неверный формат времени '{time_str}': ожидается 'HH:MM'") from e
+        
+        # Выполняется только в точно указанное время
+        return now.hour == hour and now.minute == minute
+    
+    elif schedule_type == 'once':
+        # Зарезервировано для будущей реализации
+        return False
+    
+    else:
+        raise ValueError(f"Неподдерживаемый тип расписания: {schedule_type}")
+
+
+# Содержимое файла: scheduler_runner\runner.py
+"""
+Основной модуль планировщика задач.
+
+Этот модуль является точкой входа для системы планирования и выполнения задач.
+Запускается Windows Task Scheduler с параметрами командной строки для фильтрации
+и выполнения задач по расписанию или принудительно.
+
+Пример запуска:
+    pythonw runner.py --user operator
+    pythonw runner.py --user admin --task BackupDB --detailed
+
+Модуль выполняет следующие функции:
+    - Парсинг аргументов командной строки
+    - Загрузка и фильтрация конфигурации задач
+    - Проверка расписания выполнения
+    - Запуск задач в подпроцессах с контролем окружения
+    - Логирование результатов выполнения
+
+Author: anikinjura
+"""
+__version__ = '0.0.1'
+
+import argparse
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any
+
+try:
+    from scheduler_runner.schedule_config import SCHEDULE, get_task_env
+    from scheduler_runner.utils.logging import configure_logger
+    from scheduler_runner.utils.timing import should_run_now
+    from scheduler_runner.utils.subprocess import run_subprocess
+    from config.base_config import PATH_CONFIG
+except ImportError as e:
+    print(f"Критическая ошибка импорта: {e}")
+    print("Проверьте структуру проекта и наличие всех модулей")
+    sys.exit(3)
+
+
+def parse_arguments() -> argparse.Namespace:
+    """
+    Парсит аргументы командной строки для планировщика задач.
+    
+    Функция создает парсер аргументов командной строки с поддержкой следующих параметров:
+    - --user: обязательный параметр для указания системного пользователя
+    - --task: опциональный параметр для принудительного запуска конкретной задачи
+    - --detailed: флаг включения детального логирования на уровне DEBUG
+    
+    Returns:
+        argparse.Namespace: объект с распарсенными аргументами командной строки
+        
+    Raises:
+        SystemExit: если переданы некорректные аргументы или отсутствует --user
+        
+    Example:
+        >>> args = parse_arguments()
+        >>> print(args.user)
+        'operator'
+        >>> print(args.task)
+        None
+        >>> print(args.detailed)
+        False
+    """
+    parser = argparse.ArgumentParser(
+        description="Планировщик выполнения задач по расписанию",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры использования:
+  %(prog)s --user operator                    # Запуск всех задач пользователя operator по расписанию
+  %(prog)s --user admin --task BackupDB       # Принудительный запуск конкретной задачи BackupDB
+  %(prog)s --user operator --detailed         # Запуск с детальным логированием (DEBUG)
+        """
+    )
+    
+    parser.add_argument(
+        '--user', 
+        required=True, 
+        help='Имя системного пользователя для фильтрации задач'
+    )
+    
+    parser.add_argument(
+        '--task', 
+        help='Имя конкретной задачи для принудительного запуска (игнорирует расписание)'
+    )
+    
+    parser.add_argument(
+        '--detailed', 
+        action='store_true', 
+        help='Включить детальное логирование на уровне DEBUG'
+    )
+    
+    return parser.parse_args()
+
+
+def filter_tasks(all_tasks: List[Dict[str, Any]], user: str, task_name: str | None = None) -> List[Dict[str, Any]]:
+    """
+    Фильтрует список задач по пользователю и опционально по имени задачи.
+    
+    Функция выполняет двухэтапную фильтрацию:
+    1. Сначала отбирает все задачи для указанного пользователя
+    2. Если указано имя задачи, дополнительно фильтрует по этому критерию
+    
+    Args:
+        all_tasks: полный список задач из конфигурации планировщика
+        user: имя пользователя для фильтрации задач
+        task_name: опциональное имя конкретной задачи для дополнительной фильтрации
+        
+    Returns:
+        List[Dict[str, Any]]: отфильтрованный список задач, соответствующих критериям
+        
+    Example:
+        >>> tasks = [
+        ...     {'name': 'backup', 'user': 'admin'},
+        ...     {'name': 'cleanup', 'user': 'operator'},
+        ...     {'name': 'monitor', 'user': 'operator'}
+        ... ]
+        >>> filtered = filter_tasks(tasks, 'operator')
+        >>> len(filtered)
+        2
+        >>> filtered = filter_tasks(tasks, 'operator', 'cleanup')
+        >>> len(filtered)
+        1
+    """
+    # Приводим имя пользователя к нижнему регистру для унификации
+    user_lower = user.lower()
+
+    # Первый этап: фильтрация по пользователю (без учета регистра)
+    user_tasks = [task for task in all_tasks if str(task.get('user', '')).lower() == user_lower]
+    
+    # Второй этап: дополнительная фильтрация по имени задачи (если задача указана, приводим её к нижнему регистру)
+    if task_name:
+        task_name_lower = task_name.lower()
+        user_tasks = [task for task in user_tasks if str(task.get('name', '')).lower() == task_name_lower]
+    
+    return user_tasks
+
+
+def execute_task(task: Dict[str, Any], logger, force_run: bool = False) -> bool:
+    """
+    Выполняет отдельную задачу с проверкой расписания и контролем процесса.
+    
+    Функция выполняет следующие операции:
+    1. Проверяет расписание выполнения (если не принудительный запуск)
+    2. Определяет модуль/скрипт для запуска
+    3. Подготавливает параметры запуска и переменные окружения
+    4. Запускает задачу в подпроцессе с контролем времени выполнения
+    5. Логирует результат выполнения
+    
+    Args:
+        task: словарь с конфигурацией задачи, содержащий поля:
+            - name: имя задачи
+            - module/script: модуль или скрипт для запуска
+            - args: список аргументов командной строки
+            - timeout: максимальное время выполнения в секундах
+            - schedule: конфигурация расписания
+        logger: настроенный логгер для записи событий выполнения
+        force_run: флаг принудительного запуска без проверки расписания
+        
+    Returns:
+        bool: True если задача выполнена успешно, False в случае ошибки
+        
+    Raises:
+        ValueError: если конфигурация расписания задачи некорректна
+        
+    Example:
+        >>> task = {
+        ...     'name': 'backup_db',
+        ...     'module': 'backup_script',
+        ...     'args': ['--full'],
+        ...     'timeout': 300,
+        ...     'schedule': 'daily',
+        ...     'time': '02:00'
+        ... }
+        >>> success = execute_task(task, logger, force_run=True)
+        >>> print(success)
+        True
+    """
+    task_name = task.get('name', 'Unknown')
+    
+    # Определяем, нужно ли запускать задачу
+    if force_run:
+        should_run = True
+        logger.info(f"Принудительный запуск задачи '{task_name}'")
+    else:
+        try:
+            should_run = should_run_now(task, datetime.now())
+            status_msg = 'запускаем' if should_run else 'пропускаем'
+            logger.info(f"Проверка расписания для '{task_name}': {status_msg}")
+        except ValueError as e:
+            logger.error(f"Ошибка в конфигурации расписания для '{task_name}': {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при проверке расписания для '{task_name}': {e}")
+            return False
+    
+    # Если не время для выполнения, то это не ошибка
+    if not should_run:
+        return True
+    
+    # Определяем модуль для запуска (приоритет: module > script > name)
+    script_module = task.get('module') or task.get('script') or task_name
+    
+    # Подготавливаем параметры запуска
+    args_list = task.get('args', [])
+    env_vars = get_task_env(task)
+    timeout_seconds = task.get('timeout', 60)
+
+    # Определяем рабочую директорию
+    working_directory = task.get('working_dir')
+    if not working_directory and PATH_CONFIG.get('SCRIPTS_DIR'):
+        working_directory = str(PATH_CONFIG['SCRIPTS_DIR'])
+    else:
+        PROJECT_ROOT = Path(__file__).parent.parent
+        working_directory = str(PROJECT_ROOT / 'scheduler_runner' / 'tasks')
+
+    # Логируем параметры запуска
+    logger.info(f"Запуск модуля '{script_module}' с аргументами: {args_list}")
+    if logger.isEnabledFor(10):  # DEBUG level
+        logger.debug(f"Переменные окружения: {list(env_vars.keys())}")
+        logger.debug(f"Рабочая директория: {working_directory}")
+        logger.debug(f"Таймаут: {timeout_seconds} сек")
+    
+    # Выполняем задачу в подпроцессе
+    try:
+        success = run_subprocess(
+            script_name=script_module,
+            args=args_list,
+            env=env_vars,
+            logger=logger,
+            timeout=timeout_seconds,
+            working_dir=working_directory
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при запуске подпроцесса для '{task_name}': {e}")
+        return False
+    
+    # Логируем результат
+    if success:
+        logger.info(f"Задача '{task_name}' выполнена успешно")
+    else:
+        logger.error(f"Задача '{task_name}' завершилась с ошибкой")
+    
+    return success
+
+
+def main() -> None:
+    """
+    Основная функция приложения - точка входа планировщика задач.
+    
+    Функция выполняет полный цикл работы планировщика:
+    1. Парсит аргументы командной строки
+    2. Фильтрует задачи по пользователю и имени
+    3. Проверяет наличие задач для выполнения
+    4. Запускает каждую задачу с индивидуальным логированием
+    5. Подсчитывает статистику выполнения
+    6. Устанавливает код завершения процесса
+    
+    Exit Codes:
+        0: все задачи выполнены успешно
+        1: одна или несколько задач завершились с ошибкой
+        2: выполнение прервано пользователем (Ctrl+C)
+        3: критическая ошибка приложения
+        
+    Raises:
+        KeyboardInterrupt: при прерывании выполнения пользователем
+        Exception: при критических ошибках приложения
+        
+    Example:
+        При запуске с аргументами --user operator --detailed:
+        1. Загружает все задачи для пользователя 'operator'
+        2. Проверяет расписание каждой задачи
+        3. Запускает задачи с детальным логированием
+        4. Выводит итоговую статистику
+    """
+    try:
+        # Парсим аргументы командной строки
+        args = parse_arguments()
+
+        # Проверяем доступность конфигурации
+        if not SCHEDULE:
+            print("Конфигурация расписания пуста или не загружена")
+            sys.exit(3)
+
+        # Фильтруем задачи по пользователю и имени задачи            
+        tasks_to_run = filter_tasks(SCHEDULE, args.user, args.task)
+        
+        # Проверяем наличие задач для выполнения
+        if not tasks_to_run:
+            if args.task:
+                print(f"Задача '{args.task}' для пользователя '{args.user}' не найдена")
+            else:
+                print(f"Нет задач для пользователя '{args.user}'")
+            return
+        
+        # Выводим информацию о найденных задачах
+        task_count = len(tasks_to_run)
+        print(f"Найдено {task_count} задач(и) для выполнения")
+
+        # Инициализируем счетчики успешных и неудачных выполнений
+        successful_tasks = 0
+        failed_tasks = 0       
+        
+        # Выполняем каждую задачу
+        for task in tasks_to_run:
+            # Настраиваем индивидуальный логгер для каждой задачи
+            try:
+                logger = configure_logger(
+                    user=args.user,
+                    task_name=task.get('name'),
+                    detailed=args.detailed
+                )
+            except Exception as e:
+                print(f"Ошибка настройки логгера для задачи {task.get('name', 'Unknown')}: {e}")
+                failed_tasks += 1
+                continue
+            
+            try:
+                # Выполняем задачу
+                if execute_task(task, logger, force_run=bool(args.task)):
+                    successful_tasks += 1
+                else:
+                    failed_tasks += 1
+            except Exception as e:
+                # Логируем неожиданные ошибки выполнения
+                task_name = task.get('name', 'Unknown')
+                logger.exception(f"Неожиданная ошибка при выполнении задачи '{task_name}': {e}")
+                failed_tasks += 1
+        
+        # Выводим итоговую статистику
+        print(f"Выполнение завершено: {successful_tasks} успешно, {failed_tasks} с ошибками")
+        
+        # Устанавливаем код завершения в зависимости от результатов
+        if failed_tasks > 0:
+            sys.exit(1)
+            
+    except KeyboardInterrupt:
+        print("Выполнение прервано пользователем")
+        sys.exit(2)
+        
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(3)
+
+
+if __name__ == '__main__':
+    main()
+
+# Содержимое файла: scheduler_runner\schedule_config.py
+"""
+Модуль конфигурации расписания задач.
+
+Этот модуль отвечает за автоматическое обнаружение, загрузку и валидацию
+конфигураций задач из доменных подпакетов в директории tasks/.
+
+Модуль выполняет следующие функции:
+    - Автоматическое обнаружение конфигураций задач в подпапках
+    - Динамическая загрузка модулей конфигурации
+    - Валидация структуры и содержимого конфигураций
+    - Объединение переменных окружения для задач
+    - Предоставление централизованного доступа к расписанию
+
+Структура конфигурации задачи:
+    {
+        'name': 'имя_задачи',
+        'user': 'системный_пользователь',
+        'module': 'модуль_для_запуска',
+        'schedule': 'daily' | 'hourly' | 'interval',
+        'time': 'HH:MM',  # для daily
+        'args': ['arg1', 'arg2'],
+        'timeout': 300,
+        'env': {'KEY': 'value'}
+    }
+
+Author: anikinjura
+"""
+__version__ = '0.0.0'
+
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+import sys
+import importlib
+
+# Импортируем базовую конфигурацию
+from config.base_config import PATH_CONFIG, BASE_DIR
+
+# Импортируем централизованную систему логирования
+from scheduler_runner.utils.logging import configure_logger
+
+# Настройка логирования для schedule_config
+logger = configure_logger(
+    user='system',
+    task_name='schedule_config',
+    detailed=True,
+    logs_dir=str(PATH_CONFIG['LOGS_ROOT'])
+)
+
+# Дополнительные переменные окружения по умолчанию для всех задач
+DEFAULT_TASK_ENV = {
+    'PYTHON_PATH': str(BASE_DIR),
+    'LOG_LEVEL': 'INFO',
+    'TASK_RUNNER': 'scheduler_runner',
+    'SCRIPTS_DIR': str(PATH_CONFIG['SCRIPTS_DIR']),
+    'LOGS_ROOT': str(PATH_CONFIG['LOGS_ROOT']),
+    # Прокидываем Telegram настройки для уведомлений
+    'TELEGRAM_TOKEN': PATH_CONFIG.get('TELEGRAM_TOKEN'),
+    'TELEGRAM_CHAT_ID': PATH_CONFIG.get('TELEGRAM_CHAT_ID'),
+}
+
+
+def _discover_task_configs() -> List[Dict[str, Any]]:
+    """
+    Обнаруживает и загружает конфигурации задач из всех подпапок tasks.
+    
+    Функция сканирует директорию tasks/ в поисках подпапок с конфигурациями.
+    Для каждой подпапки ищет файл config/{папка}_config.py и пытается
+    импортировать переменные TASK_SCHEDULE или SCHEDULE.
+    
+    Структура поиска:
+        scheduler_runner/tasks/
+        ├── domain1/
+        │   └── config/
+        │       └── domain1_config.py  # содержит TASK_SCHEDULE или SCHEDULE
+        └── domain2/
+            └── config/
+                └── domain2_config.py
+    
+    Returns:
+        List[Dict[str, Any]]: список всех найденных и загруженных конфигураций задач
+        
+    Raises:
+        ImportError: если не удается импортировать модуль конфигурации
+        AttributeError: если в модуле отсутствуют ожидаемые переменные
+        
+    Example:
+        >>> configs = _discover_task_configs()
+        >>> len(configs)
+        5
+        >>> print(configs[0]['name'])
+        'camera_cleanup'
+    """
+    tasks_schedule: List[Dict[str, Any]] = []
+
+    # Определяем путь к директории tasks
+    tasks_dir = Path(__file__).parent / 'tasks'
+    
+    if not tasks_dir.exists():
+        logger.warning(f"Директория задач не найдена: {tasks_dir}")
+        return tasks_schedule
+    
+    logger.info(f"Поиск конфигураций задач в директории: {tasks_dir}")
+    
+    # Проходим по всем подпапкам в tasks
+    for task_dir in tasks_dir.iterdir():
+        # Пропускаем файлы и скрытые директории
+        if not task_dir.is_dir() or task_dir.name.startswith('_'):
+            continue
+        # Формируем путь к конфигурационному файлу    
+        config_file = task_dir / 'config' / f'{task_dir.name}_config.py'
+        
+        if not config_file.exists():
+            logger.debug(f"Конфигурация не найдена для задачи: {task_dir.name}")
+            continue
+            
+        try:
+            # Добавляем путь к tasks в sys.path для корректного импорта
+            tasks_path = str(tasks_dir.parent)
+            if tasks_path not in sys.path:
+                sys.path.insert(0, tasks_path)            
+            
+             # Формируем путь для импорта модуля
+            module_path = f'tasks.{task_dir.name}.config.{task_dir.name}_config'
+            logger.debug(f"Попытка импорта модуля: {module_path}")
+            
+            # Импортируем модуль конфигурации
+            config_module = importlib.import_module(module_path)
+            
+            # Ищем переменную TASK_SCHEDULE или SCHEDULE в модуле
+            task_configs = _extract_task_configs(config_module, task_dir.name)
+            
+            if task_configs:
+                if isinstance(task_configs, list):
+                    # Добавляем информацию о домене к каждой задаче
+                    for task_config in task_configs:
+                        if 'domain' not in task_config:
+                            task_config['domain'] = task_dir.name
+
+                    tasks_schedule.extend(task_configs)
+                    logger.info(f"Загружено {len(task_configs)} задач из модуля {task_dir.name}")
+                else:
+                    logger.warning(f"Конфигурация в {config_file} должна быть списком")
+            else:
+                logger.warning(f"Не найдена переменная TASK_SCHEDULE или SCHEDULE в {config_file}")
+                
+        except ImportError as e:
+            logger.error(f"Ошибка импорта конфигурации {config_file}: {e}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при загрузке конфигурации {config_file}: {e}")
+    
+    logger.info(f"Всего обнаружено задач: {len(tasks_schedule)}")
+    return tasks_schedule
+
+def _extract_task_configs(config_module, domain_name: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Извлекает конфигурации задач из загруженного модуля.
+    
+    Функция ищет в модуле переменные TASK_SCHEDULE или SCHEDULE
+    и возвращает их содержимое. Приоритет отдается TASK_SCHEDULE.
+    
+    Args:
+        config_module: импортированный модуль конфигурации
+        domain_name: имя домена для логирования
+        
+    Returns:
+        Optional[List[Dict[str, Any]]]: список конфигураций задач или None
+        
+    Example:
+        >>> module = importlib.import_module('tasks.cameras.config.cameras_config')
+        >>> configs = _extract_task_configs(module, 'cameras')
+        >>> len(configs)
+        3
+    """
+    # Проверяем наличие переменной TASK_SCHEDULE (приоритет)
+    if hasattr(config_module, 'TASK_SCHEDULE'):
+        logger.debug(f"Найдена переменная TASK_SCHEDULE в домене {domain_name}")
+        return config_module.TASK_SCHEDULE
+    
+    # Проверяем наличие переменной SCHEDULE (альтернатива)
+    elif hasattr(config_module, 'SCHEDULE'):
+        logger.debug(f"Найдена переменная SCHEDULE в домене {domain_name}")
+        return config_module.SCHEDULE
+    
+    # Переменные не найдены
+    return None
+
+def _validate_schedule_config(schedule: List[Dict[str, Any]]):
+    """
+    Проверяет корректность конфигурации расписания задач.
+    
+    Функция выполняет комплексную валидацию каждой задачи:
+    1. Проверяет наличие обязательных полей
+    2. Валидирует формат расписания
+    3. Проверяет корректность времени для daily задач
+    4. Валидирует структуру данных
+    
+    Args:
+        schedule: список конфигураций задач для валидации
+        
+    Raises:
+        ValueError: если найдены ошибки в конфигурации
+        
+    Example:
+        >>> schedule = [
+        ...     {'name': 'backup', 'user': 'admin', 'schedule': 'daily', 'time': '02:00'},
+        ...     {'name': 'cleanup', 'user': 'operator', 'schedule': 'hourly'}
+        ... ]
+        >>> _validate_schedule_config(schedule)  # Успешно
+        
+        >>> bad_schedule = [{'name': 'bad', 'schedule': 'daily'}]  # Отсутствует 'user'
+        >>> _validate_schedule_config(bad_schedule)  # Raises ValueError
+    """
+    required_fields = ['user', 'name', 'schedule']
+    
+    logger.debug(f"Валидация конфигурации для {len(schedule)} задач")
+    
+    for i, task in enumerate(schedule):
+        task_name = task.get('name', f'задача #{i}')
+        
+        # Проверяем обязательные поля
+        _validate_required_fields(task, required_fields, task_name)
+        
+        # Проверяем корректность расписания (в том числе формат времени для daily задач)
+        _validate_schedule_format(task, task_name)
+        
+        logger.debug(f"{task_name}: конфигурация валидна")
+    
+    logger.info(f"Валидация завершена успешно для {len(schedule)} задач")
+
+
+def _validate_required_fields(
+    task: Dict[str, Any], 
+    required_fields: List[str], 
+    task_name: str
+) -> None:
+    """
+    Проверяет наличие обязательных полей в конфигурации задачи.
+    
+    Args:
+        task: конфигурация задачи для проверки
+        required_fields: список обязательных полей
+        task_name: имя задачи для сообщений об ошибках
+        
+    Raises:
+        ValueError: если отсутствует обязательное поле
+        
+    Example:
+        >>> task = {'name': 'test', 'user': 'admin'}
+        >>> _validate_required_fields(task, ['name', 'user'], 'test')  # OK
+        >>> _validate_required_fields(task, ['name', 'schedule'], 'test')  # ValueError
+    """
+    for field in required_fields:
+        if field not in task or not task[field]:
+            error_msg = f"{task_name}: отсутствует обязательное поле '{field}'"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+
+def _validate_schedule_format(task: Dict[str, Any], task_name: str) -> None:
+    """
+    Проверяет корректность формата расписания задачи.
+    
+    Валидирует следующие типы расписаний:
+    - daily: требует поле 'time' в формате HH:MM
+    - hourly: дополнительных полей не требует
+    - interval: может требовать дополнительные параметры
+    
+    Args:
+        task: конфигурация задачи
+        task_name: имя задачи для сообщений об ошибках
+        
+    Raises:
+        ValueError: если формат расписания некорректен
+        
+    Example:
+        >>> task = {'schedule': 'daily', 'time': '14:30'}
+        >>> _validate_schedule_format(task, 'test')  # OK
+        
+        >>> task = {'schedule': 'daily', 'time': '25:70'}
+        >>> _validate_schedule_format(task, 'test')  # ValueError
+    """
+    schedule_type = task.get('schedule')
+    
+    # Проверяем расписание типа 'daily'
+    if schedule_type == 'daily':
+        if 'time' not in task:
+            error_msg = f"{task_name}: для daily расписания требуется поле 'time'"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Проверяем формат времени
+        _validate_time_format(task.get('time', ''), task_name)
+
+
+def _validate_time_format(time_str: str, task_name: str) -> None:
+    """
+    Проверяет корректность формата времени HH:MM.
+    
+    Args:
+        time_str: строка времени для проверки
+        task_name: имя задачи для сообщений об ошибках
+        
+    Raises:
+        ValueError: если формат времени некорректен
+        
+    Example:
+        >>> _validate_time_format('14:30', 'test')  # OK
+        >>> _validate_time_format('25:70', 'test')  # ValueError
+        >>> _validate_time_format('14:30:45', 'test')  # ValueError
+    """
+    try:
+        parts = time_str.split(':')
+        if len(parts) != 2:
+            raise ValueError("Неверное количество частей")
+        
+        hour, minute = map(int, parts)
+        
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Час должен быть от 0 до 23, получено: {hour}")
+            
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Минута должна быть от 0 до 59, получено: {minute}")
+            
+        logger.debug(f"{task_name}: время выполнения {time_str} корректно")
+        
+    except ValueError as e:
+        error_msg = f"{task_name}: неверный формат времени '{time_str}' (ожидается HH:MM): {e}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+
+def get_task_env(task: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Возвращает объединенные переменные окружения для задачи.
+    
+    Функция объединяет переменные окружения по приоритету:
+    1. DEFAULT_TASK_ENV (базовые переменные для всех задач)
+    2. task['env'] (специфичные переменные задачи)
+    
+    Все значения преобразуются в строки, так как subprocess требует
+    строковые значения переменных окружения.
+    
+    Args:
+        task: конфигурация задачи, может содержать поле 'env'
+        
+    Returns:
+        Dict[str, str]: словарь переменных окружения со строковыми значениями
+        
+    Example:
+        >>> task = {
+        ...     'name': 'backup',
+        ...     'env': {
+        ...         'DB_HOST': 'localhost',
+        ...         'DB_PORT': 5432,
+        ...         'DEBUG': True
+        ...     }
+        ... }
+        >>> env = get_task_env(task)
+        >>> env['DB_HOST']
+        'localhost'
+        >>> env['DB_PORT']
+        '5432'
+        >>> env['DEBUG']
+        'True'
+    """
+    # Начинаем с копии базовых переменных окружения
+    env = DEFAULT_TASK_ENV.copy()
+    
+    # Получаем специфичные для задачи переменные окружения
+    task_env = task.get('env', {})
+    
+    # Объединяем переменные, преобразуя все значения в строки (требование для subprocess)
+    for key, value in task_env.items():
+        env[key] = str(value) if value is not None else ''
+    
+    # Убираем переменные с None значениями
+    filtered_env = {k: v for k, v in env.items() if v is not None}
+    
+    return filtered_env
+
+
+def reload_schedule() -> List[Dict[str, Any]]:
+    """
+    Перезагружает конфигурацию расписания из всех задач.
+    
+    Функция полезна для динамического обновления конфигурации
+    без перезапуска основного процесса планировщика.
+    Выполняет полный цикл: обнаружение -> загрузка -> валидация.
+    
+    Returns:
+        List[Dict[str, Any]]: обновленный список задач
+        
+    Raises:
+        ValueError: если новая конфигурация содержит ошибки
+        ImportError: если не удается загрузить модули конфигурации
+        
+    Example:
+        >>> # После изменения конфигурационных файлов
+        >>> new_schedule = reload_schedule()
+        >>> len(new_schedule)
+        7  # Обновленное количество задач
+        
+    Note:
+        Функция не обновляет глобальную переменную SCHEDULE,
+        возвращает новый список для ручного управления.
+    """
+
+    logger.info("Перезагрузка конфигурации расписания")
+    
+    try:
+        # Обнаруживаем и загружаем конфигурации
+        new_schedule = _discover_task_configs()
+        
+        # Валидируем новую конфигурацию
+        _validate_schedule_config(new_schedule)
+        
+        logger.info(f"Конфигурация успешно перезагружена: {len(new_schedule)} задач")
+        return new_schedule
+        
+    except Exception as e:
+        logger.error(f"Ошибка при перезагрузке конфигурации: {e}")
+        raise
+
+def get_tasks_by_user(user: str) -> List[Dict[str, Any]]:
+    """
+    Возвращает все задачи для указанного пользователя.
+    
+    Args:
+        user: имя пользователя для фильтрации задач
+        
+    Returns:
+        List[Dict[str, Any]]: список задач пользователя
+        
+    Example:
+        >>> operator_tasks = get_tasks_by_user('operator')
+        >>> len(operator_tasks)
+        3
+        >>> all(task['user'] == 'operator' for task in operator_tasks)
+        True
+    """
+    return [task for task in SCHEDULE if task.get('user') == user]
+
+
+def get_task_by_name(name: str, user: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает задачу по имени, опционально фильтруя по пользователю.
+    
+    Args:
+        name: имя задачи для поиска
+        user: опциональный фильтр по пользователю
+        
+    Returns:
+        Optional[Dict[str, Any]]: найденная задача или None
+        
+    Example:
+        >>> task = get_task_by_name('backup_db')
+        >>> task['name']
+        'backup_db'
+        
+        >>> task = get_task_by_name('backup_db', user='admin')
+        >>> task is not None
+        True
+    """
+    for task in SCHEDULE:
+        if task.get('name') == name:
+            if user is None or task.get('user') == user:
+                return task
+    return None
+
+
+def get_schedule_summary() -> Dict[str, Any]:
+    """
+    Возвращает сводную информацию о расписании задач.
+    
+    Returns:
+        Dict[str, Any]: словарь со статистикой расписания
+        
+    Example:
+        >>> summary = get_schedule_summary()
+        >>> summary['total_tasks']
+        12
+        >>> summary['users']
+        ['admin', 'operator', 'backup_user']
+        >>> summary['schedule_types']
+        {'daily': 8, 'hourly': 3, 'interval': 1}
+    """
+    users = set()
+    schedule_types = {}
+    
+    for task in SCHEDULE:
+        # Собираем уникальных пользователей
+        if 'user' in task:
+            users.add(task['user'])
+        
+        # Подсчитываем типы расписаний
+        schedule_type = task.get('schedule', 'unknown')
+        schedule_types[schedule_type] = schedule_types.get(schedule_type, 0) + 1
+    
+    return {
+        'total_tasks': len(SCHEDULE),
+        'users': sorted(list(users)),
+        'schedule_types': schedule_types,
+        'task_names': [task.get('name', 'Unknown') for task in SCHEDULE]
+    }
+
+# Загружаем конфигурацию задач при импорте модуля
+logger.info("Инициализация системы расписания задач")
+SCHEDULE: List[Dict[str, Any]] = _discover_task_configs()
+
+# Выполняем валидацию при импорте модуля
+try:
+    _validate_schedule_config(SCHEDULE)
+    logger.info(f"Система расписания инициализирована: загружено и проверено {len(SCHEDULE)} задач")
+
+    # Выводим краткую сводку в лог
+    summary = get_schedule_summary()
+    logger.info(f"Пользователи: {', '.join(summary['users'])}")
+    logger.info(f"Типы расписаний: {summary['schedule_types']}")    
+except Exception as e:
+    logger.error(f"Критическая ошибка при инициализации системы расписания: {e}")
+    raise
+
