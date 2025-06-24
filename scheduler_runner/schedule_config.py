@@ -513,7 +513,7 @@ SCHEDULE: List[Dict[str, Any]] = _discover_task_configs()
 
 # print("[DEBUG] Итоговый SCHEDULE:")
 # for task in SCHEDULE:
-#    print(task)
+#   print(task)
 
 # Выполняем валидацию при импорте модуля
 try:

@@ -20,11 +20,11 @@ SCRIPT_CONFIG = {
 }
 
 # Расписание для ядра планировщика (раз в сутки в 10:00)
-SCHEDULE = {
+SCHEDULE = [{
     "name": SCRIPT_CONFIG["TASK_NAME"],
     "module": MODULE_PATH,
     "args": ["--branch", "main"],
     "schedule": "daily",
     "time": "10:00",
     "user": SCRIPT_CONFIG["USER"],
-}
+}]
