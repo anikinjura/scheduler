@@ -5,7 +5,7 @@ updater_config.py
 
 Author: anikinjura
 """
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 from config.base_config import BASE_DIR
 MODULE_PATH = "scheduler_runner.tasks.system.UpdaterScript"

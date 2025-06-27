@@ -11,7 +11,11 @@
 
 Модуль выполняет следующие функции:
     - Парсинг аргументов командной строки
-    - Загрузка и фильтрация конфигурации задач
+    - Загрузка и фильтрация конфигурации задач (task)
+        1. В каждом домене (например, cameras, system) в файлах /tasks/домен/config/scripts/*_config.py формируется список задач SCHEDULE (или TASK_SCHEDULE).
+        2. Эти списки объединяются в соответствующем /tasks/домен/config/*_schedule.py, экспортируя общий список задач домена.
+        3. Глобальный список задач SCHEDULE формируется в schedule_config.py через функцию _discover_task_configs(), которая импортирует все доменные расписания.
+        4. В ядре (runner.py) задачи фильтруются по пользователю и имени, и передаются в функцию execute_task для запуска.
     - Проверка расписания выполнения
     - Запуск задач в подпроцессах с контролем окружения
     - Логирование результатов выполнения
@@ -221,13 +225,8 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False) -> bool:
     env_vars = get_task_env(task)
     timeout_seconds = task.get('timeout', 60)
 
-    # Определяем рабочую директорию
-    working_directory = task.get('working_dir')
-    if not working_directory and PATH_CONFIG.get('SCRIPTS_DIR'):
-        working_directory = str(PATH_CONFIG['SCRIPTS_DIR'])
-    else:
-        PROJECT_ROOT = Path(__file__).parent.parent
-        working_directory = str(PROJECT_ROOT / 'scheduler_runner' / 'tasks')
+    # Получаем путь к директории задач
+    working_directory = str(PATH_CONFIG['TASKS_ROOT'])
 
     # Логируем параметры запуска
     logger.info(f"Запуск модуля '{script_module}' с аргументами: {args_list}")

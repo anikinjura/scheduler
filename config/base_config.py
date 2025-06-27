@@ -47,7 +47,14 @@ SCHEDULER_RUNNER_DIR = BASE_DIR / 'scheduler_runner'
 TASKS_DIR = SCHEDULER_RUNNER_DIR / 'tasks'
 
 # 2. Загрузка PVZ_ID и ENV_MODE из pvz_config.ini
-PVZ_CONFIG_FILE = BASE_DIR / 'pvz_config.ini'
+# Ищем pvz_config.ini вне проекта, по умолчанию: C:\tools\pvz_config.ini
+# Можно переопределить путь через переменную окружения PVZ_CONFIG_PATH
+DEFAULT_PVZ_CONFIG_PATH = r'C:\tools\pvz_config.ini'
+PVZ_CONFIG_FILE = Path(os.environ.get('PVZ_CONFIG_PATH', DEFAULT_PVZ_CONFIG_PATH))
+
+if not PVZ_CONFIG_FILE.exists():
+    sys.exit(f"[ERROR] Не найден файл конфигурации PVZ: {PVZ_CONFIG_FILE}")
+
 config = configparser.ConfigParser()
 config.read(PVZ_CONFIG_FILE)
 PVZ_ID = config.getint('DEFAULT', 'PVZ_ID', fallback=0)
@@ -63,7 +70,7 @@ PATH_CONFIG = {
     'TASKS_ROOT': TASKS_DIR,
 }
 
-# 3. Вспомогательная валидация: предупреждаем, если важноe
+# 4. Вспомогательная валидация: предупреждаем, если важное отсутствует
 for key, path in PATH_CONFIG.items():
     if isinstance(path, Path) and key.endswith(('ROOT')):
         if not path.exists():
