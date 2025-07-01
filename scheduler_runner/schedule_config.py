@@ -507,6 +507,78 @@ def get_schedule_summary() -> Dict[str, Any]:
         'task_names': [task.get('name', 'Unknown') for task in SCHEDULE]
     }
 
+
+
+def print_schedule(
+    user: Optional[str] = None,
+    domain: Optional[str] = None,
+    show_env: bool = False,
+    show_args: bool = True,
+    show_time: bool = True,
+    show_module: bool = True,
+    sort_by: str = "time"
+):
+    """
+    Красиво выводит задачи расписания с возможностью фильтрации по пользователю и домену.
+
+    Args:
+        user (str, optional): фильтр по пользователю
+        domain (str, optional): фильтр по домену (например, 'cameras', 'system')
+        show_env (bool): выводить ли переменные окружения задачи
+        show_args (bool): выводить ли аргументы задачи
+        show_time (bool): выводить ли время/тип расписания
+        show_module (bool): выводить ли модуль задачи
+        sort_by (str): поле для сортировки ('time', 'name', 'user', 'domain')
+    Пример использования:
+        from scheduler_runner.schedule_config import print_schedule
+        
+        # Вывести все задачи
+        print_schedule()
+
+        # Только для пользователя 'operator'
+        print_schedule(user='operator')
+
+        # Только для домена 'system'
+        print_schedule(domain='system')
+
+        # Для анализа пересечений по времени (например, только daily)
+        print_schedule(sort_by='time')    
+        
+    """
+    from pprint import pprint
+
+    filtered = SCHEDULE
+    if user:
+        filtered = [t for t in filtered if t.get("user") == user]
+    if domain:
+        filtered = [t for t in filtered if t.get("domain") == domain]
+
+    def sort_key(task):
+        return task.get(sort_by) or ""
+
+    filtered = sorted(filtered, key=sort_key)
+
+    print(f"\n{'='*30} SCHEDULE (user={user or 'ANY'}, domain={domain or 'ANY'}) {'='*30}")
+    for i, task in enumerate(filtered, 1):
+        print(f"{i:2d}. {task.get('name', '???')}", end="")
+        if show_time:
+            print(f" | {task.get('schedule', '')}", end="")
+            if task.get('schedule') == 'daily':
+                print(f" {task.get('time', '')}", end="")
+        print(f" | user: {task.get('user', '')}", end="")
+        if 'domain' in task:
+            print(f" | domain: {task['domain']}", end="")
+        if show_module:
+            print(f"\n    module: {task.get('module', '')}", end="")
+        if show_args and task.get('args'):
+            print(f"\n    args: {task['args']}", end="")
+        if show_env and task.get('env'):
+            print(f"\n    env: {task['env']}", end="")
+        print("\n" + "-"*80)
+    print(f"Всего задач: {len(filtered)}\n")
+
+
+
 # Загружаем конфигурацию задач при импорте модуля
 logger.info("Инициализация системы расписания задач")
 SCHEDULE: List[Dict[str, Any]] = _discover_task_configs()
