@@ -22,7 +22,7 @@
 
 Author: anikinjura
 """
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 import argparse
 import sys
@@ -155,7 +155,7 @@ def sort_tasks_by_time(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return 0
     return sorted(tasks, key=_get_time)
 
-def execute_task(task: Dict[str, Any], logger, force_run: bool = False) -> bool:
+def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed: bool = False) -> bool:
     """
     Выполняет отдельную задачу с проверкой расписания и контролем процесса.
     
@@ -175,7 +175,8 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False) -> bool:
             - schedule: конфигурация расписания
         logger: настроенный логгер для записи событий выполнения
         force_run: флаг принудительного запуска без проверки расписания
-        
+        detailed: флаг передачи детализированного логирования в подпроцесс
+
     Returns:
         bool: True если задача выполнена успешно, False в случае ошибки
         
@@ -221,7 +222,11 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False) -> bool:
     script_module = task.get('module') or task.get('script') or task_name
     
     # Подготавливаем параметры запуска
-    args_list = task.get('args', [])
+    args_list = list(task.get('args', []))  # Копируем список аргументов, чтобы не менять оригинал
+    # Если detailed=True и '--detailed' ещё не передан, добавляем его к аргументам подпроцесса
+    if detailed and '--detailed' not in args_list:
+        args_list.append('--detailed')
+
     env_vars = get_task_env(task)
     timeout_seconds = task.get('timeout', 60)
 
@@ -342,7 +347,7 @@ def main() -> None:
             
             try:
                 # Выполняем задачу
-                if execute_task(task, logger, force_run=bool(args.task)):
+                if execute_task(task, logger, force_run=bool(args.task), detailed=args.detailed):
                     successful_tasks += 1
                 else:
                     failed_tasks += 1

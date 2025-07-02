@@ -33,6 +33,7 @@ def parse_arguments():
     Парсит аргументы командной строки.
     --branch: ветка для обновления (по умолчанию из конфига)
     --dry-run: только проверить наличие обновлений, не выполнять pull
+    --detailed: включить детализированные логи (DEBUG)
     """
     parser = argparse.ArgumentParser(
         description="Автоматическое обновление файлов проекта из git-репозитория"
@@ -45,6 +46,10 @@ def parse_arguments():
         "--dry-run", action="store_true",
         help="Только проверить наличие обновлений, не выполнять pull"
     )
+    parser.add_argument(
+        "--detailed", action="store_true",
+        help="Включить детализированные логи (DEBUG)"
+    )    
     return parser.parse_args()
 
 def get_local_commit(repo_dir: Path, branch: str) -> Optional[str]:
@@ -149,7 +154,7 @@ def main():
     logger = configure_logger(
         user=SCRIPT_CONFIG["USER"],
         task_name=SCRIPT_CONFIG["TASK_NAME"],
-        detailed=SCRIPT_CONFIG["DETAILED_LOGS"],
+        detailed=args.detailed or SCRIPT_CONFIG["DETAILED_LOGS"],
     )
 
     logger.info("Проверка обновлений проекта...")
@@ -186,11 +191,15 @@ def main():
             # Проверяем, обновился ли сам скрипт, и если да — перезапускаем
             script_path = Path(__file__).resolve()
             try:
-                if os.path.getmtime(script_path) != os.path.getmtime(sys.argv[0]):
+                # Подробности проверки обновления скрипта в DEBUG
+                script_mtime = os.path.getmtime(script_path)
+                argv_mtime = os.path.getmtime(sys.argv[0])
+                logger.debug(f"mtime скрипта: {script_mtime}, mtime sys.argv[0]: {argv_mtime}")
+                if script_mtime != argv_mtime:
                     logger.info("Скрипт обновился, перезапуск...")
                     os.execv(sys.executable, [sys.executable] + sys.argv)
             except Exception as e:
-                logger.warning(f"Не удалось проверить или выполнить перезапуск скрипта: {e}")
+                logger.debug(f"Не удалось проверить или выполнить перезапуск скрипта: {e}")
             sys.exit(0)
         else:
             logger.error("Ошибка при обновлении.")
