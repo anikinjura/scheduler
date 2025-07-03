@@ -7,7 +7,7 @@
 
 Пример запуска:
     pythonw runner.py --user operator
-    pythonw runner.py --user admin --task BackupDB --detailed
+    pythonw runner.py --user admin --task BackupDB --detailed_logs
 
 Модуль выполняет следующие функции:
     - Парсинг аргументов командной строки
@@ -49,7 +49,7 @@ def parse_arguments() -> argparse.Namespace:
     Функция создает парсер аргументов командной строки с поддержкой следующих параметров:
     - --user: обязательный параметр для указания системного пользователя
     - --task: опциональный параметр для принудительного запуска конкретной задачи
-    - --detailed: флаг включения детального логирования на уровне DEBUG
+    - --detailed_logs: флаг включения детального логирования на уровне DEBUG
     
     Returns:
         argparse.Namespace: объект с распарсенными аргументами командной строки
@@ -63,7 +63,7 @@ def parse_arguments() -> argparse.Namespace:
         'operator'
         >>> print(args.task)
         None
-        >>> print(args.detailed)
+        >>> print(args.detailed_logs)
         False
     """
     parser = argparse.ArgumentParser(
@@ -73,7 +73,7 @@ def parse_arguments() -> argparse.Namespace:
 Примеры использования:
   %(prog)s --user operator                    # Запуск всех задач пользователя operator по расписанию
   %(prog)s --user admin --task BackupDB       # Принудительный запуск конкретной задачи BackupDB
-  %(prog)s --user operator --detailed         # Запуск с детальным логированием (DEBUG)
+  %(prog)s --user operator --detailed_logs    # Запуск с детальным логированием (DEBUG)
         """
     )
     
@@ -89,7 +89,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        '--detailed', 
+        '--detailed_logs', 
         action='store_true', 
         help='Включить детальное логирование на уровне DEBUG'
     )
@@ -155,7 +155,7 @@ def sort_tasks_by_time(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return 0
     return sorted(tasks, key=_get_time)
 
-def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed: bool = False) -> bool:
+def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed_logs: bool = False) -> bool:
     """
     Выполняет отдельную задачу с проверкой расписания и контролем процесса.
     
@@ -175,7 +175,7 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
             - schedule: конфигурация расписания
         logger: настроенный логгер для записи событий выполнения
         force_run: флаг принудительного запуска без проверки расписания
-        detailed: флаг передачи детализированного логирования в подпроцесс
+        detailed_logs: флаг передачи детализированного логирования в подпроцесс
 
     Returns:
         bool: True если задача выполнена успешно, False в случае ошибки
@@ -223,9 +223,9 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
     
     # Подготавливаем параметры запуска
     args_list = list(task.get('args', []))  # Копируем список аргументов, чтобы не менять оригинал
-    # Если detailed=True и '--detailed' ещё не передан, добавляем его к аргументам подпроцесса
-    if detailed and '--detailed' not in args_list:
-        args_list.append('--detailed')
+    # Если detailed_logs=True и '--detailed_logs' ещё не передан, добавляем его к аргументам подпроцесса
+    if detailed_logs and '--detailed_logs' not in args_list:
+        args_list.append('--detailed_logs')
 
     env_vars = get_task_env(task)
     timeout_seconds = task.get('timeout', 60)
@@ -294,7 +294,7 @@ def main() -> None:
         Exception: при критических ошибках приложения
         
     Example:
-        При запуске с аргументами --user operator --detailed:
+        При запуске с аргументами --user operator --detailed_logs:
         1. Загружает все задачи для пользователя 'operator'
         2. Проверяет расписание каждой задачи
         3. Запускает задачи с детальным логированием
@@ -338,7 +338,7 @@ def main() -> None:
                 logger = configure_logger(
                     user=args.user,
                     task_name=task.get('name'),
-                    detailed=args.detailed
+                    detailed=args.detailed_logs
                 )
             except Exception as e:
                 print(f"Ошибка настройки логгера для задачи {task.get('name', 'Unknown')}: {e}")
@@ -347,7 +347,7 @@ def main() -> None:
             
             try:
                 # Выполняем задачу
-                if execute_task(task, logger, force_run=bool(args.task), detailed=args.detailed):
+                if execute_task(task, logger, force_run=bool(args.task), detailed_logs=args.detailed_logs):
                     successful_tasks += 1
                 else:
                     failed_tasks += 1

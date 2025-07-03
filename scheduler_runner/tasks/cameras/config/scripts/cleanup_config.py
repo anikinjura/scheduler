@@ -20,7 +20,7 @@ SCRIPT_CONFIG = {
     "local": {
         "CLEANUP_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],  # Путь к записям для очистки
         "MAX_AGE_DAYS": 8,                              # Максимальный возраст файлов для удаления  
-        "DETAILED_LOGS": True,                          # Флаг для включения детализированного логирования
+        "DETAILED_LOGS": False,                         # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
         "USER": "camera",                               # Пользователь, от имени которого выполняется задача   
         "TASK_NAME": "CleanupScript_local",             # Имя задачи для логирования
     },

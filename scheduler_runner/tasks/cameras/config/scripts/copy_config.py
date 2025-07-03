@@ -15,8 +15,8 @@ SCRIPT_CONFIG = {
     "INPUT_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],
     "OUTPUT_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],
     "MAX_AGE_DAYS": 3,
-    "ON_CONFLICT": "skip",         # skip/rename
-    "DETAILED_LOGS": True,
+    "ON_CONFLICT": "skip",          # skip/rename
+    "DETAILED_LOGS": False,         # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
     "USER": "operator",
     "TASK_NAME": "CopyScript",
 }

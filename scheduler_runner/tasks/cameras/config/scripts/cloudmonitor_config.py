@@ -19,7 +19,7 @@ SCRIPT_CONFIG = {
     "CHAT_ID": CAMERAS_PATHS["TELEGRAM_CHAT_ID"],       # Telegram chat_id
     "RETRIES": 4,                                       # Количество попыток проверки
     "DELAY": 10,                                        # Задержка между попытками (сек)
-    "DETAILED_LOGS": True,                              # Включить детализированные логи
+    "DETAILED_LOGS": False,                             # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
     "USER": "operator",                                 # Пользователь для логирования
     "TASK_NAME": "CloudMonitorScript",                  # Имя задачи для логирования
 }
@@ -28,7 +28,7 @@ SCHEDULE = [
     {
         "name": SCRIPT_CONFIG["TASK_NAME"],
         "module": MODULE_PATH,
-        "args": ["--detailed_logs"],
+        "args": [],
         "schedule": "hourly",
         "user": SCRIPT_CONFIG["USER"]
     }

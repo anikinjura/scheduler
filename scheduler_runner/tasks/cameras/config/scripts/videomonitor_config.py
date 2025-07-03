@@ -24,14 +24,14 @@ SCRIPT_CONFIG = {
     "local": {
         "CHECK_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],    # Путь к записям для проверки полноты записей
         "MAX_LOOKBACK_HOURS": 2,                        # Определяет, на сколько часов назад скрипт должен проверять наличие записей  
-        "DETAILED_LOGS": True,                          # Флаг для включения детализированного логирования
+        "DETAILED_LOGS": False,                         # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
         "USER": "operator",                             # Пользователь, от имени которого выполняется задача   
         "TASK_NAME": "VideoMonitorScript_local",        # Имя задачи для логирования
     },
     "network": {
         "CHECK_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],      
         "MAX_LOOKBACK_HOURS": 24,                               
-        "DETAILED_LOGS": True,                          
+        "DETAILED_LOGS": False,                          
         "USER": "operator",                                
         "TASK_NAME": "VideoMonitorScript_network",        
     },
@@ -42,14 +42,14 @@ SCHEDULE = [
     {
         "name": SCRIPT_CONFIG["local"]["TASK_NAME"],
         "module": MODULE_PATH,
-        "args": ["--check_type", "local",  "--detailed_logs"],
+        "args": ["--check_type", "local"],
         "schedule": "hourly",
         "user": SCRIPT_CONFIG["local"]["USER"]
     },
     {
         "name": SCRIPT_CONFIG["network"]["TASK_NAME"],
         "module": MODULE_PATH,
-        "args": ["--check_type", "network",  "--detailed_logs"],
+        "args": ["--check_type", "network"],
         "schedule": "daily",
         "time": "12:00",
         "user": SCRIPT_CONFIG["network"]["USER"]

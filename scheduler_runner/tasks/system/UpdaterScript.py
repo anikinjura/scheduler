@@ -33,7 +33,7 @@ def parse_arguments():
     Парсит аргументы командной строки.
     --branch: ветка для обновления (по умолчанию из конфига)
     --dry-run: только проверить наличие обновлений, не выполнять pull
-    --detailed: включить детализированные логи (DEBUG)
+    --detailed_logs: включить детализированные логи (DEBUG)
     """
     parser = argparse.ArgumentParser(
         description="Автоматическое обновление файлов проекта из git-репозитория"
@@ -47,7 +47,7 @@ def parse_arguments():
         help="Только проверить наличие обновлений, не выполнять pull"
     )
     parser.add_argument(
-        "--detailed", action="store_true",
+        "--detailed_logs", action="store_true",
         help="Включить детализированные логи (DEBUG)"
     )    
     return parser.parse_args()
@@ -154,7 +154,7 @@ def main():
     logger = configure_logger(
         user=SCRIPT_CONFIG["USER"],
         task_name=SCRIPT_CONFIG["TASK_NAME"],
-        detailed=args.detailed or SCRIPT_CONFIG["DETAILED_LOGS"],
+        detailed=args.detailed_logs or SCRIPT_CONFIG["DETAILED_LOGS"],
     )
 
     logger.info("Проверка обновлений проекта...")

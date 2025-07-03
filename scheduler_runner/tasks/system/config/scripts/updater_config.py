@@ -12,7 +12,7 @@ MODULE_PATH = "scheduler_runner.tasks.system.UpdaterScript"
 
 SCRIPT_CONFIG = {
     "BRANCH": "main",
-    "DETAILED_LOGS": True,
+    "DETAILED_LOGS": False,
     "USER": "system",
     "TASK_NAME": "UpdaterScript",
     "REPO_DIR": str(BASE_DIR),  # относительный путь к корню репозитория
