@@ -118,10 +118,11 @@ python -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type local -
 
 ### Копирование файлов
 ```bash
-python -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --conflict_mode skip --detailed_logs
+python -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --conflict_mode skip --detailed_logs --shutdown 10
 ```
 - `--max_age_days`: Максимальный возраст файлов для копирования.
 - `--conflict_mode`: `skip` (пропустить) или `rename` (переименовать).
+- `--shutdown`: Выключить компьютер после завершения. Можно указать задержку в минутах (например, `--shutdown 10`).
 
 ### Очистка директорий
 ```bash
@@ -174,8 +175,6 @@ python -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 5 --delay 
 ```bash
 pytest scheduler_runner/tasks/cameras/tests/
 ```
-
----
 
 ## Автоматизация
 
