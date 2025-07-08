@@ -20,6 +20,11 @@
   - Проверяет возможность записи в облачную директорию.
   - Уведомляет через Telegram при недоступности.
 
+- **`OpeningMonitorScript`** — контроль времени начала работы объекта.
+  - Ищет самый ранний видеофайл за текущий день в заданном временном интервале (например, с 8 до 10 утра).
+  - Отправляет в Telegram сообщение о времени первого найденного файла или об их отсутствии.
+  - Учитывает разные форматы имен файлов для определения времени (камеры UNV, Xiaomi).
+
 Задача разработана для гибкой настройки через конфигурационные файлы и поддерживает централизованное логирование и юнит-тестирование.
 
 ---
@@ -32,6 +37,7 @@ tasks/cameras/
 ├── CopyScript.py                # Скрипт копирования файлов
 ├── CleanupScript.py             # Скрипт очистки директорий
 ├── CloudMonitorScript.py        # Скрипт мониторинга облака
+├── OpeningMonitorScript.py      # Скрипт контроля начала работы
 ├── config/                      # Конфигурационные файлы
 │   ├── cameras_list.py          # Справочник камер по объектам (PVZ_ID)
 │   ├── cameras_paths.py         # Пути к директориям и параметры Telegram
@@ -40,12 +46,14 @@ tasks/cameras/
 │       ├── videomonitor_config.py
 │       ├── copy_config.py
 │       ├── cleanup_config.py
-│       └── cloudmonitor_config.py
+│       ├── cloudmonitor_config.py
+│       └── openingmonitor_config.py
 └── tests/                       # Юнит-тесты
     ├── test_videomonitor_script.py
     ├── test_copy_script.py
     ├── test_cleanup_script.py
-    └── test_cloud_monitor_script.py
+    ├── test_cloud_monitor_script.py
+    └── test_opening_monitor_script.py
 ```
 
 ---
@@ -102,6 +110,11 @@ tasks/cameras/
   - Сетевая: `CLEANUP_DIR=CAMERAS_NETWORK`, `MAX_AGE_DAYS=120`.
 - **`cloudmonitor_config.py`**:
   - `CHECK_DIR=CAMERAS_NETWORK`, `RETRIES=4`, `DELAY=10`.
+- **`openingmonitor_config.py`**:
+  - `SEARCH_DIR=CAMERAS_LOCAL`: Директория для поиска файлов.
+  - `START_TIME="08:00:00"`: Начало временного окна для поиска.
+  - `END_TIME="10:00:00"`: Конец временного окна.
+  - `timeout: 120`: Индивидуальный таймаут для задачи (в секундах), так как сканирование может быть длительным.
 
 ---
 
@@ -137,6 +150,13 @@ python -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 5 --delay 
 ```
 - `--retries`: Количество попыток проверки.
 - `--delay`: Задержка между попытками (в секундах).
+
+### Контроль времени открытия
+```bash
+python -m scheduler_runner.tasks.cameras.OpeningMonitorScript --detailed_logs
+```
+- Скрипт не принимает внешних аргументов для настройки времени или путей, так как все параметры (включая временной интервал) жестко заданы в `openingmonitor_config.py`.
+- Флаг `--detailed_logs` позволяет включить расширенное логирование.
 
 ---
 
