@@ -28,4 +28,5 @@ SCHEDULE = {
     "schedule": "daily",
     "time": "21:10",
     "user": SCRIPT_CONFIG["USER"],
+    "no_timeout_control": True,
 }

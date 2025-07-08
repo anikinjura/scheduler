@@ -256,7 +256,8 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
             timeout=timeout_seconds,
             working_dir=working_directory,
             schedule_type=schedule_type,
-            window=window            
+            window=window,
+            no_timeout_control=task.get('no_timeout_control', False)
         )
     except Exception as e:
         logger.exception(f"Ошибка при запуске подпроцесса для '{task_name}': {e}")

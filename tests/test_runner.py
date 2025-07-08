@@ -181,6 +181,31 @@ def test_execute_task_exception(dummy_schedule):
     assert logger.exception.call_count == 1
 
 
+def test_execute_task_no_timeout_control(dummy_schedule):
+    """
+    Проверяем, что флаг no_timeout_control из конфига задачи
+    корректно передается в run_subprocess.
+    """
+    logger = mock.Mock()
+    task = {
+        "name": "NoTimeoutTask",
+        "user": "operator",
+        "module": "tasks.dummy",
+        "schedule": "daily",
+        "time": "10:00",
+        "no_timeout_control": True
+    }
+
+    with mock.patch('scheduler_runner.runner.run_subprocess') as mock_run_subprocess:
+        mock_run_subprocess.return_value = True
+        runner.execute_task(task, logger, force_run=True)
+
+        # Проверяем, что run_subprocess был вызван с no_timeout_control=True
+        mock_run_subprocess.assert_called_once()
+        call_kwargs = mock_run_subprocess.call_args.kwargs
+        assert call_kwargs.get('no_timeout_control') is True
+
+
 def test_main_no_tasks(dummy_schedule):
     """
     Если после фильтрации нет задач:
@@ -206,7 +231,7 @@ def test_main_success(dummy_schedule):
     runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed=False)
     logger = mock.Mock()
     runner.configure_logger = lambda *args, **kwargs: logger
-    runner.execute_task = lambda task, logger, force_run=False: True
+    runner.execute_task = lambda *args, **kwargs: True
     with pytest.raises(SystemExit) as e:
         runner.main()
     assert e.value.code == 0
@@ -221,7 +246,7 @@ def test_main_fail(dummy_schedule):
     runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed=False)
     logger = mock.Mock()
     runner.configure_logger = lambda *args, **kwargs: logger
-    runner.execute_task = lambda task, logger, force_run=False: False
+    runner.execute_task = lambda *args, **kwargs: False
     with pytest.raises(SystemExit) as e:
         runner.main()
     assert e.value.code == 1

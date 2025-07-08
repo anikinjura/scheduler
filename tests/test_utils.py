@@ -26,6 +26,7 @@ import tempfile
 import os
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 from scheduler_runner.utils import timing, subprocess as subprocess_utils, logging as logging_utils
 from scheduler_runner.schedule_config import DEFAULT_TASK_ENV, get_task_env
@@ -282,6 +283,38 @@ def test_run_subprocess_lockfile_cleanup(tmp_path, monkeypatch):
     )
     assert result is True
     assert not lock_file.exists(), "Lock-файл не был удалён"  
+
+def test_run_subprocess_no_timeout_control(monkeypatch, tmp_path):
+    """
+    Проверяем режим 'fire-and-forget' (no_timeout_control=True):
+    - subprocess.Popen должен быть вызван с флагами DETACHED_PROCESS
+    - process.communicate не должен вызываться
+    - функция должна вернуть True
+    """
+    env = {"PWD": str(tmp_path)}
+    logger = logging_utils.configure_logger("user", "subproc_no_timeout", logs_dir=str(tmp_path))
+
+    mock_popen = mock.Mock()
+    # Мокаем Popen, чтобы проверить аргументы вызова
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", mock_popen)
+
+    result = subprocess_utils.run_subprocess(
+        script_name="test_script", args=[], env=env,
+        logger=logger, no_timeout_control=True
+    )
+
+    assert result is True
+    mock_popen.assert_called_once()
+    call_kwargs = mock_popen.call_args.kwargs
+    
+    # Проверяем, что процесс запускается как отсоединенный
+    expected_flags = subprocess_utils.subprocess.DETACHED_PROCESS | subprocess_utils.subprocess.CREATE_NEW_PROCESS_GROUP
+    assert call_kwargs.get('creationflags') == expected_flags
+    assert call_kwargs.get('stdout') == subprocess_utils.subprocess.DEVNULL
+    
+    # communicate не должен был вызываться
+    assert mock_popen.return_value.communicate.call_count == 0
+
 
 def test_run_subprocess_idempotency(monkeypatch, tmp_path):
     """

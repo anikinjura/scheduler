@@ -70,7 +70,8 @@ def run_subprocess(
     timeout: int = 60,
     working_dir: Optional[str] = None,
     schedule_type: Optional[str] = None,
-    window: Optional[str] = None    
+    window: Optional[str] = None,
+    no_timeout_control: bool = False
 ) -> bool:
     """
     Запускает Python модуль как подпроцесс с защитой от двойного запуска.
@@ -85,6 +86,7 @@ def run_subprocess(
     :param logger: экземпляр Logger для записи событий
     :param timeout: таймаут выполнения в секундах
     :param working_dir: рабочая директория для процесса
+    :param no_timeout_control: если True, запускает процесс и не ждет его завершения
     :return: True если код выхода 0, False в остальных случаях или при ошибке
     """
     # Создаем lock-файл для предотвращения параллельного выполнения
@@ -129,9 +131,6 @@ def run_subprocess(
     # Объединяем переменные окружения
     process_env = {**os.environ, **env} # TODO: возможно нужно process_env = {**os.environ, **{k: str(v) for k, v in env.items() if v is not None}}
     
-    # Определяем рабочую директорию
-    # cwd = working_dir or env.get('PWD') or os.getcwd()
-
     # Определяем корень проекта (где лежит scheduler_runner)
     project_root = str(Path(__file__).parent.parent.parent)
     cwd = project_root
@@ -140,6 +139,20 @@ def run_subprocess(
     try:
         # Запускаем процесс
         logger.info(f"Запуск подпроцесса: {' '.join(command)} (cwd={cwd})")
+        
+        if no_timeout_control:
+            logger.info("Запуск в режиме 'fire-and-forget' (без контроля таймаута)")
+            subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=process_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+            _mark_run_in_window(lock_file, window)
+            return True
+
         process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -198,7 +211,7 @@ def run_subprocess(
     finally:
         # Очищаем lock-файл
         try:
-            if lock_file.exists():
+            if lock_file.exists() and not no_timeout_control:
                 lock_file.unlink()
         except OSError:
             pass
