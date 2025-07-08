@@ -11,10 +11,12 @@ Author: anikinjura
 __version__ = '1.0.0'
 
 from scheduler_runner.tasks.cameras.config.cameras_paths import CAMERAS_PATHS
+from config.base_config import PVZ_ID
 
 MODULE_PATH = "scheduler_runner.tasks.cameras.OpeningMonitorScript"
 
 SCRIPT_CONFIG = {
+    "PVZ_ID": PVZ_ID,
     "SEARCH_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],
     "START_TIME": "08:00:00",
     "END_TIME": "10:00:00",

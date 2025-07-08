@@ -132,6 +132,8 @@ def main():
         token = SCRIPT_CONFIG.get("TELEGRAM_TOKEN")
         chat_id = SCRIPT_CONFIG.get("TELEGRAM_CHAT_ID")
 
+        pvz_id = SCRIPT_CONFIG.get("PVZ_ID", "-")
+
         if not isinstance(token, str) or not isinstance(chat_id, str) or not token or not chat_id:
             logger.critical("Токен или ID чата Telegram не заданы в конфигурации!")
             sys.exit(1)
@@ -141,10 +143,10 @@ def main():
         earliest_time = find_earliest_file_time(search_dir, start_time, end_time, logger)
 
         if earliest_time:
-            message = f"✅ Объект начал работу в {earliest_time.strftime('%H:%M:%S')}."
+            message = f"✅ ПВЗ: {pvz_id}. Объект начал работу в {earliest_time.strftime('%H:%M:%S')}."
             logger.info(message)
         else:
-            message = f"⚠️ Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
+            message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
             logger.warning(message)
 
         send_telegram_message(token, chat_id, message, logger)
