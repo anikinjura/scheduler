@@ -21,7 +21,7 @@ SCRIPT_CONFIG = {
     "TASK_NAME": "CopyScript",
 }
 
-SCHEDULE = {
+SCHEDULE = [{
     "name": SCRIPT_CONFIG["TASK_NAME"],
     "module": MODULE_PATH,
     "args": ["--shutdown 30"],
@@ -29,4 +29,4 @@ SCHEDULE = {
     "time": "21:10",
     "user": SCRIPT_CONFIG["USER"],
     "no_timeout_control": True,
-}
+}]

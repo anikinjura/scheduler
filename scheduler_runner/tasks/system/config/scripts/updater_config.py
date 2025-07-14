@@ -19,12 +19,22 @@ SCRIPT_CONFIG = {
     "REPO_URL": "https://github.com/anikinjura/scheduler.git",
 }
 
-# Расписание для ядра планировщика (раз в сутки в 10:00)
-SCHEDULE = [{
-    "name": SCRIPT_CONFIG["TASK_NAME"],
-    "module": MODULE_PATH,
-    "args": ["--branch", "main"],
-    "schedule": "daily",
-    "time": "09:10",
-    "user": SCRIPT_CONFIG["USER"],
-}]
+# Расписание для ядра планировщика
+SCHEDULE = [
+    {
+        "name": f'{SCRIPT_CONFIG["TASK_NAME"]}_morning',
+        "module": MODULE_PATH,
+        "args": ["--branch", "main"],
+        "schedule": "daily",
+        "time": "09:10",
+        "user": SCRIPT_CONFIG["USER"],
+    },
+    {
+        "name": f'{SCRIPT_CONFIG["TASK_NAME"]}_evening',
+        "module": MODULE_PATH,
+        "args": ["--branch", "main"],
+        "schedule": "daily",
+        "time": "19:00",
+        "user": SCRIPT_CONFIG["USER"],
+    },
+]

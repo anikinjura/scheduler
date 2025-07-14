@@ -28,7 +28,7 @@ SCRIPT_CONFIG = {
     "TELEGRAM_CHAT_ID": CAMERAS_PATHS.get("TELEGRAM_CHAT_ID"),
 }
 
-SCHEDULE = {
+SCHEDULE = [{
     "name": SCRIPT_CONFIG["TASK_NAME"],
     "module": MODULE_PATH,
     "args": [],
@@ -36,4 +36,4 @@ SCHEDULE = {
     "time": "10:05",  # Запускаем сразу после окончания окна проверки
     "user": SCRIPT_CONFIG["USER"],
     "timeout": 120,
-}
+}]
