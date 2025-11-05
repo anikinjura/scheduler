@@ -5,7 +5,6 @@ __pycache__/
 
 # Test cache
 .pytest_cache/
-tests/
 
 # Virtual environments
 venv/
@@ -31,3 +30,13 @@ logs/
 *.egg-info/
 dist/
 build/
+
+# Исключения для тестовой директории
+# Включаем конкретные файлы в тестовой директории
+!tests/TestEnvironment/run_camera_structure_generator.py
+!tests/TestEnvironment/create_detailed_camera_structure_standalone.py
+# Исключаем все файлы и поддиректории в директориях с тестовыми данными, кроме .gitkeep файлов
+tests/TestEnvironment/D_camera/*
+!tests/TestEnvironment/D_camera/.gitkeep
+tests/TestEnvironment/O_cameras/*
+!tests/TestEnvironment/O_cameras/.gitkeep
