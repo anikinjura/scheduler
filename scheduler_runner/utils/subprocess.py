@@ -227,9 +227,13 @@ def _is_process_running(pid: int) -> bool:
     :return: True если процесс активен, False иначе
     """
     try:
-        # На Windows и Unix os.kill(pid, 0) не убивает процесс,
-        # а только проверяет его существование
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+        # Используем psutil для более надежной проверки процесса на Windows
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        # Если psutil не установлен, используем os.kill с обработкой ошибок
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError, SystemError):
+            return False

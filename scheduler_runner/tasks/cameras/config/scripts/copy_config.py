@@ -19,14 +19,17 @@ SCRIPT_CONFIG = {
     "DETAILED_LOGS": False,         # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
     "USER": "operator",
     "TASK_NAME": "CopyScript",
+    "SHUTDOWN_ENABLED": True,       # Возможность отключить выключение если нужно
+    "SHUTDOWN_IF_NO_FILES": False,  # Выключать ли компьютер при отсутствии файлов для копирования
 }
 
 SCHEDULE = [{
     "name": SCRIPT_CONFIG["TASK_NAME"],
     "module": MODULE_PATH,
-    "args": ["--shutdown 30"],
+    "args": ["--shutdown", "1"],  # Уменьшено до 1 минуты для тестирования
     "schedule": "daily",
     "time": "21:10",
     "user": SCRIPT_CONFIG["USER"],
-    "no_timeout_control": True,
+    "no_timeout_control": False,
+    "timeout": 3600  # Таймаут 1 час
 }]

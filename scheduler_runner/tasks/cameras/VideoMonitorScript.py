@@ -40,6 +40,7 @@ def parse_arguments() -> argparse.Namespace:
     --check_type local|network   - сценарий проверки (локально или в облаке)
     --detailed_logs              - включить детализированные логи
     --min_files N                - минимальное количество файлов для успешной проверки (по умолчанию 1)
+    --current-time               - фиктивное текущее время для проверки в формате 'YYYY-MM-DD HH:MM:SS'
     """
     parser = argparse.ArgumentParser(
         description="Мониторинг видеозаписей с камер",
@@ -64,6 +65,10 @@ def parse_arguments() -> argparse.Namespace:
         default=1,
         help="Минимальное количество файлов для успешной проверки"
     )
+    parser.add_argument(
+        "--current-time",
+        help="Фиктивное текущее время для проверки в формате 'YYYY-MM-DD HH:MM:SS'"
+    )
     return parser.parse_args()
 
 def has_recent_records(
@@ -73,7 +78,8 @@ def has_recent_records(
     max_lookback_hours: int,
     path_builder: Callable[[Path, str, datetime], Path],
     logger: logging.Logger,
-    camera_type: str
+    camera_type: str,
+    now: datetime = None
 ) -> bool:
     """
     Проверяет наличие записей за последние max_lookback_hours часов для камеры с заданным uid.
@@ -86,13 +92,17 @@ def has_recent_records(
         path_builder: Функция, формирующая путь к папке с записями по типу камеры.
         logger: Логгер для записи информации.
         camera_type: Строка для логов ("UNV" или "Xiaomi").
+        now: Фиктивное текущее время для проверки (если None, используется datetime.now())
 
     Возвращает:
         True, если записи найдены хотя бы за один из последних max_lookback_hours часов, иначе False.
     """
-    now = datetime.now()
+    if now is None:
+        current_time = datetime.now()
+    else:
+        current_time = now
     for delta in range(0, max_lookback_hours):
-        check_time = now - timedelta(hours=delta)
+        check_time = current_time - timedelta(hours=delta)
         path = path_builder(root_dir, uid, check_time)
         # Проверяем наличие папки и достаточного количества файлов
         if path.exists() and sum(1 for _ in path.iterdir()) >= min_files:
@@ -155,6 +165,20 @@ def main() -> None:
     5. Если хотя бы для одной камеры не найдено нужного количества файлов — отправляется уведомление.
     """
     args = parse_arguments()
+    
+    # Парсим фиктивное время, если оно задано
+    current_time = None
+    if args.current_time:
+        try:
+            # Пробуем разные форматы времени
+            if 'T' in args.current_time:
+                current_time = datetime.strptime(args.current_time, "%Y-%m-%dT%H:%M:%S")
+            else:
+                current_time = datetime.strptime(args.current_time, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            print(f"Неверный формат времени '{args.current_time}'. Ожидается формат 'YYYY-MM-DD HH:MM:SS' или 'YYYY-MM-DDTHH:MM:SS'")
+            sys.exit(1)
+    
     scenario = args.check_type
     scenario_config = SCRIPT_CONFIG[scenario]
     max_lookback_hours = scenario_config.get("MAX_LOOKBACK_HOURS", 2)
@@ -181,10 +205,10 @@ def main() -> None:
             cam_id = cam["id"]
             # Для UNV-камер используем unv_path_builder, для Xiaomi — xiaomi_path_builder
             if cam_id.startswith("unv"):
-                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, unv_path_builder, logger, "UNV"):
+                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, unv_path_builder, logger, "UNV", current_time):
                     missing_records.append(f"{cam_id} ({area})")
             elif cam_id.startswith("xiaomi"):
-                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, xiaomi_path_builder, logger, "Xiaomi"):
+                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, xiaomi_path_builder, logger, "Xiaomi", current_time):
                     missing_records.append(f"{cam_id} ({area})")
 
     # Если есть камеры без записей — отправляем уведомление

@@ -50,6 +50,7 @@ def parse_arguments() -> argparse.Namespace:
     - --user: обязательный параметр для указания системного пользователя
     - --task: опциональный параметр для принудительного запуска конкретной задачи
     - --detailed_logs: флаг включения детального логирования на уровне DEBUG
+    - --current-time: фиктивное текущее время для проверки расписания в формате 'YYYY-MM-DD HH:MM:SS'
     
     Returns:
         argparse.Namespace: объект с распарсенными аргументами командной строки
@@ -65,6 +66,8 @@ def parse_arguments() -> argparse.Namespace:
         None
         >>> print(args.detailed_logs)
         False
+        >>> print(args.current_time)
+        None
     """
     parser = argparse.ArgumentParser(
         description="Планировщик выполнения задач по расписанию",
@@ -74,6 +77,7 @@ def parse_arguments() -> argparse.Namespace:
   %(prog)s --user operator                    # Запуск всех задач пользователя operator по расписанию
   %(prog)s --user admin --task BackupDB       # Принудительный запуск конкретной задачи BackupDB
   %(prog)s --user operator --detailed_logs    # Запуск с детальным логированием (DEBUG)
+  %(prog)s --user operator --current-time "2025-06-15 12:30:00"  # Запуск с фиктивным временем
         """
     )
     
@@ -92,6 +96,11 @@ def parse_arguments() -> argparse.Namespace:
         '--detailed_logs', 
         action='store_true', 
         help='Включить детальное логирование на уровне DEBUG'
+    )
+    
+    parser.add_argument(
+        '--current-time',
+        help='Фиктивное текущее время для проверки расписания в формате "YYYY-MM-DD HH:MM:SS"'
     )
     
     return parser.parse_args()
@@ -155,7 +164,7 @@ def sort_tasks_by_time(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return 0
     return sorted(tasks, key=_get_time)
 
-def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed_logs: bool = False) -> bool:
+def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed_logs: bool = False, current_time: datetime = None) -> bool:
     """
     Выполняет отдельную задачу с проверкой расписания и контролем процесса.
     
@@ -176,6 +185,7 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
         logger: настроенный логгер для записи событий выполнения
         force_run: флаг принудительного запуска без проверки расписания
         detailed_logs: флаг передачи детализированного логирования в подпроцесс
+        current_time: фиктивное время для проверки расписания (если не указано, используется datetime.now())
 
     Returns:
         bool: True если задача выполнена успешно, False в случае ошибки
@@ -204,8 +214,10 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
         should_run = True
         logger.info(f"Старт задачи '{task_name}' (force_run={force_run})")
     else:
+        # Используем фиктивное время, если оно задано, иначе текущее время
+        check_time = current_time if current_time is not None else datetime.now()
         try:
-            should_run = should_run_now(task, datetime.now())
+            should_run = should_run_now(task, check_time)
         except ValueError as e:
             logger.error(f"Ошибка в конфиге расписания '{task_name}': {e}")
             return False
@@ -226,6 +238,16 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
     # Если detailed_logs=True и '--detailed_logs' ещё не передан, добавляем его к аргументам подпроцесса
     if detailed_logs and '--detailed_logs' not in args_list:
         args_list.append('--detailed_logs')
+    
+    # Если задано фиктивное время и это поддерживаемый скрипт, добавляем аргумент --current-time
+    if current_time is not None:
+        # Проверяем, является ли задача VideoMonitorScript, который поддерживает --current-time
+        module_path = task.get('module', '')
+        if 'VideoMonitorScript' in module_path and '--current-time' not in args_list:
+            # Используем формат времени с 'T' между датой и временем, чтобы избежать проблем с пробелами в аргументах
+            time_str = current_time.strftime('%Y-%m-%dT%H:%M:%S')
+            # Добавляем аргумент как единое целое
+            args_list.extend(['--current-time', time_str])
 
     env_vars = get_task_env(task)
     timeout_seconds = task.get('timeout', 60)
@@ -242,7 +264,8 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
     
     # Выполняем задачу в подпроцессе
     try:
-        now = datetime.now()
+        # Используем фиктивное время для генерации временного окна, если оно задано
+        now = current_time if current_time is not None else datetime.now()
         if schedule_type in ('daily', 'hourly'):
             window = now.strftime('%Y-%m-%d_%H')
         else:
@@ -305,6 +328,17 @@ def main() -> None:
         # Парсим аргументы командной строки
         args = parse_arguments()
 
+        # Преобразуем строку времени в объект datetime
+        current_time = None
+        if args.current_time:
+            try:
+                from datetime import datetime
+                current_time = datetime.strptime(args.current_time, "%Y-%m-%d %H:%M:%S")
+                print(f"Используется фиктивное время: {current_time}")
+            except ValueError:
+                print(f"Неверный формат времени '{args.current_time}'. Ожидается формат 'YYYY-MM-DD HH:MM:SS'")
+                sys.exit(3)
+
         # Проверяем доступность конфигурации
         if not SCHEDULE:
             print("Конфигурация расписания пуста или не загружена")
@@ -347,8 +381,8 @@ def main() -> None:
                 continue
             
             try:
-                # Выполняем задачу
-                if execute_task(task, logger, force_run=bool(args.task), detailed_logs=args.detailed_logs):
+                # Выполняем задачу с возможностью передачи фиктивного времени
+                if execute_task(task, logger, force_run=bool(args.task), detailed_logs=args.detailed_logs, current_time=current_time):
                     successful_tasks += 1
                 else:
                     failed_tasks += 1

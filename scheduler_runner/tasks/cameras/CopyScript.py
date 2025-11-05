@@ -68,10 +68,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--shutdown",
         nargs='?',
-        const=True,
+        const=30,  # по умолчанию 30 минут
         default=False,
         type=int,
-        help="Выключить компьютер после копирования (можно указать паузу в минутах, например --shutdown 10)"
+        help="Выключить компьютер после копирования (можно указать паузу в минутах, например --shutdown 10, по умолчанию 30)"
+    )
+    parser.add_argument(
+        "--no-shutdown-delay",
+        action="store_true",
+        help="Отключить паузу перед выключением (для тестирования)"
     )
     return parser.parse_args()
 
@@ -125,27 +130,78 @@ def main() -> None:
         logger.info("Старт копирования: %s -> %s (Порог: %s дней)", 
                     source_dir, dest_dir, max_age_days)
         
-        # 4. Выполнение операций копирования и логирование результатов.
-        file_result = copy_recent_files(
-            src=source_dir,
-            dst=dest_dir,
-            days_threshold=max_age_days,
-            conflict_mode=conflict_mode,
-            logger=logger
-        )
-
-        logger.info("Файлов скопировано: %d, Ошибок: %d",
-                    file_result.get('CopiedFiles', 0),
-                    file_result.get('FileCopyingErrors', 0))
+        # Проверка: есть ли файлы для копирования
+        def count_files_within_days(directory, days):
+            """Вспомогательная функция для подсчета файлов в пределах заданного количества дней"""
+            import os
+            from pathlib import Path
+            from datetime import datetime, timedelta
+            count = 0
+            now = datetime.now()
+            threshold_time = now - timedelta(days=days)
+            
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    file_path = Path(root) / file
+                    try:
+                        mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+                        if mtime >= threshold_time:
+                            count += 1
+                    except Exception:
+                        continue
+            return count
         
+        files_to_copy = count_files_within_days(source_dir, max_age_days)
+        logger.info(f"Обнаружено {files_to_copy} файлов, подходящих под критерии копирования")
+        
+        # Проверяем, разрешено ли выключение в конфигурации
+        SHUTDOWN_ENABLED = SCRIPT_CONFIG.get("SHUTDOWN_ENABLED", True)
+        SHUTDOWN_IF_NO_FILES = SCRIPT_CONFIG.get("SHUTDOWN_IF_NO_FILES", False)  # по умолчанию False
+        
+        if files_to_copy == 0:
+            logger.warning("Нет файлов для копирования по указанным критериям")
+            # Определяем, нужно ли выключать компьютер при отсутствии файлов
+            should_shutdown = SHUTDOWN_ENABLED and SHUTDOWN_IF_NO_FILES
+        else:
+            # 4. Выполнение операций копирования и логирование результатов.
+            file_result = copy_recent_files(
+                src=source_dir,
+                dst=dest_dir,
+                days_threshold=max_age_days,
+                conflict_mode=conflict_mode,
+                logger=logger
+            )
+            
+            copied_files = file_result.get('CopiedFiles', 0)
+            skipped_files = file_result.get('SkippedFiles', 0)
+            errors = file_result.get('FileCopyingErrors', 0)
+            
+            logger.info("Файлов скопировано: %d, пропущено: %d, Ошибок: %d",
+                        copied_files, skipped_files, errors)
+            
+            # Определяем, нужно ли выключать компьютер
+            should_shutdown = SHUTDOWN_ENABLED and ((copied_files > 0 or skipped_files > 0) or SHUTDOWN_IF_NO_FILES)
+
         # 5. Выключение компьютера (если указано) после завершения копирования.
-        if args.shutdown:
+        if args.shutdown and should_shutdown:
             if isinstance(args.shutdown, int):
-                pause_seconds = args.shutdown * 60
-                logger.info("Пауза перед выключением: %d минут", args.shutdown)
-                time.sleep(pause_seconds)
-            logger.warning("Инициируется выключение компьютера")
-            SystemUtils.shutdown_computer(logger=logger, force=False)
+                if not args.no_shutdown_delay:  # Только если не отключена пауза
+                    pause_seconds = args.shutdown * 60
+                    logger.info("Пауза перед выключением: %d минут", args.shutdown)
+                    time.sleep(pause_seconds)
+                else:
+                    logger.info("Пауза перед выключением отключена (--no-shutdown-delay)")
+            logger.info("Проверка условий для выключения компьютера...")
+            success = SystemUtils.shutdown_computer(logger=logger, force=False)
+            if success:
+                logger.info("Компьютер будет выключен через 60 секунд")
+            else:
+                logger.warning("Не удалось инициировать выключение компьютера")
+        elif args.shutdown and not should_shutdown:
+            if not SHUTDOWN_ENABLED:
+                logger.info("Выключение компьютера отключено в конфигурации")
+            else:
+                logger.info("Выключение компьютера не требуется - нет файлов для копирования и SHUTDOWN_IF_NO_FILES = False")
 
     # 6. Обработка исключений с критическим завершением при ошибке.
     except Exception as e:

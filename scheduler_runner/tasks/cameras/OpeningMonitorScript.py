@@ -69,7 +69,7 @@ def find_earliest_file_time(
 ) -> Optional[time]:
     """
     Находит самое раннее время файла в директории за сегодняшний день
-    в указанном временном диапазоне.
+    в указанном временном диапазоне. Рекурсивно сканирует все подкаталоги.
 
     :param search_dir: Директория для поиска.
     :param start_time: Начало временного окна.
@@ -80,30 +80,33 @@ def find_earliest_file_time(
     earliest_time: Optional[time] = None
     today = date.today()
     
-    logger.info(f"Поиск файлов за {today} в директории: {search_dir}")
+    logger.info(f"Поиск файлов за {today} в директории: {search_dir} (и всех подкаталогах)")
 
     try:
-        for item in os.scandir(search_dir):
-            if item.is_file():
+        # Рекурсивный обход всех подкаталогов
+        for root, dirs, files in os.walk(search_dir):
+            for filename in files:
                 try:
+                    file_path = Path(root) / filename
+                    
                     # Проверяем, что файл создан сегодня
-                    mtime = datetime.fromtimestamp(item.stat().st_mtime).date()
+                    mtime = datetime.fromtimestamp(file_path.stat().st_mtime).date()
                     if mtime != today:
                         continue
 
-                    file_time = _parse_time_from_filename(item.name)
+                    file_time = _parse_time_from_filename(filename)
                     
                     if file_time and start_time <= file_time <= end_time:
-                        logger.debug(f"Найден файл: {item.name} (время: {file_time})")
+                        logger.debug(f"Найден файл: {file_path} (время: {file_time})")
                         if earliest_time is None or file_time < earliest_time:
                             earliest_time = file_time
-                            logger.info(f"Новое самое раннее время: {earliest_time} (файл: {item.name})")
+                            logger.info(f"Новое самое раннее время: {earliest_time} (файл: {file_path})")
 
-                except (FileNotFoundError, OSError) as e:
-                    logger.warning(f"Не удалось обработать файл {item.name}: {e}")
+                except (FileNotFoundError, OSError, ValueError) as e:
+                    logger.warning(f"Не удалось обработать файл {Path(root) / filename}: {e}")
                     continue
-    except FileNotFoundError:
-        logger.error(f"Директория для поиска не найдена: {search_dir}")
+    except Exception as e:
+        logger.error(f"Ошибка при рекурсивном сканировании: {e}")
         return None
 
     return earliest_time

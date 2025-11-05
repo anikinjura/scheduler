@@ -30,36 +30,53 @@ class SystemUtils:
     """
 
     @staticmethod
-    def shutdown_computer(logger: logging.Logger, force: bool = False) -> None:
+    def shutdown_computer(logger: logging.Logger, force: bool = False) -> bool:
         """
         Выключает компьютер, вызывая соответствующую команду для текущей платформы.
-
+        
         Args:
             logger (logging.Logger): Логгер для записи информации.
             force (bool): Если True, принудительное завершение работы (опционально).
 
         Returns:
-            None
+            bool: True если команда выключения успешно отправлена, иначе False
 
         Логика:
-            - Windows: shutdown /s /t 0
-            - Linux/Unix/macOS: shutdown -h now (может требовать sudo)
+            - Windows: shutdown /s /t 60 (60 секунд для завершения логирования)
+            - Linux/Unix/macOS: shutdown -h +1 (через 1 минуту, возможно с sudo)
             - Если недостаточно прав или команда не поддерживается — логируется ошибка.
         """
         try:
             if sys.platform.startswith("win"):
-                command = ["shutdown", "/s", "/t", "0"]
+                command = ["shutdown", "/s", "/t", "60"]  # 60 секунд вместо 0
+                if force:
+                    command.append("/f")  # Принудительное завершение приложений
             elif sys.platform.startswith("linux") or sys.platform.startswith("darwin"):
-                command = ["shutdown", "-h", "now"]
+                command = ["sudo", "shutdown", "-h", "1"]  # Через 1 минуту, с правами администратора
             else:
-                raise NotImplementedError("Shutdown не поддерживается для данной платформы.")
+                logger.error(f"Платформа не поддерживается: {sys.platform}")
+                return False
 
-            logger.info("Инициировано выключение компьютера")
-            subprocess.run(command, check=True)
+            logger.info(f"Отправлена команда выключения: {' '.join(command)}")
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                logger.info("Команда выключения успешно отправлена")
+                return True
+            else:
+                logger.error(f"Команда выключения завершилась с кодом: {result.returncode}")
+                if result.stderr:
+                    logger.error(f"Сообщение об ошибке: {result.stderr}")
+                return False
 
-        except NotImplementedError as nie:
-            logger.critical(f"Неподдерживаемая платформа: {nie}")
-        except subprocess.CalledProcessError as cpe:
-            logger.critical(f"Ошибка выполнения команды выключения: {cpe}", exc_info=True)
+        except FileNotFoundError:
+            logger.error("Команда выключения не найдена. Убедитесь, что утилита shutdown доступна.")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Ошибка выполнения команды выключения: {e}")
+            if hasattr(e, 'stderr'):
+                logger.error(f"Сообщение об ошибке: {e.stderr}")
+            return False
         except Exception as e:
-            logger.critical(f"Ошибка при попытке выключения компьютера: {e}", exc_info=True)
+            logger.error(f"Непредвиденная ошибка при попытке выключения компьютера: {e}")
+            return False

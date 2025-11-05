@@ -29,8 +29,8 @@ if ENV_MODE == 'production':
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_PROD")               # Токен для продакшен-бота
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_PROD")           # Чат-ID для продакшен-чата    
 else:
-    CAMERAS_LOCAL = Path('C:/TestEnvironment/D_camera')
-    CAMERAS_NETWORK = Path('C:/TestEnvironment/O_cameras') / str(PVZ_ID)
+    CAMERAS_LOCAL = Path('C:/tools/scheduler/tests/TestEnvironment/D_camera')
+    CAMERAS_NETWORK = Path('C:/tools/scheduler/tests/TestEnvironment/O_cameras') / str(PVZ_ID)
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_TEST")               # Токен для продакшен-бота
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_TEST")           # Чат-ID для продакшен-чата    
 

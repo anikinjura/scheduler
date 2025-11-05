@@ -96,15 +96,18 @@ def copy_recent_files(
     """
     Копирует файлы из src в dst, которые были изменены за последние days_threshold дней.
     Обрабатывает конфликты: skip/rename.
-    Возвращает статистику: {'CopiedFiles': <int>, 'FileCopyingErrors': <int>}.
+    Возвращает статистику: {'CopiedFiles': <int>, 'FileCopyingErrors': <int>, 'SkippedFiles': <int>}.
     """
     if conflict_mode not in ("skip", "rename"):
         raise ValueError("Недопустимый режим разрешения конфликтов. Допустимы: 'skip', 'rename'")
 
     copied_files = 0
+    skipped_files = 0
     copying_errors = 0
     now = datetime.datetime.now()
     threshold_time = now - datetime.timedelta(days=days_threshold)
+
+    logger.info(f"Начало копирования файлов из {src} в {dst} за последние {days_threshold} дней")
 
     for root, _, files in os.walk(src):
         for file in files:
@@ -120,7 +123,8 @@ def copy_recent_files(
                     # Обработка конфликтов
                     if dst_file.exists():
                         if conflict_mode == "skip":
-                            logger.debug(f"Пропущен файл (уже существует): {dst_file}")
+                            logger.info(f"Файл пропущен (уже существует): {dst_file}")  # Теперь INFO
+                            skipped_files += 1
                             continue
                         elif conflict_mode == "rename":
                             counter = 1
@@ -128,12 +132,19 @@ def copy_recent_files(
                             while new_dst_file.exists():
                                 new_dst_file = dst_file.with_name(f"{dst_file.stem}_{counter:03d}{dst_file.suffix}")
                                 counter += 1
-                            logger.debug(f"Файл {src_file} переименован в {new_dst_file}")
+                            logger.info(f"Файл будет переименован: {src_file} -> {new_dst_file}")  # Теперь INFO
                             dst_file = new_dst_file
 
                     shutil.copy2(src_file, dst_file)
                     copied_files += 1
-                    logger.debug(f"Скопирован файл: {src_file} -> {dst_file}")
+                    logger.info(f"Скопирован файл: {src_file} -> {dst_file}")  # Теперь INFO
+                    
+            except PermissionError as pe:
+                copying_errors += 1
+                logger.warning(f"Нет прав для копирования файла {src_file}: {pe}")
+            except FileNotFoundError as fnfe:
+                copying_errors += 1
+                logger.warning(f"Файл не найден для копирования {src_file}: {fnfe}")
             except Exception as e:
                 copying_errors += 1
                 logger.warning(f"Ошибка при копировании файла {src_file}: {e}")
@@ -141,7 +152,8 @@ def copy_recent_files(
                     logger.error("Слишком много ошибок копирования, остановка.")
                     raise RuntimeError("Слишком много ошибок копирования")
 
-    return {"CopiedFiles": copied_files, "FileCopyingErrors": copying_errors}
+    logger.info(f"Копирование завершено. Скопировано: {copied_files}, пропущено: {skipped_files}, ошибок: {copying_errors}")
+    return {"CopiedFiles": copied_files, "FileCopyingErrors": copying_errors, "SkippedFiles": skipped_files}
 
 def ensure_directory_exists(path: Path, logger: Optional[logging.Logger] = None) -> bool:
     """
