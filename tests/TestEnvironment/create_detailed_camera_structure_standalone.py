@@ -8,9 +8,9 @@
 #
 # The structure follows these patterns:
 # 1. For UNV cameras (local): unv_camera\[location]\YYYYMMDD\HH
-# 2. For UNV cameras (network): [PVZ_ID]\unv_camera\[location]\YYYYMMDD\HH
+# 2. For UNV cameras (network): [PVZ_ID]\unv_camera\[location]\YYYYMMDD\HH (where PVZ_ID can be a string with Cyrillic characters)
 # 3. For Xiaomi cameras (local): xiaomi_camera_videos\[uid]\YYYYMMDDHH
-# 4. For Xiaomi cameras (network): [PVZ_ID]\xiaomi_camera_videos\[uid]\YYYYMMDDHH
+# 4. For Xiaomi cameras (network): [PVZ_ID]\xiaomi_camera_videos\[uid]\YYYYMMDDHH (where PVZ_ID can be a string with Cyrillic characters)
 #
 # The script uses:
 # - All parameters provided as command-line arguments
@@ -109,18 +109,18 @@ def create_sample_xiaomi_files(datetime_path, date, hour):
 
 
 def create_detailed_camera_structure(
-    root_path, pvz_id, 
-    start_date_str, end_date_str, 
+    root_path, pvz_id,
+    start_date_str, end_date_str,
     start_hour, end_hour,
     cameras_config,  # Camera configuration passed as a dictionary
     include_pvz_in_path=True  # Whether to include PVZ ID in the path (True for network, False for local)
 ):
     """
     Create a detailed directory structure with sample files for a specific PVZ.
-    
+
     Args:
         root_path (str): Root directory for the structure
-        pvz_id (int): PVZ ID to process
+        pvz_id (str): PVZ ID to process (can be string with Cyrillic characters)
         start_date_str (str): Start date in YYYYMMDD format
         end_date_str (str): End date in YYYYMMDD format
         start_hour (int): Start hour (0-23)
@@ -132,19 +132,22 @@ def create_detailed_camera_structure(
     print(f"Date range: {start_date_str} to {end_date_str}")
     print(f"Hour range: {start_hour:02d} to {end_hour:02d}")
     print(f"Include PVZ in path: {include_pvz_in_path}")
-    
+
     # Parse dates
     start_date = parse_date(start_date_str)
     end_date = parse_date(end_date_str)
-    
+
     # Generate date range
     dates = generate_date_range(start_date, end_date)
-    
+
     # Determine the base path depending on whether PVZ ID should be included
     if include_pvz_in_path:
         # For network paths: [root_path]/[PVZ_ID]
-        pvz_path = os.path.join(root_path, str(pvz_id))
-        print(f"Processing PVZ {pvz_id} with PVZ ID in path...")
+        # Apply transliteration for network paths to ensure compatibility with file systems
+        from scheduler_runner.utils.system import SystemUtils
+        safe_pvz_name = SystemUtils.cyrillic_to_translit(pvz_id)
+        pvz_path = os.path.join(root_path, safe_pvz_name)
+        print(f"Processing PVZ {pvz_id} with PVZ ID in path (transliterated as {safe_pvz_name})...")
     else:
         # For local paths: [root_path] (PVZ ID not included)
         pvz_path = root_path
@@ -220,7 +223,7 @@ def main():
     parser.add_argument("--start-hour", type=int, default=9, help="Start hour (0-23, default: 9)")
     parser.add_argument("--end-hour", type=int, default=21, help="End hour (0-23, default: 21)")
     parser.add_argument("--output-dir", required=True, help="Output directory path (required)")
-    parser.add_argument("--pvz-id", type=int, required=True, help="PVZ ID to process (required)")
+    parser.add_argument("--pvz-id", type=str, required=True, help="PVZ ID to process (required)")
     parser.add_argument("--include-pvz-id", action="store_true", help="Include PVZ ID in the directory structure (for network paths); omit for local paths")
     
     # Argument for camera configurations JSON file

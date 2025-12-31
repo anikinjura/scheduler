@@ -78,8 +78,11 @@ class OzonGiveoutReportParser(BaseOzonParser):
                 current_value = pvz_input.get_attribute("value")
                 print(f"Текущий пункт выдачи: {current_value}")
 
+                # Получаем ожидаемый ПВЗ из конфига (должен совпадать с PVZ_ID)
+                expected_pvz = self.config.get('EXPECTED_PVZ_CODE', '')  # Используем ожидаемый ПВЗ из конфига
+                print(f"Ожидаемый пункт выдачи: {expected_pvz}")
+
                 # Если текущий пункт выдачи не соответствует ожидаемому, пытаемся изменить
-                expected_pvz = self.config.get('EXPECTED_PVZ_CODE', 'ЧЕБОКСАРЫ_144')  # Используем ожидаемый ПВЗ из конфига
                 if current_value != expected_pvz:
                     print(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
 
@@ -95,61 +98,6 @@ class OzonGiveoutReportParser(BaseOzonParser):
 
                     if not success:
                         print(f"Не удалось установить пункт выдачи {expected_pvz}")
-                        # Проверяем, есть ли ожидаемый ПВЗ в списке доступных
-                        try:
-                            # Кликаем по выпадающему списку, чтобы открыть опции
-                            pvz_container = self.driver.find_element(By.XPATH, "//div[contains(@class, 'ozi__input-select__inputSelect__UA4xr')]")
-                            pvz_container.click()
-                            time.sleep(2)
-
-                            # Пытаемся найти все доступные опции в выпадающем списке
-                            all_option_elements = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD')]")
-
-                            available_options = []
-                            for element in all_option_elements:
-                                # Ищем название ПВЗ в элементе с классом ozi__data-content__label__TA_HC
-                                label_elements = element.find_elements(By.XPATH, ".//div[contains(@class, 'ozi__data-content__label__TA_HC')]")
-                                if label_elements:
-                                    element_text = label_elements[0].text.strip()
-                                    if element_text and len(element_text) > 3:  # Фильтруем короткие или пустые значения
-                                        available_options.append(element_text)
-
-                            if expected_pvz not in available_options:
-                                print(f"Ожидаемый ПВЗ {expected_pvz} недоступен в списке. Доступные ПВЗ: {available_options}")
-                                # В этом случае используем первый доступный ПВЗ из списка, если он начинается с того же региона
-                                region_prefix = expected_pvz.split('_')[0] if '_' in expected_pvz else expected_pvz
-                                suitable_pvz = None
-                                for option in available_options:
-                                    if option.startswith(region_prefix):
-                                        suitable_pvz = option
-                                        break
-
-                                if suitable_pvz:
-                                    print(f"Используем ближайший подходящий ПВЗ: {suitable_pvz}")
-                                    # Повторяем попытку с подходящим ПВЗ
-                                    success = self.select_pvz_dropdown_option(
-                                        expected_pvz=suitable_pvz,
-                                        original_url=original_url
-                                    )
-                                    if not success:
-                                        print(f"Не удалось установить даже подходящий ПВЗ {suitable_pvz}")
-                                else:
-                                    print(f"Не найдено подходящих ПВЗ для региона {region_prefix}")
-                                    # Если не найдено подходящих ПВЗ для региона, используем первый из доступных
-                                    if available_options:
-                                        suitable_pvz = available_options[0].split('\n')[0]  # Берем только название ПВЗ, без адреса
-                                        print(f"Используем первый доступный ПВЗ: {suitable_pvz}")
-                                        success = self.select_pvz_dropdown_option(
-                                            expected_pvz=suitable_pvz,
-                                            original_url=original_url
-                                        )
-                                        if not success:
-                                            print(f"Не удалось установить даже первый доступный ПВЗ {suitable_pvz}")
-                            else:
-                                print(f"Ожидаемый ПВЗ {expected_pvz} доступен в списке, но не удалось его выбрать")
-                        except Exception as e:
-                            print(f"Ошибка при проверке доступных ПВЗ: {e}")
-
                         print("Продолжаем с текущим пунктом выдачи...")
                 else:
                     print(f"Пункт выдачи уже установлен правильно: {current_value}")
@@ -178,20 +126,28 @@ class OzonGiveoutReportParser(BaseOzonParser):
                 # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
                 # Это input с ID "input___v-0-0" и значением названия ПВЗ
                 pvz_value = self.extract_ozon_element_by_xpath("//input[@id='input___v-0-0' and @readonly]", "value")
-                if pvz_value and ('ЧЕБОКСАР' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or 'ПУНКТ' in pvz_value.upper()):
+                if pvz_value and ('ПВЗ' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or '_' in pvz_value):
                     pvz_info = pvz_value
 
                 # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
                 if not pvz_info:
                     pvz_value = self.extract_ozon_element_by_xpath("//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]", "value")
-                    if pvz_value and ('ЧЕБОКСАР' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or 'ПУНКТ' in pvz_value.upper()):
+                    if pvz_value and ('ПВЗ' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or '_' in pvz_value):
                         pvz_info = pvz_value
 
                 # Если не нашли в элементах, ищем в общем тексте
+                # Ищем все возможные ПВЗ в формате НАЗВАНИЕ_число
                 if not pvz_info:
-                    pvz_matches = re.findall(r'(ЧЕБОКСАР\w+)', page_text)
+                    pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
                     if pvz_matches:
-                        pvz_info = pvz_matches[0]
+                        # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
+                        for match in pvz_matches:
+                            if '_' in match and any(keyword in match.upper() for keyword in ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']):
+                                pvz_info = match
+                                break
+                        # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
+                        if not pvz_info and pvz_matches:
+                            pvz_info = pvz_matches[0]
 
                 data = {
                     'marketplace': 'Ozon',
