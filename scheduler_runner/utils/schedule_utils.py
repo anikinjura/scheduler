@@ -6,11 +6,18 @@ from config.base_config import PATH_CONFIG
 
 def get_scripts_dir(domain: str):
     """Возвращает путь к директории с конфигами скриптов для указанного домена."""
-    return PATH_CONFIG['TASKS_ROOT'] / domain / "config" / "scripts"
+    # Поддержка поддоменов (например, "reports/ozon")
+    domain_parts = domain.split('/')
+    path = PATH_CONFIG['TASKS_ROOT']
+    for part in domain_parts:
+        path = path / part
+    return path / "config" / "scripts"
 
 def get_module_name(domain: str, module_info):
     """Возвращает полное имя модуля для импорта скрипта задачи."""
-    return f"scheduler_runner.tasks.{domain}.config.scripts.{module_info.name}"
+    # Поддержка поддоменов (например, "reports/ozon")
+    domain_parts = domain.replace('/', '.')
+    return f"scheduler_runner.tasks.{domain_parts}.config.scripts.{module_info.name}"
 
 def collect_task_schedule(domain: str) -> List[Dict]:
     """

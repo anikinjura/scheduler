@@ -56,8 +56,8 @@ if not PVZ_CONFIG_FILE.exists():
     sys.exit(f"[ERROR] Не найден файл конфигурации PVZ: {PVZ_CONFIG_FILE}")
 
 config = configparser.ConfigParser()
-config.read(PVZ_CONFIG_FILE)
-PVZ_ID = config.getint('DEFAULT', 'PVZ_ID', fallback=0)
+config.read(PVZ_CONFIG_FILE, encoding='utf-8')
+PVZ_ID = config.get('DEFAULT', 'PVZ_ID', fallback='UNKNOWN')
 ENV_MODE = config.get('DEFAULT', 'ENV_MODE', fallback='production').lower()
 if ENV_MODE not in ('production', 'test'):
     sys.exit(f"[ERROR] ENV_MODE должны быть 'production' или 'test', получено: {ENV_MODE}")

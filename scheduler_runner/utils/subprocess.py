@@ -125,7 +125,10 @@ def run_subprocess(
         return True    
 
     # Подготавливаем команду для запуска
-    python_executable = 'pythonw'  # Фоновое выполнение без консоли
+    # Используем полный путь к исполняемому файлу Python из текущего окружения
+    # для обеспечения корректного импорта модулей
+    import sys
+    python_executable = sys.executable.replace('python.exe', 'pythonw.exe')  # Фоновое выполнение без консоли
     command = [python_executable, '-m', script_name] + args
     
     # Объединяем переменные окружения
