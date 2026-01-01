@@ -16,8 +16,9 @@ env/
 *.log
 logs/
 
-# Reports directory
-reports/
+# Reports directory (в корне проекта)
+# Исключаем корневую директорию reports, но не поддиректории в других местах
+/reports/
 
 # Environment files
 .env

@@ -11,3 +11,5 @@ requests==2.32.4
 selenium>=4.0.0
 setuptools==80.9.0
 urllib3==2.5.0
+gspread==6.1.4
+google-auth==2.36.0

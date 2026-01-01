@@ -13,5 +13,10 @@ try:
 except ImportError:
     OZON_TASK_SCHEDULE = []
 
+try:
+    from scheduler_runner.tasks.reports.google_sheets.config.google_sheets_schedule import TASK_SCHEDULE as GOOGLE_SHEETS_TASK_SCHEDULE
+except ImportError:
+    GOOGLE_SHEETS_TASK_SCHEDULE = []
+
 # Объединяем все расписания
-TASK_SCHEDULE = OZON_TASK_SCHEDULE
+TASK_SCHEDULE = OZON_TASK_SCHEDULE + GOOGLE_SHEETS_TASK_SCHEDULE
