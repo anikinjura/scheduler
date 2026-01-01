@@ -51,24 +51,28 @@ def parse_arguments() -> argparse.Namespace:
 def load_report_data(report_date: str, pvz_id: str) -> Dict[str, Any]:
     """
     Загружает данные отчета из JSON-файла.
-    
+
     Args:
         report_date: дата отчета в формате YYYY-MM-DD
         pvz_id: идентификатор ПВЗ
-        
+
     Returns:
         Dict[str, Any]: данные отчета
     """
     # Формируем имя файла отчета
     if not report_date:
         report_date = datetime.now().strftime('%Y-%m-%d')
-    
-    report_filename = f"ozon_giveout_report_{pvz_id}_{report_date}.json"
+
+    # Используем транслитерацию для кириллических имен ПВЗ
+    from scheduler_runner.utils.system import SystemUtils
+    pvz_for_filename = SystemUtils.cyrillic_to_translit(pvz_id)
+
+    report_filename = f"ozon_giveout_report_{pvz_for_filename}_{report_date}.json"
     report_path = REPORTS_PATHS["REPORTS_DIR"] / report_filename
-    
+
     if not report_path.exists():
         raise FileNotFoundError(f"Файл отчета не найден: {report_path}")
-    
+
     with open(report_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
@@ -91,11 +95,11 @@ def format_report_data_for_sheets(report_data: Dict[str, Any], pvz_id: str) -> D
     
     # Формируем структуру данных для Google-таблицы
     formatted_data = {
-        "Дата": date_str,
-        "ПВЗ": pvz_id,
-        "Количество выданных": giveout_count,
-        "Процент выполнения": f"{giveout_percentage}%",
-        "Комментарии": report_data.get('comments', '')
+        "Date": date_str,
+        "PVZ": pvz_id,
+        "Delivered Count": giveout_count,
+        "Completion Rate": f"{giveout_percentage}%",
+        "Comments": report_data.get('comments', '')
     }
     
     return formatted_data
