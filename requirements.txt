@@ -9,7 +9,5 @@ Pygments==2.19.1
 pytest==8.4.0
 requests==2.32.4
 selenium>=4.0.0
-# Editable install with no version control (scheduler==0.0.1)
--e
 setuptools==80.9.0
 urllib3==2.5.0

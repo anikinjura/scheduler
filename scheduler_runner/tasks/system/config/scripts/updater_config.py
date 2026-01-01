@@ -34,7 +34,7 @@ SCHEDULE = [
         "module": MODULE_PATH,
         "args": ["--branch", "main"],
         "schedule": "daily",
-        "time": "19:00",
+        "time": "18:10",
         "user": SCRIPT_CONFIG["USER"],
     },
 ]
