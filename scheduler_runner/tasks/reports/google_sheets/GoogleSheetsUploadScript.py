@@ -3,10 +3,14 @@ GoogleSheetsUploadScript.py
 
 Скрипт для автоматической отправки данных отчетов ОЗОН в Google-таблицу.
 
-- Загружает JSON-файл с отчетом
-- Подключается к Google-таблице
-- Добавляет данные в следующую строку после последней заполненной
-- Обеспечивает логирование процесса
+Функции:
+- Загрузка JSON-файла с отчетом из директории reports
+- Форматирование данных отчета для соответствия структуре Google-таблицы
+- Преобразование формата даты из YYYY-MM-DD в DD.MM.YYYY
+- Использование транслитерации для кириллических имен ПВЗ при поиске файлов
+- Подключение к Google-таблице через GoogleSheetsReporter
+- Загрузка отформатированных данных в таблицу
+- Обеспечение логирования процесса
 
 Author: anikinjura
 """
@@ -80,11 +84,11 @@ def load_report_data(report_date: str, pvz_id: str) -> Dict[str, Any]:
 def format_report_data_for_sheets(report_data: Dict[str, Any], pvz_id: str) -> Dict[str, Any]:
     """
     Форматирует данные отчета для записи в Google-таблицу.
-    
+
     Args:
         report_data: данные отчета из JSON
         pvz_id: идентификатор ПВЗ
-        
+
     Returns:
         Dict[str, Any]: отформатированные данные для Google-таблицы
     """
@@ -92,16 +96,29 @@ def format_report_data_for_sheets(report_data: Dict[str, Any], pvz_id: str) -> D
     date_str = report_data.get('date', datetime.now().strftime('%Y-%m-%d'))
     giveout_count = report_data.get('giveout_count', 0)
     giveout_percentage = report_data.get('giveout_percentage', 0)
-    
-    # Формируем структуру данных для Google-таблицы
+    comments = report_data.get('comments', '')
+
+    # Преобразуем формат даты из YYYY-MM-DD в DD.MM.YYYY для российского формата
+    try:
+        # Парсим дату в формате YYYY-MM-DD
+        parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
+        # Преобразуем в формат DD.MM.YYYY
+        formatted_date = parsed_date.strftime('%d.%m.%Y')
+    except ValueError:
+        # Если формат даты не соответствует ожидаемому, используем как есть
+        formatted_date = date_str
+
+    # Формируем структуру данных для Google-таблицы в соответствии с реальной структурой листа KPI
+    # Id будет вычислен формулой в таблице, поэтому оставляем его пустым
     formatted_data = {
-        "Date": date_str,
-        "PVZ": pvz_id,
-        "Delivered Count": giveout_count,
-        "Completion Rate": f"{giveout_percentage}%",
-        "Comments": report_data.get('comments', '')
+        "id": "",  # будет заполнен формулой в таблице
+        "Дата": formatted_date,
+        "ПВЗ": pvz_id,
+        "Количество выдач": giveout_count,
+        "Селлер (FBS)": "",  # может быть заполнен позже, если нужна дополнительная информация
+        "Обработано возвратов": ""  # может быть заполнен позже, если нужна дополнительная информация
     }
-    
+
     return formatted_data
 
 
@@ -146,7 +163,7 @@ def main() -> None:
         
         # Отправляем данные в Google-таблицу
         logger.info("Отправка данных в Google-таблицу...")
-        success = reporter.update_or_append_data(formatted_data, date_key="Дата")
+        success = reporter.update_or_append_data(formatted_data, date_key="Дата", pvz_key="ПВЗ")
         
         if success:
             logger.info("Данные успешно отправлены в Google-таблицу")

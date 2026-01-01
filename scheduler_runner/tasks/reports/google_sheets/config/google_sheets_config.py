@@ -10,21 +10,22 @@ __version__ = '0.0.1'
 from pathlib import Path
 
 # Путь к файлу с ключами сервисного аккаунта
-GOOGLE_CREDENTIALS_PATH = "C:/tools/gspread/service_account.json"
+GOOGLE_CREDENTIALS_PATH = ".env/gspread/delta-pagoda-483016-n8-52088e23e06d.json"
 
-# Имя Google-таблицы
-SPREADSHEET_NAME = "Отчеты ОЗОН по ПВЗ"
+# ID Google-таблицы (из URL: https://docs.google.com/spreadsheets/d/[ID]/edit)
+SPREADSHEET_NAME = "1D9msGQtGV67ExJBDYlcMhyWVKrV690iSThd2iW361P8"
 
 # Имя листа в таблице
-WORKSHEET_NAME = "Данные"
+WORKSHEET_NAME = "KPI"
 
-# Структура данных для валидации
+# Структура данных для валидации (реальные заголовки из листа KPI)
 REQUIRED_HEADERS = [
-    "Date",
-    "PVZ",
-    "Delivered Count",
-    "Completion Rate",
-    "Comments"
+    "id",
+    "Дата",
+    "ПВЗ",
+    "Количество выдач",
+    "Селлер (FBS)",
+    "Обработано возвратов"
 ]
 
 # Конфигурация для задачи

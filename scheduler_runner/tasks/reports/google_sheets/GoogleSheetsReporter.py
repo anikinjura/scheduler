@@ -1,13 +1,17 @@
 """
 GoogleSheetsReporter.py
 
-Модуль для автоматической отправки данных отчетов ОЗОН в Google-таблицу.
+Класс для работы с Google-таблицами.
+Предоставляет методы для подключения к Google-таблице, определения последней строки с данными,
+добавления новых строк, обновления существующих записей и валидации структуры данных.
 
 Функции:
-- Подключение к Google-таблице через Service Account
-- Определение последней строки с данными
-- Добавление новой строки с данными отчета
+- Подключение к Google-таблице через Service Account по ID таблицы
+- Определение последней строки с данными в указанном столбце
+- Добавление новой строки с данными
 - Обновление существующих записей при необходимости
+- Получение заголовков столбцов
+- Валидация структуры данных
 
 Author: anikinjura
 """
@@ -56,7 +60,14 @@ class GoogleSheetsReporter:
         self.client = gspread.authorize(credentials)
         
         # Открытие таблицы и листа
-        self.spreadsheet = self.client.open(self.spreadsheet_name)
+        # Если spreadsheet_name - это ID таблицы (содержит только латинские буквы, цифры и специальные символы),
+        # используем open_by_key, иначе - open
+        if len(self.spreadsheet_name) > 10 and all(c.isalnum() or c in '_- ' for c in self.spreadsheet_name.replace('_', '').replace('-', '')):
+            # Предполагаем, что это ID таблицы, если строка достаточно длинная и содержит допустимые символы ID
+            self.spreadsheet = self.client.open_by_key(self.spreadsheet_name)
+        else:
+            # Используем обычное открытие по названию
+            self.spreadsheet = self.client.open(self.spreadsheet_name)
         self.worksheet = self.spreadsheet.worksheet(self.worksheet_name)
         
         # Настройка логгера
@@ -71,18 +82,22 @@ class GoogleSheetsReporter:
     def get_last_row_with_data(self, date_column_index: int = 1) -> int:
         """
         Получает номер последней строки с данными в указанном столбце.
-        
+
         Args:
             date_column_index: индекс столбца с датами (1-индексированный)
-            
+
         Returns:
             int: номер последней строки с данными
         """
         try:
-            # Получаем все значения в столбце даты
-            date_column = self.worksheet.col_values(date_column_index)
-            # Возвращаем длину списка, что соответствует последней строке с данными
-            return len(date_column)
+            # Получаем все значения в столбце
+            column_values = self.worksheet.col_values(date_column_index)
+            # Находим последнюю непустую строку
+            for i in range(len(column_values), 0, -1):
+                if column_values[i-1].strip():  # проверяем, что строка не пустая
+                    return i
+            # Если все строки пустые, возвращаем 0
+            return 0
         except Exception as e:
             self.logger.error(f"Ошибка при получении последней строки: {e}")
             return 1  # Возвращаем первую строку как безопасное значение
@@ -90,62 +105,158 @@ class GoogleSheetsReporter:
     def append_row_data(self, data: List, start_row: int = None) -> bool:
         """
         Добавляет данные в следующую строку после последней заполненной.
-        
+
         Args:
             data: список значений для записи в строку
             start_row: номер строки для записи (если None, определяется автоматически)
-            
+
         Returns:
             bool: True при успешной записи
         """
         try:
             if start_row is None:
+                # Используем append_row для добавления в конец таблицы, а не insert_row
+                self.worksheet.append_row(data)
+                # Получаем номер последней строки после добавления
                 last_row = self.get_last_row_with_data()
-                start_row = last_row + 1
-            
-            # Записываем данные в следующую строку
-            self.worksheet.insert_row(data, start_row)
-            self.logger.info(f"Данные успешно добавлены в строку {start_row}")
+                self.logger.info(f"Данные успешно добавлены в строку {last_row}")
+            else:
+                # Если указан конкретный номер строки, используем insert_row (осторожно!)
+                self.worksheet.insert_row(data, start_row)
+                self.logger.info(f"Данные успешно добавлены в строку {start_row}")
             return True
         except Exception as e:
             self.logger.error(f"Ошибка при добавлении строки: {e}")
             return False
-    
-    def update_or_append_data(self, data: Dict, date_key: str = "date") -> bool:
+
+    def append_row_data_with_row_number(self, data: List) -> int:
         """
-        Обновляет данные, если запись с такой датой уже существует, или добавляет новую.
-        
+        Добавляет данные в следующую строку после последней заполненной и возвращает номер строки.
+
+        Args:
+            data: список значений для записи в строку
+
+        Returns:
+            int: номер добавленной строки, или 0 при ошибке
+        """
+        try:
+            # Получаем текущую последнюю строку
+            current_last_row = self.get_last_row_with_data()
+            target_row = current_last_row + 1
+
+            # Создаем диапазон для обновления новой строки
+            # Обновляем всю строку целиком
+            range_name = f'A{target_row}:{chr(64+len(data))}{target_row}'
+
+            # Обновляем строку с правильным value_input_option
+            self.worksheet.update(range_name, [data], value_input_option='USER_ENTERED')
+
+            self.logger.info(f"Данные успешно добавлены в строку {target_row}")
+            return target_row
+        except Exception as e:
+            self.logger.error(f"Ошибка при добавлении строки: {e}")
+            return 0
+    
+    def update_or_append_data(self, data: Dict, date_key: str = "Дата", pvz_key: str = "ПВЗ") -> bool:
+        """
+        Обновляет данные, если запись с такой датой и ПВЗ уже существует, или добавляет новую.
+        Использует Id столбец (A) для определения уникальности записи.
+        Предотвращает дублирование данных при одновременной записи из разных ПВЗ.
+
         Args:
             data: словарь с данными для записи
-            date_key: ключ в словаре, содержащий дату для поиска дубликатов
-            
+            date_key: ключ в словаре, содержащий дату для поиска дубликатов (по умолчанию "Дата")
+            pvz_key: ключ в словаре, содержащий ПВЗ для поиска дубликатов (по умолчанию "ПВЗ")
+
         Returns:
             bool: True при успешной записи
         """
         try:
-            # Проверяем, есть ли уже запись с такой датой
+            # Получаем дату и ПВЗ из данных
             date_value = data.get(date_key)
-            if date_value:
+            pvz_value = data.get(pvz_key)
+
+            self.logger.debug(f"update_or_append_data: date_value='{date_value}', pvz_value='{pvz_value}'")
+
+            if date_value and pvz_value:
+                # Ищем запись с такой датой и ПВЗ (вместо поиска по Id, ищем по дате и ПВЗ)
                 try:
-                    # Ищем ячейку с указанной датой в первом столбце
-                    date_cell = self.worksheet.find(date_value)
-                    # Если нашли, обновляем строку
-                    row_num = date_cell.row
-                    # Обновляем всю строку новыми значениями
-                    values = [data.get(key, "") for key in data.keys()]
-                    self.worksheet.update(f'A{row_num}:{chr(64+len(values))}{row_num}', [values])
-                    self.logger.info(f"Данные за {date_value} обновлены в строке {row_num}")
+                    # Сначала ищем в столбце даты
+                    date_matches = self.worksheet.findall(date_value)
+
+                    # Среди найденных ищем совпадение по ПВЗ
+                    for date_cell in date_matches:
+                        pvz_cell_value = self.worksheet.cell(date_cell.row, 3).value  # ПВЗ в 3-м столбце
+                        if pvz_cell_value == pvz_value:
+                            # Нашли совпадение, обновляем строку
+                            row_num = date_cell.row
+                            self.logger.debug(f"update_or_append_data: найдено совпадение в строке {row_num}")
+                            # Обновляем всю строку новыми значениями
+                            values = [data.get(key, "") for key in data.keys()]
+                            self.worksheet.update(f'A{row_num}:{chr(64+len(values))}{row_num}', [values])
+                            expected_id = f"{date_value}{pvz_value}"
+                            self.logger.info(f"Данные за {date_value} для ПВЗ {pvz_value} обновлены в строке {row_num} (Id: {expected_id})")
+                            return True
+                except Exception as e:
+                    self.logger.error(f"Ошибка при поиске существующей записи: {e}")
+                # Если не найдено совпадение, добавляем новую строку с формулой в Id столбце
+                self.logger.debug(f"update_or_append_data: запись с датой '{date_value}' и ПВЗ '{pvz_value}' не найдена, добавляем новую строку")
+                # Подготовим данные для добавления, но сначала добавим строку с пустым Id
+                # Затем установим формулу в Id столбце
+                current_last_row = self.get_last_row_with_data()
+                target_row = current_last_row + 1
+
+                # Подготовим данные с пустым Id, сохраняя типы данных
+                # Дата - строка
+                date_value = data.get("Дата", "")
+                # ПВЗ - строка
+                pvz_value = data.get("ПВЗ", "")
+                # Количество выдач - число (если возможно)
+                giveout_value = data.get("Количество выдач", 0)
+                if isinstance(giveout_value, str) and giveout_value.isdigit():
+                    giveout_value = int(giveout_value)
+                elif isinstance(giveout_value, (int, float)):
+                    pass  # уже число
+                else:
+                    giveout_value = 0  # по умолчанию
+
+                # Селлер (FBS) - строка
+                seller_value = data.get("Селлер (FBS)", "")
+                # Обработано возвратов - число (если возможно)
+                returns_value = data.get("Обработано возвратов", 0)
+                if isinstance(returns_value, str) and returns_value.isdigit():
+                    returns_value = int(returns_value)
+                elif isinstance(returns_value, (int, float)):
+                    pass  # уже число
+                else:
+                    returns_value = 0  # по умолчанию
+
+                # Подготовим данные с пустым Id
+                values = ["", date_value, pvz_value, giveout_value, seller_value, returns_value]
+
+                row_num = self.append_row_data_with_row_number(values)
+                if row_num > 0:
+                    self.logger.debug(f"update_or_append_data: строка добавлена в строку {row_num}")
+                    # Теперь установим формулу в Id столбце для этой строки
+                    formula = f"=B{row_num}&C{row_num}"  # формула: дата + ПВЗ для этой строки
+                    # Используем update с правильным value_input_option для корректной записи формулы
+                    self.worksheet.update(values=[[formula]], range_name=f'A{row_num}', value_input_option='USER_ENTERED')
+                    self.logger.info(f"Формула Id установлена в строке {row_num}: {formula}")
                     return True
-                except gspread.exceptions.CellNotFound:
-                    # Если не нашли, добавляем новую строку
-                    values = [data.get(key, "") for key in data.keys()]
-                    return self.append_row_data(values)
+                else:
+                    self.logger.error("Не удалось добавить строку")
+                    return False
             else:
-                # Если дата не указана, просто добавляем новую строку
+                self.logger.debug(f"update_or_append_data: дата или ПВЗ не указаны, добавляем новую строку")
+                # Если дата или ПВЗ не указаны, просто добавляем новую строку
                 values = [data.get(key, "") for key in data.keys()]
-                return self.append_row_data(values)
+                result = self.append_row_data(values)
+                self.logger.debug(f"update_or_append_data: результат append_row_data: {result}")
+                return result
         except Exception as e:
             self.logger.error(f"Ошибка при обновлении/добавлении данных: {e}")
+            import traceback
+            self.logger.error(f"Полный стек трейс: {traceback.format_exc()}")
             return False
     
     def get_headers(self) -> List[str]:
