@@ -79,15 +79,16 @@ tasks/cameras/
 
 ### `cameras_paths.py`
 - Определяет пути и параметры Telegram в зависимости от `ENV_MODE`:
-  - Production: `D:/camera` (локально), `O:/cameras/<PVZ_ID>` (сетевая).
-  - Test: `C:/TestEnvironment/D_camera` (локально), `C:/TestEnvironment/O_cameras/<PVZ_ID>` (сетевая).
+  - Production: `D:/camera` (локально), `O:/cameras/<транслитерация(PVZ_ID)>` (сетевая).
+  - Test: `C:/TestEnvironment/D_camera` (локально), `C:/TestEnvironment/O_cameras/<транслитерация(PVZ_ID)>` (сетевая).
   - Использует переменные среды: `TELEGRAM_TOKEN_PROD`, `TELEGRAM_CHAT_ID_PROD` (или `_TEST` для тестовой среды).
+  - Для поддержки кириллических имен ПВЗ используется транслитерация при формировании сетевых путей.
 
 ### `cameras_list.py`
 - Содержит словарь `CAMERAS_BY_PVZ`:
   ```python
   CAMERAS_BY_PVZ = {
-      10: {
+      "СОСНОВКА_10": {
           "склад": [{"id": "unv_001", "uid": "sklad", "локация": "над стелажами"}, ...],
           "клиентская зона": [...]
       },
@@ -95,6 +96,7 @@ tasks/cameras/
   }
   ```
 - Используется для идентификации камер и проверки их записей.
+- Поддерживает строковые идентификаторы ПВЗ (включая кириллические имена).
 
 ### `cameras_schedule.py`
 - Экспортирует `TASK_SCHEDULE` — список задач для ядра планировщика, собираемый из всех `SCHEDULE` в `scripts/*_config.py`.

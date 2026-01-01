@@ -4,6 +4,7 @@ cameras_paths.py
 Определяет все специфичные для задачи cameras пути и переменные, зависящие от среды (production/test) и PVZ_ID.
 
 Используется для централизованного хранения путей к локальным, сетевым и резервным директориям с видеозаписями.
+Поддерживает кириллические имена ПВЗ с использованием транслитерации для сетевых путей.
 
 Пример использования:
     from .cameras_paths import CAMERAS_PATHS
@@ -12,7 +13,7 @@ cameras_paths.py
 Структура CAMERAS_PATHS:
     {
         'CAMERAS_LOCAL': Path,   # Путь к локальной директории с видеоархивом
-        'CAMERAS_NETWORK': Path, # Путь к сетевой директории с видеоархивом
+        'CAMERAS_NETWORK': Path, # Путь к сетевой директории с видеоархивом (с транслитерацией PVZ_ID)
     }
 
 Author: anikinjura
@@ -24,9 +25,9 @@ import os
 from config.base_config import PVZ_ID, ENV_MODE
 from scheduler_runner.utils.system import SystemUtils
 
-# Получаем безопасное имя для использования в путях (транслитерация кириллицы)
+# Получаем безопасное имя для использования в сетевых путях (транслитерация кириллицы)
 def get_safe_pvz_path_name(pvz_id):
-    """Преобразует PVZ_ID в безопасное имя для использования в путях файловой системы."""
+    """Преобразует PVZ_ID в безопасное имя для использования в сетевых путях файловой системы."""
     return SystemUtils.cyrillic_to_translit(str(pvz_id))
 
 if ENV_MODE == 'production':
