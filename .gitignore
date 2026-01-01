@@ -35,6 +35,9 @@ logs/
 dist/
 build/
 
+# Временные тестовые файлы в корне проекта
+test_*.py
+
 # Исключения для тестовой директории
 # Включаем конкретные файлы в тестовой директории
 !tests/TestEnvironment/run_camera_structure_generator.py
