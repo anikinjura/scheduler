@@ -16,6 +16,9 @@ env/
 *.log
 logs/
 
+# Reports directory
+reports/
+
 # Environment files
 .env
 *.env
