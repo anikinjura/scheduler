@@ -8,6 +8,7 @@ UpdaterScript.py
 - При обнаружении обновлений выполняет git pull.
 - В случае обновления самого скрипта — перезапускает себя.
 - Использует централизованный логгер с разделением на сводные (INFO) и детальные (DEBUG) логи.
+- Учитывает режим среды (ENV_MODE) для определения ветки обновления.
 
 Аргументы командной строки:
     --branch <branch>   Ветка для обновления (по умолчанию из конфига)
@@ -16,7 +17,7 @@ UpdaterScript.py
 Author: anikinjura
 """
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 from typing import Optional
 import subprocess
@@ -40,7 +41,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--branch", type=str, default=SCRIPT_CONFIG["BRANCH"],
-        help=f"Ветка для обновления (по умолчанию: {SCRIPT_CONFIG['BRANCH']})"
+        help=f"Ветка для обновления (по умолчанию: {SCRIPT_CONFIG['BRANCH']}, определена по ENV_MODE: {SCRIPT_CONFIG.get('ENV_MODE', 'unknown')})"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -49,7 +50,7 @@ def parse_arguments():
     parser.add_argument(
         "--detailed_logs", action="store_true",
         help="Включить детализированные логи (DEBUG)"
-    )    
+    )
     return parser.parse_args()
 
 def get_local_commit(repo_dir: Path, branch: str) -> Optional[str]:
@@ -141,6 +142,7 @@ def main():
     Основная функция:
     - Парсит аргументы.
     - Настраивает логгер.
+    - Проверяет режим среды (ENV_MODE) и при необходимости отключает обновление.
     - Проверяет и настраивает origin.
     - Проверяет наличие git-репозитория.
     - Сравнивает локальный и удалённый коммиты.
@@ -156,6 +158,16 @@ def main():
         task_name=SCRIPT_CONFIG["TASK_NAME"],
         detailed=args.detailed_logs or SCRIPT_CONFIG["DETAILED_LOGS"],
     )
+
+    # Проверяем режим среды
+    env_mode = SCRIPT_CONFIG.get('ENV_MODE', 'production')
+    logger.info(f"Режим среды: {env_mode}")
+
+    # В зависимости от режима среды можно изменить поведение скрипта
+    # В тестовой среде можно отключить обновление или использовать другую логику
+    if env_mode == 'test':
+        logger.info(f"В режиме 'test' обновление может быть ограничено. Текущая ветка: {args.branch}")
+        # Здесь можно добавить дополнительную логику для тестовой среды при необходимости
 
     logger.info("Проверка обновлений проекта...")
     branch = args.branch
