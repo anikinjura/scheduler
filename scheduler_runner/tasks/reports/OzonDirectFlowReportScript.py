@@ -237,6 +237,9 @@ class OzonDirectFlowReportParser(BaseOzonParser):
 
                     carriage_details.append(carriage_detail)
 
+                # Вычисляем общее количество отправлений по всем перевозкам
+                total_items_count = sum(detail.get('items_count', 0) for detail in carriage_details)
+
                 data = {
                     'marketplace': 'Ozon',
                     'report_type': 'direct_flow',
@@ -247,11 +250,13 @@ class OzonDirectFlowReportParser(BaseOzonParser):
                     'total_carriages_found': total_carriages,  # Общее количество найденных перевозок
                     'carriage_numbers': carriage_numbers,  # Список номеров перевозок
                     'carriage_details': carriage_details,  # Детали по каждой перевозке
+                    'total_items_count': total_items_count,  # Общее количество отправлений по всем перевозкам
                     'pvz_info': pvz_info,  # Информация о пункте выдачи
                 }
 
                 print(f"Всего найдено перевозок: {total_carriages}")
                 print(f"Извлечено номеров перевозок: {len(carriage_numbers)}")
+                print(f"Общее количество отправлений: {total_items_count}")
                 print(f"Информация о ПВЗ: {pvz_info}")
 
                 return data
