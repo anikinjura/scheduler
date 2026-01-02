@@ -180,15 +180,61 @@ class OzonDirectFlowReportParser(BaseOzonParser):
                 for i, carriage_number in enumerate(carriage_numbers):
                     print(f"Обрабатываем перевозку {i+1}/{len(carriage_numbers)}: {carriage_number}")
 
-                    # Здесь в будущем будет логика для перехода на страницу конкретной перевозки
-                    # и извлечения детальной информации
-                    carriage_detail = {
-                        'carriage_number': carriage_number,
-                        'status': 'processed',  # Заглушка - в реальности будет извлекаться статус перевозки
-                        'items_count': 0,  # Заглушка - в реальности будет извлекаться количество товаров
-                        'weight': 0,  # Заглушка - в реальности будет извлекаться вес
-                        'volume': 0,  # Заглушка - в реальности будет извлекаться объем
-                    }
+                    # Сохраняем оригинальный URL для возврата
+                    original_url = self.driver.current_url
+
+                    try:
+                        # Переходим на страницу с деталями конкретной перевозки
+                        carriage_url = f"https://turbo-pvz.ozon.ru/outbound/carriages-archive/{carriage_number}?filter=%7B%22articleState%22:%22Took%22,%22articleType%22:%22ArticlePosting%22%7D"
+                        print(f"Переходим на страницу перевозки: {carriage_url}")
+                        self.driver.get(carriage_url)
+
+                        # Ждем загрузки страницы
+                        time.sleep(3)
+
+                        # Извлекаем количество отправлений из элемента на странице перевозки
+                        from selenium.webdriver.common.by import By
+
+                        # Ищем элемент с информацией о количестве найденных отправлений
+                        total_items_text = self.extract_ozon_element_by_xpath("//div[contains(@class, '_total_1n8st_15')]", "textContent")
+
+                        items_count = 0
+                        if total_items_text:
+                            # Извлекаем число из текста "Найдено: N"
+                            import re
+                            found_count_match = re.search(r'Найдено:\s*(\d+)', total_items_text)
+                            if found_count_match:
+                                items_count = int(found_count_match.group(1))
+                                print(f"Найдено отправлений в перевозке {carriage_number}: {items_count}")
+                            else:
+                                print(f"Не удалось извлечь количество отправлений из текста: {total_items_text}")
+                        else:
+                            print(f"Не найден элемент с информацией о количестве отправлений для перевозки {carriage_number}")
+
+                        # Возвращаемся на основную страницу
+                        self.driver.get(original_url)
+                        time.sleep(1)  # Ждем возврата
+
+                        # Формируем детали для этой перевозки
+                        carriage_detail = {
+                            'carriage_number': carriage_number,
+                            'items_count': items_count,  # Количество отправлений в перевозке
+                        }
+
+                    except Exception as e:
+                        print(f"Ошибка при обработке перевозки {carriage_number}: {e}")
+                        # Возвращаемся на основную страницу в случае ошибки
+                        try:
+                            self.driver.get(original_url)
+                        except:
+                            pass  # Если не удалось вернуться, продолжаем с текущей страницы
+
+                        carriage_detail = {
+                            'carriage_number': carriage_number,
+                            'items_count': 0,
+                            'error': str(e)
+                        }
+
                     carriage_details.append(carriage_detail)
 
                 data = {
