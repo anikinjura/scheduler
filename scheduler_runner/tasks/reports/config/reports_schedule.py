@@ -1,22 +1,43 @@
 """
 reports_schedule.py
-Объединяет расписания всех поддоменов задачи reports (ozon, wildberries, yandex_market и т.д.).
-Принимает: SCHEDULE (список с расписанием отдельного скрипта задачи) из каждого поддомена.
-Экспортирует: TASK_SCHEDULE (список с расписанием всей задачи reports) для ядра планировщика.
+
+Расписание задач для модуля отчетов.
+Автоматически собирает расписания всех скриптов из config/scripts/*_config.py
+
 Author: anikinjura
 """
 __version__ = '1.0.0'
 
-# Импортируем расписания из поддоменов
-try:
-    from scheduler_runner.tasks.reports.ozon.config.ozon_schedule import TASK_SCHEDULE as OZON_TASK_SCHEDULE
-except ImportError:
-    OZON_TASK_SCHEDULE = []
+import os
+import importlib.util
+from pathlib import Path
 
-try:
-    from scheduler_runner.tasks.reports.google_sheets.config.google_sheets_schedule import TASK_SCHEDULE as GOOGLE_SHEETS_TASK_SCHEDULE
-except ImportError:
-    GOOGLE_SHEETS_TASK_SCHEDULE = []
+# Путь к директории с конфигами скриптов
+SCRIPTS_CONFIG_DIR = Path(__file__).parent / "scripts"
 
-# Объединяем все расписания
-TASK_SCHEDULE = OZON_TASK_SCHEDULE + GOOGLE_SHEETS_TASK_SCHEDULE
+# Список задач
+TASK_SCHEDULE = []
+
+# Автоматически импортируем расписания из всех файлов конфигов скриптов
+for config_file in SCRIPTS_CONFIG_DIR.glob("*_config.py"):
+    if config_file.name == "__init__.py":
+        continue
+    
+    # Формируем имя модуля
+    module_name = f"reports_config_{config_file.stem}"
+    
+    try:
+        # Загружаем модуль динамически
+        spec = importlib.util.spec_from_file_location(module_name, config_file)
+        config_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(config_module)
+        
+        # Импортируем TASK_SCHEDULE из модуля, если он существует
+        if hasattr(config_module, 'TASK_SCHEDULE'):
+            TASK_SCHEDULE.extend(config_module.TASK_SCHEDULE)
+    except Exception as e:
+        print(f"Ошибка при импорте конфигурации {config_file}: {e}")
+        continue
+
+# Выводим количество загруженных задач
+print(f"Загружено {len(TASK_SCHEDULE)} задач из конфигураций отчетов")

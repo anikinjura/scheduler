@@ -63,11 +63,13 @@ if ENV_MODE not in ('production', 'test'):
     sys.exit(f"[ERROR] ENV_MODE должны быть 'production' или 'test', получено: {ENV_MODE}")
 
 # 3. Общие переменные для всего проекта
+REPORTS_DIR = BASE_DIR / 'reports'  # Директория для отчетов в корне проекта
 PATH_CONFIG = {
     'BASE_DIR': BASE_DIR,
     'SCHEDULER_ROOT': SCHEDULER_RUNNER_DIR,
     'LOGS_ROOT': LOGS_DIR,
     'TASKS_ROOT': TASKS_DIR,
+    'REPORTS_ROOT': REPORTS_DIR,
 }
 
 # 4. Вспомогательная валидация: предупреждаем, если важное отсутствует

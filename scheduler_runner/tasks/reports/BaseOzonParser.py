@@ -151,7 +151,7 @@ class BaseOzonParser(BaseParser):
             bool: True, если уведомление отправлено успешно
         """
         # Получаем токены из конфигурации
-        from scheduler_runner.tasks.reports.ozon.config.reports_paths import REPORTS_PATHS
+        from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
 
         # Обновляем конфиг с токенами из REPORTS_PATHS
         self.config['TELEGRAM_TOKEN'] = REPORTS_PATHS.get('TELEGRAM_TOKEN')

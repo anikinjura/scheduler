@@ -34,3 +34,6 @@ CURRENT_PVZ_SETTINGS = {
     'yandex_market_pvz_code': f'YM_{PVZ_ID.split("_")[-1]}' if '_' in PVZ_ID else f'YM_{PVZ_ID}',  # Для Яндекс Маркета формируем код
     'expected_ozon_pvz': PVZ_ID,  # Ожидаемый ПВЗ в ОЗОН (может отличаться от PVZ_ID, если нужно)
 }
+
+# Если в будущем понадобятся общие списки для отчетов, они будут здесь
+REPORTS_LIST = []

@@ -1,12 +1,16 @@
 """
 OzonGiveoutReportScript.py
 
-Скрипт для автоматического парсинга отчета по выдаче из ERP-системы ОЗОН.
+Скрипт формирования отчета по объемам выдач для маркетплейса ОЗОН для домена (задачи) reports.
+Собирает статистику из ERP-системы ОЗОН с использованием уже активной сессии пользователя,
+с возможностью выбора нужного пункта выдачи и извлечения количества выданных посылок за текущий день.
 
-- Использует Selenium для автоматизации браузера Edge
-- Завершает все процессы Edge перед запуском для избежания конфликтов
-- Использует существующую сессию пользователя
-- Сохраняет отчет по выдаче в нужном формате
+Архитектура:
+- Все параметры задаются в config/scripts/OzonGiveoutReportScript_config.py.
+- Использует Selenium для автоматизации браузера Edge.
+- Завершает все процессы Edge перед запуском для избежания конфликтов.
+- Использует существующую сессию пользователя.
+- Сохраняет отчет по выдаче в JSON-файл.
 
 Author: anikinjura
 """
@@ -21,28 +25,29 @@ import json
 import re
 from typing import Dict, Any
 
-# Добавляем корень проекта в sys.path для корректного импорта утилит
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+# Добавляем путь к корню проекта для импорта модулей
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from scheduler_runner.utils.logging import configure_logger
-from scheduler_runner.tasks.reports.ozon.BaseOzonParser import BaseOzonParser
-from scheduler_runner.tasks.reports.ozon.config.scripts.ozon_giveout_report_config import SCRIPT_CONFIG
+from scheduler_runner.tasks.reports.BaseOzonParser import BaseOzonParser
+from scheduler_runner.tasks.reports.config.scripts.OzonGiveoutReportScript_config import SCRIPT_CONFIG
 
 class OzonGiveoutReportParser(BaseOzonParser):
     """Парсер для получения отчета по выдаче из ERP-системы ОЗОН"""
-    
+
     def login(self):
         """Вход в ERP-систему ОЗОН"""
         self.driver.get(self.config['ERP_URL'])
         # Реализация входа (если требуется, обычно сессия уже активна)
-    
+
     def navigate_to_reports(self):
         """Навигация к странице отчета по выдаче ОЗОН"""
         # Для отчета по выдаче мы сразу переходим на нужный URL
         # Навигация по элементам интерфейса ОЗОН
         # Конкретная реализация зависит от структуры ERP-системы
         pass
-    
+
     def extract_data(self) -> Dict[str, Any]:
         """Извлечение отчета по выдаче из ERP-системы ОЗОН"""
         from selenium.webdriver.common.by import By
@@ -167,20 +172,10 @@ class OzonGiveoutReportParser(BaseOzonParser):
                 print(f"Всего выданных посылок: {total_packages}")
                 print(f"Информация о ПВЗ: {pvz_info}")
 
-                # Отправляем уведомление через Telegram
-                try:
-                    from scheduler_runner.utils.logging import configure_logger
-                    logger = configure_logger(
-                        user=self.config.get('USER', 'system'),
-                        task_name=self.config.get('TASK_NAME', 'OzonGiveoutReportScript'),
-                        detailed=self.config.get('DETAILED_LOGS', False)
-                    )
-
-                    # Формируем сообщение для уведомления
-                    notification_message = f"📊 Отчет по выдаче ОЗОН\nПВЗ: {pvz_info}\nДата: {data['date']}\nВыдано посылок: {total_packages}"
-                    self.send_ozon_notification(notification_message, logger)
-                except Exception as e:
-                    print(f"Ошибка при отправке уведомления: {e}")
+                # Уведомление теперь отправляется через ReportProcessor, отключаем дублирование
+                # Формируем сообщение для уведомления
+                # notification_message = f"📊 Отчет по выдаче ОЗОН\nПВЗ: {pvz_info}\nДата: {data['date']}\nВыдано посылок: {total_packages}"
+                # self.send_ozon_notification(notification_message, logger)
 
                 return data
             except Exception as e:
@@ -199,17 +194,77 @@ class OzonGiveoutReportParser(BaseOzonParser):
                     'total_packages': 0,
                     'pvz_info': '',
                 }
-    
+
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
         pass
 
-def main():
-    """Основная функция скрипта"""
-    parser = argparse.ArgumentParser(description="Парсинг отчета по выдаче из ERP-системы ОЗОН.")
-    parser.add_argument("--detailed_logs", action="store_true", help="Включить детализированные логи.")
-    args = parser.parse_args()
+def parse_arguments() -> argparse.Namespace:
+    """
+    Парсит аргументы командной строки для скрипта формирования отчета ОЗОН.
 
+    --detailed_logs              - включить детализированные логи
+    """
+    parser = argparse.ArgumentParser(
+        description="Формирование отчета по выдаче из ERP-системы ОЗОН",
+        epilog="Пример: python OzonGiveoutReportScript.py --detailed_logs"
+    )
+    parser.add_argument(
+        "--detailed_logs",
+        action="store_true",
+        default=False,
+        help="Включить детализированные логи"
+    )
+    return parser.parse_args()
+
+def main_for_data_extraction():
+    """Основная функция скрипта, возвращающая данные отчета"""
+    try:
+        args = parse_arguments()
+        detailed_logs = args.detailed_logs or SCRIPT_CONFIG.get("DETAILED_LOGS", False)
+
+        logger = configure_logger(
+            user=SCRIPT_CONFIG["USER"],
+            task_name=SCRIPT_CONFIG["TASK_NAME"],
+            detailed=detailed_logs
+        )
+
+        logger.info("Запуск формирования отчета по выдаче ERP-системы ОЗОН")
+
+        parser = OzonGiveoutReportParser(SCRIPT_CONFIG)
+        try:
+            parser.setup_driver()
+            parser.login()
+            parser.navigate_to_reports()
+            data = parser.extract_data()
+            parser.logout()
+
+            # Сохранение данных
+            output_dir = Path(SCRIPT_CONFIG['OUTPUT_DIR'])
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = output_dir / f"ozon_giveout_report_{timestamp}.json"
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+            logger.info(f"Отчет по выдаче ОЗОН успешно сохранен в {filename}")
+            logger.info(f"Извлеченные данные: {data}")
+
+            return data
+        finally:
+            parser.close()
+
+    except Exception as e:
+        import traceback
+        print(f"Ошибка при формировании отчета по выдаче ERP-системы ОЗОН: {e}")
+        print(f"Полный стек трейса: {traceback.format_exc()}")
+        return None
+
+def main():
+    """Основная функция скрипта для запуска из командной строки"""
+    args = parse_arguments()
     detailed_logs = args.detailed_logs or SCRIPT_CONFIG.get("DETAILED_LOGS", False)
 
     logger = configure_logger(
@@ -219,8 +274,8 @@ def main():
     )
 
     try:
-        logger.info("Запуск парсинга отчета по выдаче ERP-системы ОЗОН")
-        
+        logger.info("Запуск формирования отчета по выдаче ERP-системы ОЗОН")
+
         parser = OzonGiveoutReportParser(SCRIPT_CONFIG)
         try:
             parser.setup_driver()
@@ -228,24 +283,24 @@ def main():
             parser.navigate_to_reports()
             data = parser.extract_data()
             parser.logout()
-            
+
             # Сохранение данных
             output_dir = Path(SCRIPT_CONFIG['OUTPUT_DIR'])
             output_dir.mkdir(parents=True, exist_ok=True)
-            
+
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = output_dir / f"ozon_giveout_report_{timestamp}.json"
-            
+
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-            
+
             logger.info(f"Отчет по выдаче ОЗОН успешно сохранен в {filename}")
             logger.info(f"Извлеченные данные: {data}")
         finally:
             parser.close()
-            
+
     except Exception as e:
-        logger.error(f"Ошибка при парсинге отчета по выдаче ERP-системы ОЗОН: {e}")
+        logger.error(f"Ошибка при формировании отчета по выдаче ERP-системы ОЗОН: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
