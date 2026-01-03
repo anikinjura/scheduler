@@ -1,7 +1,7 @@
 """
-OzonDirectFlowReportScript_config.py
+OzonCarriagesReportScript_config.py
 
-Параметры и расписание для OzonDirectFlowReportScript домена (задачи) reports.
+Параметры и расписание для OzonCarriagesReportScript домена (задачи) reports.
 
 Author: anikinjura
 """
@@ -12,21 +12,31 @@ from config.base_config import PVZ_ID
 from scheduler_runner.tasks.reports.config.reports_list import CURRENT_PVZ_SETTINGS
 from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
 
-# Генерируем URL с фильтрами для текущего дня (данные за смену, которая закончилась)
+# Генерируем готовые URL с фильтрами для текущего дня (данные за смену, которая закончилась)
 current_date = date.today().strftime("%Y-%m-%d")
-ERP_URL = f"https://turbo-pvz.ozon.ru/outbound/carriages-archive?filter=%7B%22startSentMoment%22:%22{current_date}T00:00:00%2B03:00%22,%22flowType%22:%22Direct%22%7D"
+BASE_URL = "https://turbo-pvz.ozon.ru/outbound/carriages-archive"
+DATE_FILTER = f"?filter=%7B%22startSentMoment%22:%22{current_date}T00:00:00%2B03:00%22,%22endSentMoment%22:%22{current_date}T23:59:59%2B03:00%22"
+DIRECT_FLOW_FILTER = ",%22flowType%22:%22Direct%22"
+RETURN_FLOW_FILTER = ",%22flowType%22:%22Return%22"
 
-MODULE_PATH = "scheduler_runner.tasks.reports.OzonDirectFlowReportScript"
+# Готовые URL для каждого типа перевозок
+ERP_URL = f"{BASE_URL}{DATE_FILTER}%7D"  # Базовый URL с фильтром по дате
+DIRECT_FLOW_URL = f"{BASE_URL}{DATE_FILTER}{DIRECT_FLOW_FILTER}%7D"
+RETURN_FLOW_URL = f"{BASE_URL}{DATE_FILTER}{RETURN_FLOW_FILTER}%7D"
+
+MODULE_PATH = "scheduler_runner.tasks.reports.OzonCarriagesReportScript"
 
 # Конфигурация для скрипта
 SCRIPT_CONFIG = {
-    "ERP_URL": ERP_URL,  # URL отчета по перевозкам с типом "прямой поток" ОЗОН с фильтром по дате
+    "ERP_URL": ERP_URL,  # Базовый URL отчета по перевозкам ОЗОН с фильтром по дате
+    "DIRECT_FLOW_URL": DIRECT_FLOW_URL,  # URL для прямых перевозок
+    "RETURN_FLOW_URL": RETURN_FLOW_URL,  # URL для возвратных перевозок
     "EDGE_USER_DATA_DIR": "",  # Путь будет определен автоматически на основе текущего пользователя
     "OUTPUT_DIR": str(REPORTS_PATHS['REPORTS_JSON']),  # Директория для сохранения отчетов из общих путей
     "USER": "operator",  # Пользователь, от имени которого выполняется задача
-    "TASK_NAME": "OzonDirectFlowReportScript",  # Имя задачи для логирования
+    "TASK_NAME": "OzonCarriagesReportScript",  # Имя задачи для логирования
     "DETAILED_LOGS": False,  # Флаг детализированного логирования
-    "HEADLESS": True,  # Режим без отображения окна (для работы в фоне)
+    "HEADLESS": False,  # True - без отображения окна (для работы в фоне), False - с отображением
     "TIMEOUT": 600,  # Таймаут выполнения задачи в секундах
 
     # Информация о текущем ПВЗ
