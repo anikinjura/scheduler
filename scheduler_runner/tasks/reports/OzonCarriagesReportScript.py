@@ -222,7 +222,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
         print(f"Начинаем первый этап: извлечение информации о {flow_type.lower()} перевозках")
 
         # Ищем элемент с информацией о количестве найденных перевозок
-        total_carriages_text = self.extract_ozon_element_by_xpath("//div[contains(@class, '_total_1n8st_15')]", "textContent")
+        total_carriages_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['TOTAL_CARRIAGES'], "textContent")
         if total_carriages_text:
             # Извлекаем число из текста "Найдено: N"
             import re
@@ -239,7 +239,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
         # Извлечение номеров перевозок из таблицы
         carriage_numbers = []
-        carriage_elements = self.driver.find_elements(By.XPATH, "//div[contains(@class, '_carriageNumber_tu0l6_21')]")
+        carriage_elements = self.driver.find_elements(By.XPATH, self.config['SELECTORS']['CARRIAGE_NUMBER'])
 
         for element in carriage_elements:
             carriage_number = element.text.strip()
@@ -271,7 +271,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 from selenium.webdriver.common.by import By
 
                 # Ищем элемент с информацией о количестве найденных отправлений
-                total_items_text = self.extract_ozon_element_by_xpath("//div[contains(@class, '_total_1n8st_15')]", "textContent")
+                total_items_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['TOTAL_ITEMS_ON_DETAIL_PAGE'], "textContent")
 
                 items_count = 0
                 if total_items_text:

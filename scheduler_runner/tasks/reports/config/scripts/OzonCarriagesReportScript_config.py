@@ -26,6 +26,17 @@ RETURN_FLOW_URL = f"{BASE_URL}{DATE_FILTER}{RETURN_FLOW_FILTER}%7D"
 
 MODULE_PATH = "scheduler_runner.tasks.reports.OzonCarriagesReportScript"
 
+# Селекторы для элементов на странице
+SELECTORS = {
+    "PVZ_INPUT": "//input[@id='input___v-0-0']",
+    "PVZ_INPUT_READONLY": "//input[@id='input___v-0-0' and @readonly]",
+    "PVZ_INPUT_CLASS_READONLY": "//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]",
+    "TOTAL_CARRIAGES": "//div[contains(@class, '_total_1n8st_15')]",  # Количество перевозок на основной странице
+    "TOTAL_ITEMS_ON_LIST_PAGE": "//div[contains(@class, '_total_1n8st_15')]",  # Количество отправлений на странице списка (для совместимости)
+    "TOTAL_ITEMS_ON_DETAIL_PAGE": "//div[contains(@class, '_total_1n8st_15')]",  # Количество отправлений на странице деталей перевозки (тот же селектор, что и в рабочей версии)
+    "CARRIAGE_NUMBER": "//div[contains(@class, '_carriageNumber_tu0l6_21')]",
+}
+
 # Конфигурация для скрипта
 SCRIPT_CONFIG = {
     "ERP_URL": ERP_URL,  # Базовый URL отчета по перевозкам ОЗОН с фильтром по дате
@@ -43,6 +54,9 @@ SCRIPT_CONFIG = {
     "PVZ_ID": PVZ_ID,
     "CURRENT_PVZ_SETTINGS": CURRENT_PVZ_SETTINGS,
     "EXPECTED_PVZ_CODE": CURRENT_PVZ_SETTINGS.get('expected_ozon_pvz', PVZ_ID),  # Используем expected_ozon_pvz из настроек ПВЗ
+
+    # Селекторы
+    "SELECTORS": SELECTORS,
 }
 
 # Расписание задач запуска скрипта для ядра планировщика.
