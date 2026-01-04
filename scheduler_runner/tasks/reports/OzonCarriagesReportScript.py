@@ -25,6 +25,16 @@ import json
 import re
 from typing import Dict, Any
 
+# Модульные константы для магических строк
+LOGIN_INDICATORS = ['login', 'signin', 'auth']
+MARKETPLACE_NAME = 'Ozon'
+REPORT_TYPE_CARRIAGES = 'carriages'
+FLOW_TYPE_DIRECT = 'Direct'
+FLOW_TYPE_RETURN = 'Return'
+FLOW_TYPE_UNKNOWN = 'Unknown'
+FOUND_PATTERN = r'Найдено:\s*(\d+)'
+PVZ_KEYWORDS = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
+
 # Добавляем путь к корню проекта для импорта модулей
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -68,12 +78,12 @@ class OzonCarriagesReportParser(BaseOzonParser):
             self.logger.info(f"Заголовок страницы: {self.driver.title}")
 
         # Проверяем, остались ли мы на странице логина
-        if "login" in self.driver.current_url.lower():
+        if any(indicator in self.driver.current_url.lower() for indicator in LOGIN_INDICATORS):
             if self.logger:
                 self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
             return {
-                'marketplace': 'Ozon',
-                'report_type': 'carriages',
+                'marketplace': MARKETPLACE_NAME,
+                'report_type': REPORT_TYPE_CARRIAGES,
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'timestamp': datetime.now().isoformat(),
                 'error': 'Still on login page - session not active or insufficient permissions',
@@ -147,13 +157,13 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
                 # Это input с ID "input___v-0-0" и значением названия ПВЗ
                 pvz_value = self.extract_ozon_element_by_xpath("//input[@id='input___v-0-0' and @readonly]", "value")
-                if pvz_value and ('ПВЗ' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or '_' in pvz_value):
+                if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS[:2]) or '_' in pvz_value):
                     pvz_info = pvz_value
 
                 # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
                 if not pvz_info:
                     pvz_value = self.extract_ozon_element_by_xpath("//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]", "value")
-                    if pvz_value and ('ПВЗ' in pvz_value.upper() or 'PVZ' in pvz_value.upper() or '_' in pvz_value):
+                    if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS[:2]) or '_' in pvz_value):
                         pvz_info = pvz_value
 
                 # Если не нашли в элементах, ищем в общем тексте
@@ -164,7 +174,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     if pvz_matches:
                         # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
                         for match in pvz_matches:
-                            if '_' in match and any(keyword in match.upper() for keyword in ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']):
+                            if '_' in match and any(keyword in match.upper() for keyword in PVZ_KEYWORDS):
                                 pvz_info = match
                                 break
                         # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
@@ -172,11 +182,11 @@ class OzonCarriagesReportParser(BaseOzonParser):
                             pvz_info = pvz_matches[0]
 
                 # Определяем тип перевозки из закодированного URL
-                flow_type = "Unknown"
+                flow_type = FLOW_TYPE_UNKNOWN
                 if "flowType%22:%22Direct%22" in current_url_encoded:
-                    flow_type = "Direct"
+                    flow_type = FLOW_TYPE_DIRECT
                 elif "flowType%22:%22Return%22" in current_url_encoded:
-                    flow_type = "Return"
+                    flow_type = FLOW_TYPE_RETURN
 
                 # Обработка конкретного типа перевозок
                 if self.logger:
@@ -208,13 +218,13 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                 return {
                     'marketplace': 'Ozon',
-                    'report_type': 'carriages',
+                    'report_type': REPORT_TYPE_CARRIAGES,
                     'date': datetime.now().strftime('%Y-%m-%d'),
                     'timestamp': datetime.now().isoformat(),
                     'error': f'Error extracting data: {str(e)}',
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
-                    'flow_type': 'Unknown',
+                    'flow_type': FLOW_TYPE_UNKNOWN,
                     'unknown_flow': {
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
@@ -246,7 +256,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
         if total_carriages_text:
             # Извлекаем число из текста "Найдено: N"
             import re
-            found_count_match = re.search(r'Найдено:\s*(\d+)', total_carriages_text)
+            found_count_match = re.search(FOUND_PATTERN, total_carriages_text)
             if found_count_match:
                 total_carriages = int(found_count_match.group(1))
                 if self.logger:
@@ -304,7 +314,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 if total_items_text:
                     # Извлекаем число из текста "Найдено: N"
                     import re
-                    found_count_match = re.search(r'Найдено:\s*(\d+)', total_items_text)
+                    found_count_match = re.search(FOUND_PATTERN, total_items_text)
                     if found_count_match:
                         items_count = int(found_count_match.group(1))
                         if self.logger:
