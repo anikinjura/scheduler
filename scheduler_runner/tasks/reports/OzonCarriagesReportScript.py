@@ -37,6 +37,10 @@ from scheduler_runner.tasks.reports.config.scripts.OzonCarriagesReportScript_con
 class OzonCarriagesReportParser(BaseOzonParser):
     """Парсер для получения отчета по перевозкам (прямые и возвратные) из ERP-системы ОЗОН"""
 
+    def __init__(self, config, logger=None):
+        super().__init__(config)
+        self.logger = logger
+
     def login(self):
         """Вход в ERP-систему ОЗОН"""
         # Заходим на страницу с базовым URL (без типа перевозки)
@@ -56,14 +60,17 @@ class OzonCarriagesReportParser(BaseOzonParser):
         # Если передан целевой URL, переходим на него
         if target_url:
             self.driver.get(target_url)
-            print(f"Переходим на целевой URL: {target_url}")
+            if self.logger:
+                self.logger.info(f"Переходим на целевой URL: {target_url}")
 
-        print(f"Текущий URL: {self.driver.current_url}")
-        print(f"Заголовок страницы: {self.driver.title}")
+        if self.logger:
+            self.logger.info(f"Текущий URL: {self.driver.current_url}")
+            self.logger.info(f"Заголовок страницы: {self.driver.title}")
 
         # Проверяем, остались ли мы на странице логина
         if "login" in self.driver.current_url.lower():
-            print("Все еще на странице логина - сессия не активна или недостаточно прав")
+            if self.logger:
+                self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
             return {
                 'marketplace': 'Ozon',
                 'report_type': 'carriages',
@@ -74,7 +81,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 'page_title': self.driver.title,
             }
         else:
-            print("Успешно вошли в систему")
+            if self.logger:
+                self.logger.info("Успешно вошли в систему")
 
             # Ждем полной загрузки страницы
             time.sleep(3)
@@ -86,19 +94,23 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
                 # Получаем текущее значение
                 current_value = pvz_input.get_attribute("value")
-                print(f"Текущий пункт выдачи: {current_value}")
+                if self.logger:
+                    self.logger.info(f"Текущий пункт выдачи: {current_value}")
 
                 # Получаем ожидаемый ПВЗ из конфига (должен совпадать с PVZ_ID)
                 expected_pvz = self.config.get('EXPECTED_PVZ_CODE', '')  # Используем ожидаемый ПВЗ из конфига
-                print(f"Ожидаемый пункт выдачи: {expected_pvz}")
+                if self.logger:
+                    self.logger.info(f"Ожидаемый пункт выдачи: {expected_pvz}")
 
                 # Если текущий пункт выдачи не соответствует ожидаемому, пытаемся изменить
                 if current_value != expected_pvz:
-                    print(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
+                    if self.logger:
+                        self.logger.info(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
 
                     # Сохраняем текущий URL до изменения
                     original_url = self.driver.current_url
-                    print(f"Сохраненный URL до изменения: {original_url}")
+                    if self.logger:
+                        self.logger.info(f"Сохраненный URL до изменения: {original_url}")
 
                     # Используем специфичный метод из базового класса ОЗОН для выбора опции в выпадающем списке
                     success = self.select_pvz_dropdown_option(
@@ -107,13 +119,16 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     )
 
                     if not success:
-                        print(f"Не удалось установить пункт выдачи {expected_pvz}")
-                        print("Продолжаем с текущим пунктом выдачи...")
+                        if self.logger:
+                            self.logger.error(f"Не удалось установить пункт выдачи {expected_pvz}")
+                            self.logger.info("Продолжаем с текущим пунктом выдачи...")
                 else:
-                    print(f"Пункт выдачи уже установлен правильно: {current_value}")
+                    if self.logger:
+                        self.logger.info(f"Пункт выдачи уже установлен правильно: {current_value}")
 
             except Exception as e:
-                print(f"Ошибка при установке пункта выдачи: {e}")
+                if self.logger:
+                    self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
                 # Продолжаем выполнение, даже если не удалось установить правильный пункт выдачи
 
             # Извлечение базовой информации
@@ -164,7 +179,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     flow_type = "Return"
 
                 # Обработка конкретного типа перевозок
-                print(f"Начинаем обработку {flow_type.lower()} перевозок")
+                if self.logger:
+                    self.logger.info(f"Начинаем обработку {flow_type.lower()} перевозок")
                 flow_data = self.process_flow_type(flow_type, report_date)
 
                 # Формируем итоговые данные
@@ -180,14 +196,16 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'pvz_info': pvz_info,  # Информация о пункте выдачи
                 }
 
-                print(f"Информация о ПВЗ: {pvz_info}")
-                print(f"{flow_type} поток - найдено перевозок: {flow_data['total_carriages_found']}, всего отправлений: {flow_data['total_items_count']}")
+                if self.logger:
+                    self.logger.info(f"Информация о ПВЗ: {pvz_info}")
+                    self.logger.info(f"{flow_type} поток - найдено перевозок: {flow_data['total_carriages_found']}, всего отправлений: {flow_data['total_items_count']}")
 
                 return data
             except Exception as e:
-                print(f"Ошибка при извлечении данных: {e}")
-                import traceback
-                print(f"Полный стек трейса: {traceback.format_exc()}")
+                if self.logger:
+                    self.logger.error(f"Ошибка при извлечении данных: {e}")
+                    import traceback
+                    self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                 return {
                     'marketplace': 'Ozon',
                     'report_type': 'carriages',
@@ -213,13 +231,15 @@ class OzonCarriagesReportParser(BaseOzonParser):
         from urllib.parse import unquote
 
         # Используем текущий URL, на котором мы уже находимся
-        print(f"Обрабатываем {flow_type.lower()} перевозки по текущему URL: {self.driver.current_url}")
+        if self.logger:
+            self.logger.info(f"Обрабатываем {flow_type.lower()} перевозки по текущему URL: {self.driver.current_url}")
 
         # Ждем загрузки страницы
         time.sleep(3)
 
         # Первый этап: извлечение информации о перевозках
-        print(f"Начинаем первый этап: извлечение информации о {flow_type.lower()} перевозках")
+        if self.logger:
+            self.logger.info(f"Начинаем первый этап: извлечение информации о {flow_type.lower()} перевозках")
 
         # Ищем элемент с информацией о количестве найденных перевозок
         total_carriages_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['TOTAL_CARRIAGES'], "textContent")
@@ -229,12 +249,15 @@ class OzonCarriagesReportParser(BaseOzonParser):
             found_count_match = re.search(r'Найдено:\s*(\d+)', total_carriages_text)
             if found_count_match:
                 total_carriages = int(found_count_match.group(1))
-                print(f"Найдено {flow_type.lower()} перевозок: {total_carriages}")
+                if self.logger:
+                    self.logger.info(f"Найдено {flow_type.lower()} перевозок: {total_carriages}")
             else:
                 total_carriages = 0
-                print(f"Не удалось извлечь количество {flow_type.lower()} перевозок из текста")
+                if self.logger:
+                    self.logger.warning(f"Не удалось извлечь количество {flow_type.lower()} перевозок из текста")
         else:
-            print(f"Не найден элемент с информацией о количестве {flow_type.lower()} перевозок")
+            if self.logger:
+                self.logger.warning(f"Не найден элемент с информацией о количестве {flow_type.lower()} перевозок")
             total_carriages = 0
 
         # Извлечение номеров перевозок из таблицы
@@ -246,14 +269,17 @@ class OzonCarriagesReportParser(BaseOzonParser):
             if carriage_number:
                 carriage_numbers.append(carriage_number)
 
-        print(f"Извлеченные номера {flow_type.lower()} перевозок: {carriage_numbers}")
+        if self.logger:
+            self.logger.info(f"Извлеченные номера {flow_type.lower()} перевозок: {carriage_numbers}")
 
         # Второй этап: обработка каждой перевозки по отдельности
-        print(f"Начинаем второй этап: обработка {len(carriage_numbers)} {flow_type.lower()} перевозок")
+        if self.logger:
+            self.logger.info(f"Начинаем второй этап: обработка {len(carriage_numbers)} {flow_type.lower()} перевозок")
 
         carriage_details = []
         for i, carriage_number in enumerate(carriage_numbers):
-            print(f"Обрабатываем {flow_type.lower()} перевозку {i+1}/{len(carriage_numbers)}: {carriage_number}")
+            if self.logger:
+                self.logger.info(f"Обрабатываем {flow_type.lower()} перевозку {i+1}/{len(carriage_numbers)}: {carriage_number}")
 
             # Сохраняем оригинальный URL для возврата
             original_url = self.driver.current_url
@@ -261,7 +287,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
             try:
                 # Переходим на страницу с деталями конкретной перевозки
                 carriage_url = f"https://turbo-pvz.ozon.ru/outbound/carriages-archive/{carriage_number}?filter=%7B%22articleState%22:%22Took%22,%22articleType%22:%22ArticlePosting%22%7D"
-                print(f"Переходим на страницу перевозки: {carriage_url}")
+                if self.logger:
+                    self.logger.info(f"Переходим на страницу перевозки: {carriage_url}")
                 self.driver.get(carriage_url)
 
                 # Ждем загрузки страницы
@@ -280,11 +307,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     found_count_match = re.search(r'Найдено:\s*(\d+)', total_items_text)
                     if found_count_match:
                         items_count = int(found_count_match.group(1))
-                        print(f"Найдено отправлений в {flow_type.lower()} перевозке {carriage_number}: {items_count}")
+                        if self.logger:
+                            self.logger.info(f"Найдено отправлений в {flow_type.lower()} перевозке {carriage_number}: {items_count}")
                     else:
-                        print(f"Не удалось извлечь количество отправлений из текста: {total_items_text}")
+                        if self.logger:
+                            self.logger.warning(f"Не удалось извлечь количество отправлений из текста: {total_items_text}")
                 else:
-                    print(f"Не найден элемент с информацией о количестве отправлений для {flow_type.lower()} перевозки {carriage_number}")
+                    if self.logger:
+                        self.logger.warning(f"Не найден элемент с информацией о количестве отправлений для {flow_type.lower()} перевозки {carriage_number}")
 
                 # Возвращаемся на страницу с типом перевозок
                 self.driver.get(original_url)
@@ -297,7 +327,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 }
 
             except Exception as e:
-                print(f"Ошибка при обработке {flow_type.lower()} перевозки {carriage_number}: {e}")
+                if self.logger:
+                    self.logger.error(f"Ошибка при обработке {flow_type.lower()} перевозки {carriage_number}: {e}")
                 # Возвращаемся на страницу с типом перевозок в случае ошибки
                 try:
                     self.driver.get(original_url)
@@ -372,7 +403,7 @@ def main():
         logger.info("Запуск формирования отчета по перевозкам (прямые и возвратные) ERP-системы ОЗОН")
 
         # 4. Создание экземпляра парсера
-        parser = OzonCarriagesReportParser(SCRIPT_CONFIG)
+        parser = OzonCarriagesReportParser(SCRIPT_CONFIG, logger)
 
         # 5. Настройка драйвера
         try:
