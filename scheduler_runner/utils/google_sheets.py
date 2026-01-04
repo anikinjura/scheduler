@@ -411,91 +411,327 @@ class GoogleSheetsReporter:
     Предоставляет методы для подключения к Google-таблице, определения последней строки с данными,
     добавления новых строк, обновления существующих записей и валидации структуры данных.
     """
-    
-    def __init__(self, credentials_path: str, spreadsheet_name: str, worksheet_name: str = "Лист1"):
+
+    def __init__(self, credentials_path: str, spreadsheet_name: str,
+                 worksheet_name: Optional[str] = None,
+                 table_config: Optional[TableConfig] = None):
         """
-        Инициализация подключения к Google-таблице.
+        Инициализация подключения к Google-таблице с поддержкой конфигурации.
 
         Args:
             credentials_path (str): путь к файлу учетных данных
             spreadsheet_name (str): ID или имя таблицы
-            worksheet_name (str): имя листа (по умолчанию "Лист1")
+            worksheet_name (Optional[str]): имя листа (если не указано в table_config)
+            table_config (Optional[TableConfig]): конфигурация структуры таблицы
         """
         self.credentials_path = Path(credentials_path)
         self.spreadsheet_name = spreadsheet_name
-        self.worksheet_name = worksheet_name
+        self.table_config = table_config
+
+        # Определяем имя рабочего листа
+        if table_config:
+            self.worksheet_name = table_config.worksheet_name
+        elif worksheet_name:
+            self.worksheet_name = worksheet_name
+        else:
+            self.worksheet_name = "Лист1"  # значение по умолчанию
+
+        # Настройка логгера
         self.logger = configure_logger(
             user="system",
             task_name="GoogleSheetsReporter",
             detailed=True
         )
-        
-        # Настройка аутентификации
+
+        # Настройка аутентификации (без изменений)
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        
+
         credentials = Credentials.from_service_account_file(
             self.credentials_path,
             scopes=scope
         )
-        
-        # Подключение к Google Sheets
+
+        # Подключение к Google Sheets (без изменений)
         self.gc = gspread.authorize(credentials)
-        
-        # Открытие таблицы и листа
-        self.spreadsheet = self.gc.open_by_key(self.spreadsheet_name) if len(self.spreadsheet_name) > 20 else self.gc.open(self.spreadsheet_name)
+
+        # Открытие таблицы
+        if len(self.spreadsheet_name) > 20:  # Предполагаем, что это ID
+            self.spreadsheet = self.gc.open_by_key(self.spreadsheet_name)
+        else:
+            self.spreadsheet = self.gc.open(self.spreadsheet_name)
+
+        # Открытие рабочего листа
         self.worksheet = self.spreadsheet.worksheet(self.worksheet_name)
-        
+
+        # Синхронизация структуры таблицы с конфигурацией
+        self._sync_table_structure()
+
         self.logger.info(f"Подключено к таблице: {self.spreadsheet_name}, лист: {self.worksheet_name}")
-    
-    def validate_data_structure(self, data: Dict, required_headers: List[str]) -> bool:
+        if self.table_config:
+            self.logger.info(f"Используется конфигурация таблицы с {len(self.table_config.columns)} колонками")
+
+    def _sync_table_structure(self) -> None:
+        """
+        Синхронизирует конфигурацию таблицы с реальной структурой Google Sheets.
+
+        Выполняет:
+        1. Загрузку заголовков из таблицы
+        2. Построение индексов колонок в конфигурации
+        3. Создание конфигурации, если она не была предоставлена
+
+        Raises:
+            gspread.exceptions.APIError: если не удалось получить доступ к таблице
+            ValueError: если структура таблицы не соответствует конфигурации
+        """
+        try:
+            # Загружаем заголовки из первой строки таблицы
+            headers = self.worksheet.row_values(1)
+
+            if not headers:
+                self.logger.warning("Таблица пуста или не содержит заголовков")
+                headers = []
+
+            if self.table_config:
+                # Синхронизация существующей конфигурации
+                self.logger.debug(f"Синхронизация конфигурации с заголовками: {headers}")
+
+                try:
+                    # Строим индексы колонок на основе реальных заголовков
+                    self.table_config.build_column_indexes(headers)
+                    self.logger.info(f"Конфигурация синхронизирована, найдено {len(self.table_config._column_index_map)} колонок")
+
+                    # Проверяем соответствие структуры
+                    self._validate_table_structure()
+
+                except ValueError as e:
+                    self.logger.error(f"Ошибка синхронизации конфигурации: {e}")
+                    raise
+
+            else:
+                # Создаем базовую конфигурацию из заголовков таблицы
+                self.logger.info(f"Создание конфигурации из заголовков таблицы: {headers}")
+                self.table_config = TableConfig.from_headers(headers, self.worksheet_name)
+                self.table_config.build_column_indexes(headers)
+                self.logger.info(f"Создана базовая конфигурация с {len(self.table_config.columns)} колонками")
+
+        except gspread.exceptions.APIError as e:
+            self.logger.error(f"API ошибка при синхронизации структуры таблицы: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Неожиданная ошибка при синхронизации структуры таблицы: {e}")
+            # Продолжаем работу без конфигурации
+            self.table_config = None
+
+    def _validate_table_structure(self) -> bool:
+        """
+        Проверяет соответствие реальной таблицы заданной конфигурации.
+
+        Returns:
+            bool: True если структура соответствует конфигурации
+
+        Raises:
+            ValueError: если обнаружены критические расхождения
+        """
+        if not self.table_config:
+            self.logger.warning("Конфигурация не задана, проверка структуры пропущена")
+            return True
+
+        try:
+            # Получаем текущие заголовки из таблицы
+            current_headers = self.worksheet.row_values(1)
+
+            # Проверяем обязательные колонки
+            missing_required = []
+            for col_def in self.table_config.columns:
+                if col_def.required and col_def.name not in current_headers:
+                    missing_required.append(col_def.name)
+
+            if missing_required:
+                error_msg = f"Отсутствуют обязательные колонки: {missing_required}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Проверяем уникальность колонок в таблице
+            if len(current_headers) != len(set(current_headers)):
+                duplicates = [h for h in current_headers if current_headers.count(h) > 1]
+                error_msg = f"Обнаружены дублирующиеся заголовки: {duplicates}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Предупреждаем о лишних колонках
+            configured_set = set(self.table_config.column_names)
+            current_set = set(current_headers)
+            extra_columns = current_set - configured_set
+
+            if extra_columns:
+                self.logger.warning(f"В таблице обнаружены лишние колонки: {extra_columns}")
+
+            self.logger.debug("Структура таблицы успешно проверена")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при проверке структуры таблицы: {e}")
+            raise
+
+    def validate_data_structure(self, data: Dict, required_headers: Optional[List[str]] = None) -> bool:
         """
         Проверяет, что структура данных соответствует требованиям таблицы.
 
+        Если задана конфигурация таблицы, использует required_headers из нее.
+        Иначе использует переданный список required_headers.
+
         Args:
             data: словарь с данными для проверки
-            required_headers: список обязательных заголовков
+            required_headers: список обязательных заголовков (используется если нет конфигурации)
 
         Returns:
             bool: True, если структура данных корректна
         """
         try:
-            for header in required_headers:
-                if header not in data:
-                    self.logger.error(f"Отсутствует обязательное поле: {header}")
-                    return False
+            # Определяем список обязательных заголовков
+            if self.table_config:
+                headers_to_check = self.table_config.required_headers
+                self.logger.debug(f"Используются обязательные заголовки из конфигурации: {headers_to_check}")
+            elif required_headers:
+                headers_to_check = required_headers
+                self.logger.debug(f"Используются переданные обязательные заголовки: {headers_to_check}")
+            else:
+                self.logger.warning("Не указаны обязательные заголовки и нет конфигурации")
+                return True  # Если ничего не задано, считаем данные валидными
+
+            # Проверяем наличие обязательных полей
+            missing_fields = []
+            for header in headers_to_check:
+                # Определяем ключ данных для проверки
+                data_key = header
+                if self.table_config:
+                    col_def = self.table_config.get_column(header)
+                    if col_def and col_def.data_key:
+                        data_key = col_def.data_key
+
+                if data_key not in data:
+                    missing_fields.append(header)
+
+            if missing_fields:
+                self.logger.error(f"Отсутствуют обязательные поля: {missing_fields}")
+                return False
+
+            # Дополнительная проверка для конфигурации
+            if self.table_config:
+                # Проверяем типы данных для числовых полей
+                for col_def in self.table_config.columns:
+                    if col_def.name in data or (col_def.data_key and col_def.data_key in data):
+                        # Для полей с ожидаемым числовым значением проверяем тип
+                        if col_def.column_type == ColumnType.DATA:
+                            value = data.get(col_def.name) or data.get(col_def.data_key, "")
+                            # Можно добавить дополнительную валидацию типов данных
+                            pass
+
             return True
+
         except Exception as e:
             self.logger.error(f"Ошибка при валидации структуры данных: {e}")
             return False
 
-    def get_last_row_with_data(self, column_index: int = 1) -> int:
+    def get_table_headers(self) -> List[str]:
+        """
+        Возвращает заголовки таблицы.
+
+        Returns:
+            List[str]: список заголовков
+
+        Note:
+            Если есть конфигурация, возвращает заголовки из нее.
+            Иначе загружает из таблицы.
+        """
+        if self.table_config:
+            return self.table_config.column_names
+        else:
+            try:
+                return self.worksheet.row_values(1)
+            except Exception as e:
+                self.logger.error(f"Ошибка при получении заголовков: {e}")
+                return []
+
+    def get_last_row_with_data(self, column_index: Optional[int] = None,
+                              column_name: Optional[str] = None) -> int:
         """
         Определяет последнюю строку с данными в указанном столбце.
 
+        Приоритет параметров: column_name > column_index
+
         Args:
-            column_index (int): индекс столбца для проверки (по умолчанию 1 - столбец A)
+            column_index (Optional[int]): индекс столбца для проверки (по умолчанию 1 - столбец A)
+            column_name (Optional[str]): имя колонки для проверки (используется если есть конфигурация)
 
         Returns:
             int: номер последней строки с данными
         """
         try:
+            # Определяем индекс колонки
+            col_idx = 1  # значение по умолчанию
+
+            if column_name and self.table_config:
+                # Получаем индекс из конфигурации
+                idx = self.table_config.get_column_index(column_name)
+                if idx:
+                    col_idx = idx
+                else:
+                    self.logger.warning(f"Колонка '{column_name}' не найдена в конфигурации, использую индекс {col_idx}")
+            elif column_index:
+                col_idx = column_index
+
             # Получаем все значения в столбце
-            col_values = self.worksheet.col_values(column_index)
+            col_values = self.worksheet.col_values(col_idx)
             # Возвращаем длину списка, что соответствует последней строке с данными
             return len(col_values)
         except Exception as e:
             self.logger.error(f"Ошибка при получении последней строки: {e}")
             return 1  # Возвращаем первую строку как безопасное значение
+
+    def get_column_letter_by_name(self, column_name: str) -> Optional[str]:
+        """
+        Возвращает букву колонки по ее имени.
+
+        Args:
+            column_name: имя колонки
+
+        Returns:
+            Optional[str]: буква колонки (A, B, C) или None если не найдена
+        """
+        if not self.table_config:
+            self.logger.warning("Конфигурация не задана, невозможно получить букву колонки")
+            return None
+
+        return self.table_config.get_column_letter(column_name)
+
+    def get_column_index_by_name(self, column_name: str) -> Optional[int]:
+        """
+        Возвращает индекс колонки по ее имени.
+
+        Args:
+            column_name: имя колонки
+
+        Returns:
+            Optional[int]: индекс колонки (начиная с 1) или None если не найдена
+        """
+        if not self.table_config:
+            self.logger.warning("Конфигурация не задана, невозможно получить индекс колонки")
+            return None
+
+        return self.table_config.get_column_index(column_name)
     
-    def append_row_data_with_row_number(self, data: List) -> int:
+    def append_row_data_with_row_number(self, data: List,
+                                       start_column: str = "A") -> int:
         """
         Добавляет данные в следующую строку после последней заполненной и возвращает номер строки.
 
         Args:
             data: список значений для записи в строку
+            start_column: колонка с которой начинать запись (по умолчанию "A")
 
         Returns:
             int: номер добавленной строки, или 0 при ошибке
@@ -513,13 +749,14 @@ class GoogleSheetsReporter:
                 row_values = self.worksheet.row_values(target_row)
                 if not any(row_values):
                     # Строка пустая, можно использовать
-                    range_name = f'A{target_row}:{chr(64+len(data))}{target_row}'
+                    # Определяем диапазон для записи
+                    end_column = self._get_end_column(start_column, len(data))
+                    range_name = f'{start_column}{target_row}:{end_column}{target_row}'
+
                     self.worksheet.update(range_name, [data], value_input_option='USER_ENTERED')
                     self.logger.info(f"Данные успешно добавлены в пустую строку {target_row}")
                 else:
                     # Строка содержит данные, используем append_rows для добавления новой строки
-                    target_row = current_last_row + 1
-                    # Добавляем пустую строку для данных
                     self.worksheet.append_rows([data], value_input_option='USER_ENTERED')
                     # Получаем новую последнюю строку
                     new_last_row = self.get_last_row_with_data()
@@ -546,6 +783,36 @@ class GoogleSheetsReporter:
             import traceback
             self.logger.error(f"Полный стек трейс: {traceback.format_exc()}")
             return 0
+
+    def _get_end_column(self, start_column: str, data_length: int) -> str:
+        """
+        Вычисляет конечную колонку на основе начальной и длины данных.
+
+        Args:
+            start_column: начальная колонка (A, B, C)
+            data_length: количество колонок данных
+
+        Returns:
+            str: буква конечной колонки
+        """
+        # Конвертируем букву в индекс
+        def letter_to_index(letter: str) -> int:
+            index = 0
+            for char in letter:
+                index = index * 26 + (ord(char.upper()) - ord('A') + 1)
+            return index
+
+        # Конвертируем индекс в букву
+        def index_to_letter(index: int) -> str:
+            letters = ''
+            while index > 0:
+                index, remainder = divmod(index - 1, 26)
+                letters = chr(65 + remainder) + letters
+            return letters
+
+        start_idx = letter_to_index(start_column)
+        end_idx = start_idx + data_length - 1
+        return index_to_letter(end_idx)
     
     def update_or_append_data(self, data: Dict, date_key: str = "Дата", pvz_key: str = "ПВЗ") -> bool:
         """
