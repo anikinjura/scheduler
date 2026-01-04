@@ -106,9 +106,24 @@ def format_report_data_for_sheets(report_data: Dict[str, Any], pvz_id: str) -> D
     giveout_report = report_data.get('giveout_report', {})
     issued_packages = giveout_report.get('issued_packages', giveout_report.get('total_packages', 0))
 
-    # Извлекаем данные из отчета по селлерским отправлениям
+    # Извлекаем данные из отчета по селлерским отправлениям (старый формат)
     direct_flow_report = report_data.get('direct_flow_report', {})
     total_items_count = direct_flow_report.get('total_items_count', 0)  # общее количество отправлений
+
+    # Извлекаем данные из нового отчета по перевозкам (новый формат)
+    carriages_report = report_data.get('carriages_report', {})
+    direct_flow_data = carriages_report.get('direct_flow', {})
+    return_flow_data = carriages_report.get('return_flow', {})
+
+    # Если есть данные в новом формате, используем их
+    direct_flow_count = total_items_count  # по умолчанию используем старые данные
+    return_flow_count = 0  # по умолчанию 0
+
+    if direct_flow_data:
+        direct_flow_count = direct_flow_data.get('total_items_count', total_items_count)
+
+    if return_flow_data:
+        return_flow_count = return_flow_data.get('total_items_count', 0)
 
     # Преобразуем формат даты из YYYY-MM-DD в DD.MM.YYYY для российского формата
     try:
@@ -120,15 +135,15 @@ def format_report_data_for_sheets(report_data: Dict[str, Any], pvz_id: str) -> D
         # Если формат даты не соответствует ожидаемому, используем как есть
         formatted_date = date_str
 
-    # Формируем структуру данных для Google-таблицы в соответствии с реальной структурой листа KPI
+    # Формируем структуру данных для Google-таблицы в соответствии с новой структурой
     # Id будет вычислен формулой в таблице, поэтому оставляем его пустым
     formatted_data = {
         "id": "",  # будет заполнен формулой в таблице
         "Дата": formatted_date,
         "ПВЗ": pvz_info,  # используем информацию из отчета
         "Количество выдач": issued_packages,  # используем количество выданных посылок из отчета по выдаче
-        "Селлер (FBS)": total_items_count,  # используем общее количество отправлений из отчета по селлерским отправлениям
-        "Обработано возвратов": ""  # может быть заполнен позже, если нужна дополнительная информация
+        "Прямой поток": direct_flow_count,  # используем данные о прямых перевозках
+        "Возвратный поток": return_flow_count  # используем данные о возвратных перевозках
     }
 
     return formatted_data
@@ -159,8 +174,10 @@ def main() -> None:
         # Проверяем, есть ли данные в каком-либо из отчетов
         giveout_report = report_data.get('giveout_report', {})
         direct_flow_report = report_data.get('direct_flow_report', {})
+        carriages_report = report_data.get('carriages_report', {})
 
-        if not giveout_report and not direct_flow_report:
+        # Проверяем, есть ли какие-либо данные в отчетах
+        if not giveout_report and not direct_flow_report and not carriages_report:
             logger.warning("Нет данных ни в одном из отчетов")
             return
 

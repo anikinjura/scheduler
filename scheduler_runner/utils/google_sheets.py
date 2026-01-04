@@ -212,12 +212,25 @@ class GoogleSheetsReporter:
                                     break
 
                                 # Обновляем строку новыми значениями, но оставляем Id столбец с формулой
-                                # Получаем текущие значения строки
-                                current_row_values = self.worksheet.row_values(row_num)
+                                # Получаем заголовки из первой строки, чтобы определить порядок колонок
+                                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
+
                                 # Подготавливаем новые значения, но оставляем Id столбец (A) без изменений
-                                updated_values = [current_row_values[0] if len(current_row_values) > 0 else ""]  # Id столбец - оставляем как есть
-                                for key in ["Дата", "ПВЗ", "Количество выдач", "Селлер (FBS)", "Обработано возвратов"]:
-                                    updated_values.append(data.get(key, ""))
+                                updated_values = [row_values[0] if len(row_values) > 0 else ""]  # Id столбец - оставляем как есть
+
+                                # Для каждой колонки (кроме Id) получаем соответствующее значение из данных
+                                for i in range(1, len(headers)):  # начиная с 2-го столбца (B), т.к. A - Id
+                                    if i < len(row_values):
+                                        current_value = row_values[i]
+                                    else:
+                                        current_value = ""
+
+                                    # Если есть заголовок и он есть в данных, используем значение из данных
+                                    if i < len(headers) and headers[i] in data:
+                                        updated_values.append(data[headers[i]])
+                                    else:
+                                        # Оставляем текущее значение, если поле не найдено в новых данных
+                                        updated_values.append(current_value)
 
                                 # Обновляем диапазон
                                 self.worksheet.update(f'A{row_num}:{chr(64+len(updated_values))}{row_num}',
@@ -241,33 +254,24 @@ class GoogleSheetsReporter:
                 # Затем установим формулу в Id столбце
                 current_last_row = self.get_last_row_with_data()
 
-                # Подготовим данные с пустым Id, сохраняя типы данных
-                # Дата - строка
-                date_value = data.get("Дата", "")
-                # ПВЗ - строка
-                pvz_value = data.get("ПВЗ", "")
-                # Количество выдач - число (если возможно)
-                giveout_value = data.get("Количество выдач", 0)
-                if isinstance(giveout_value, str) and giveout_value.isdigit():
-                    giveout_value = int(giveout_value)
-                elif isinstance(giveout_value, (int, float)):
-                    pass  # уже число
-                else:
-                    giveout_value = 0  # по умолчанию
+                # Получаем заголовки из первой строки, чтобы определить порядок колонок
+                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
 
-                # Селлер (FBS) - строка
-                seller_value = data.get("Селлер (FBS)", "")
-                # Обработано возвратов - число (если возможно)
-                returns_value = data.get("Обработано возвратов", 0)
-                if isinstance(returns_value, str) and returns_value.isdigit():
-                    returns_value = int(returns_value)
-                elif isinstance(returns_value, (int, float)):
-                    pass  # уже число
-                else:
-                    returns_value = 0  # по умолчанию
-
-                # Подготовим данные с пустым Id
-                values = ["", date_value, pvz_value, giveout_value, seller_value, returns_value]
+                # Подготовим данные в правильном порядке в соответствии с заголовками таблицы
+                values = [""]
+                for header in headers[1:]:  # начиная со второго столбца (первый - Id)
+                    if header in data:
+                        value = data[header]
+                        # Проверяем тип данных и конвертируем при необходимости
+                        if isinstance(value, str) and value.isdigit():
+                            value = int(value)
+                        elif isinstance(value, (int, float)):
+                            pass  # уже число
+                        else:
+                            value = value if value is not None else ""
+                        values.append(value)
+                    else:
+                        values.append("")  # если поле не найдено в данных, добавляем пустое значение
 
                 row_num = self.append_row_data_with_row_number(values)
                 if row_num > 0:
@@ -284,7 +288,25 @@ class GoogleSheetsReporter:
             else:
                 self.logger.debug(f"update_or_append_data: дата или ПВЗ не указаны, добавляем новую строку")
                 # Если дата или ПВЗ не указаны, просто добавляем новую строку
-                values = [data.get(key, "") for key in data.keys()]
+                # Получаем заголовки из первой строки
+                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
+
+                # Подготовим данные в правильном порядке в соответствии с заголовками таблицы
+                values = [""]
+                for header in headers[1:]:  # начиная со второго столбца (первый - Id)
+                    if header in data:
+                        value = data[header]
+                        # Проверяем тип данных и конвертируем при необходимости
+                        if isinstance(value, str) and value.isdigit():
+                            value = int(value)
+                        elif isinstance(value, (int, float)):
+                            pass  # уже число
+                        else:
+                            value = value if value is not None else ""
+                        values.append(value)
+                    else:
+                        values.append("")  # если поле не найдено в данных, добавляем пустое значение
+
                 result = self.append_row_data_with_row_number(values)
                 return result != 0
         except Exception as e:
