@@ -104,10 +104,24 @@ def format_notification_message(report_data: Dict[str, Any]) -> str:
     giveout_report = report_data.get('giveout_report', {})
     issued_packages = giveout_report.get('issued_packages', giveout_report.get('total_packages', 0))
 
-    # Извлекаем данные из отчета по селлерским отправлениям
+    # Извлекаем данные из отчета по селлерским отправлениям (старый формат)
     direct_flow_report = report_data.get('direct_flow_report', {})
     total_items_count = direct_flow_report.get('total_items_count', 0)
     total_carriages_found = direct_flow_report.get('total_carriages_found', 0)
+
+    # Извлекаем данные из нового отчета по перевозкам (новый формат)
+    carriages_report = report_data.get('carriages_report', {})
+    direct_flow_data = carriages_report.get('direct_flow', {})
+    return_flow_data = carriages_report.get('return_flow', {})
+
+    # Если есть данные в новом формате, используем их
+    if direct_flow_data:
+        total_items_count = direct_flow_data.get('total_items_count', total_items_count)
+        total_carriages_found = direct_flow_data.get('total_carriages_found', total_carriages_found)
+
+    # Также можем извлечь данные о возвратных перевозках
+    return_items_count = return_flow_data.get('total_items_count', 0)
+    return_carriages_found = return_flow_data.get('total_carriages_found', 0)
 
     # Преобразуем формат даты из YYYY-MM-DD в DD.MM.YYYY
     try:
@@ -128,7 +142,11 @@ def format_notification_message(report_data: Dict[str, Any]) -> str:
     message += f"Количество выдач: {issued_packages}\n"
 
     # Добавляем информацию из отчета по селлерским отправлениям в новом формате
-    message += f"Прямые перевозки: {total_items_count} ({total_carriages_found} перевозки)"
+    message += f"Прямые перевозки: {total_items_count} ({total_carriages_found} перевозки)\n"
+
+    # Добавляем информацию о возвратных перевозках, если есть
+    if return_carriages_found > 0:
+        message += f"Возвратные перевозки: {return_items_count} ({return_carriages_found} перевозки)"
 
     return message
 
@@ -181,8 +199,10 @@ def main() -> None:
         # Проверяем, есть ли данные в каком-либо из отчетов
         giveout_report = report_data.get('giveout_report', {})
         direct_flow_report = report_data.get('direct_flow_report', {})
+        carriages_report = report_data.get('carriages_report', {})
 
-        if not giveout_report and not direct_flow_report:
+        # Проверяем, есть ли какие-либо данные в отчетах
+        if not giveout_report and not direct_flow_report and not carriages_report:
             logger.warning("Нет данных ни в одном из отчетов")
             return
 
