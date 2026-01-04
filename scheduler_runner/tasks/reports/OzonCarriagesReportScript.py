@@ -25,6 +25,9 @@ import json
 import re
 from typing import Dict, Any
 
+# Импорты для обработки исключений Selenium
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
 # Модульные константы для магических строк
 LOGIN_INDICATORS = ['login', 'signin', 'auth']
 MARKETPLACE_NAME = 'Ozon'
@@ -211,13 +214,53 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     self.logger.info(f"{flow_type} поток - найдено перевозок: {flow_data['total_carriages_found']}, всего отправлений: {flow_data['total_items_count']}")
 
                 return data
+            except NoSuchElementException as e:
+                if self.logger:
+                    self.logger.error(f"Не найден элемент на странице: {e}")
+                return {
+                    'marketplace': MARKETPLACE_NAME,
+                    'report_type': REPORT_TYPE_CARRIAGES,
+                    'date': datetime.now().strftime('%Y-%m-%d'),
+                    'timestamp': datetime.now().isoformat(),
+                    'error': f'Element not found: {str(e)}',
+                    'current_url': self.driver.current_url,
+                    'page_title': self.driver.title,
+                    'flow_type': FLOW_TYPE_UNKNOWN,
+                    'unknown_flow': {
+                        'total_carriages_found': 0,
+                        'carriage_numbers': [],
+                        'carriage_details': [],
+                        'total_items_count': 0
+                    },
+                    'pvz_info': '',
+                }
+            except TimeoutException as e:
+                if self.logger:
+                    self.logger.error(f"Таймаут ожидания элемента: {e}")
+                return {
+                    'marketplace': MARKETPLACE_NAME,
+                    'report_type': REPORT_TYPE_CARRIAGES,
+                    'date': datetime.now().strftime('%Y-%m-%d'),
+                    'timestamp': datetime.now().isoformat(),
+                    'error': f'Timeout: {str(e)}',
+                    'current_url': self.driver.current_url,
+                    'page_title': self.driver.title,
+                    'flow_type': FLOW_TYPE_UNKNOWN,
+                    'unknown_flow': {
+                        'total_carriages_found': 0,
+                        'carriage_numbers': [],
+                        'carriage_details': [],
+                        'total_items_count': 0
+                    },
+                    'pvz_info': '',
+                }
             except Exception as e:
                 if self.logger:
-                    self.logger.error(f"Ошибка при извлечении данных: {e}")
+                    self.logger.error(f"Неожиданная ошибка при извлечении данных: {e}")
                     import traceback
                     self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                 return {
-                    'marketplace': 'Ozon',
+                    'marketplace': MARKETPLACE_NAME,
                     'report_type': REPORT_TYPE_CARRIAGES,
                     'date': datetime.now().strftime('%Y-%m-%d'),
                     'timestamp': datetime.now().isoformat(),
@@ -349,6 +392,34 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'items_count': items_count,  # Количество отправлений в перевозке
                 }
 
+            except NoSuchElementException as e:
+                if self.logger:
+                    self.logger.error(f"Не найден элемент при обработке {flow_type.lower()} перевозки {carriage_number}: {e}")
+                # Возвращаемся на страницу с типом перевозок в случае ошибки
+                try:
+                    self.driver.get(original_url)
+                except:
+                    pass  # Если не удалось вернуться, продолжаем с текущей страницы
+
+                carriage_detail = {
+                    'carriage_number': carriage_number,
+                    'items_count': 0,
+                    'error': f'Element not found: {str(e)}'
+                }
+            except TimeoutException as e:
+                if self.logger:
+                    self.logger.error(f"Таймаут при обработке {flow_type.lower()} перевозки {carriage_number}: {e}")
+                # Возвращаемся на страницу с типом перевозок в случае ошибки
+                try:
+                    self.driver.get(original_url)
+                except:
+                    pass  # Если не удалось вернуться, продолжаем с текущей страницы
+
+                carriage_detail = {
+                    'carriage_number': carriage_number,
+                    'items_count': 0,
+                    'error': f'Timeout: {str(e)}'
+                }
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"Ошибка при обработке {flow_type.lower()} перевозки {carriage_number}: {e}")
