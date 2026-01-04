@@ -291,6 +291,19 @@ class OzonCarriagesReportParser(BaseOzonParser):
             if self.logger:
                 self.logger.info(f"Обрабатываем {flow_type.lower()} перевозку {i+1}/{len(carriage_numbers)}: {carriage_number}")
 
+            # Проверка формата номера перевозки
+            import re
+            if not re.match(r'^[A-Za-z0-9_-]+$', carriage_number):
+                if self.logger:
+                    self.logger.warning(f"Неверный формат номера перевозки: {carriage_number}")
+                carriage_detail = {
+                    'carriage_number': carriage_number,
+                    'items_count': 0,
+                    'error': 'Invalid carriage number format'
+                }
+                carriage_details.append(carriage_detail)
+                continue
+
             # Сохраняем оригинальный URL для возврата
             original_url = self.driver.current_url
 
