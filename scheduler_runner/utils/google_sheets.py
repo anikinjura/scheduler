@@ -21,8 +21,388 @@ from pathlib import Path
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
 from scheduler_runner.utils.logging import configure_logger
+
+
+class ColumnType(Enum):
+    """
+    Типы колонок в таблице Google Sheets.
+
+    Используется для семантического разделения колонок:
+    - ID: Идентификатор записи (часто формула)
+    - DATA: Простые данные, вводимые пользователем или из отчетов
+    - FORMULA: Колонки с формулами Google Sheets
+    - CALCULATED: Вычисляемые значения на стороне Python-скрипта
+    - IGNORE: Колонки, которые игнорируются при операциях записи
+    """
+    ID = auto()          # Идентификатор (часто формула)
+    DATA = auto()        # Простые данные
+    FORMULA = auto()     # Формулы Google Sheets
+    CALCULATED = auto()  # Вычисляемые значения (на стороне скрипта)
+    IGNORE = auto()      # Колонки, которые игнорируем при записи
+
+
+@dataclass
+class ColumnDefinition:
+    """
+    Определение отдельной колонки таблицы.
+
+    Атрибуты:
+        name (str): Имя колонки, как оно отображается в заголовке таблицы
+        column_type (ColumnType): Тип колонки (по умолчанию DATA)
+        required (bool): Обязательна ли колонка для валидации (по умолчанию False)
+        formula_template (Optional[str]): Шаблон формулы для колонок типа FORMULA
+        unique_key (bool): Является ли колонка частью уникального ключа записи
+        data_key (Optional[str]): Ключ в данных, если отличается от имени колонки
+        column_letter (Optional[str]): Буква колонки (A, B, C) - вычисляется автоматически
+    """
+    name: str
+    column_type: ColumnType = ColumnType.DATA
+    required: bool = False
+    formula_template: Optional[str] = None  # Шаблон формулы, например: "=B{row}&C{row}"
+    unique_key: bool = False  # Является ли частью уникального ключа
+    data_key: Optional[str] = None  # Ключ в данных, если отличается от имени колонки
+    column_letter: Optional[str] = None  # Буква колонки (A, B, C) - вычисляем позже
+
+    def __post_init__(self):
+        """
+        Валидация после инициализации.
+
+        Проверяет:
+        1. Для колонок типа FORMULA должен быть указан formula_template
+        2. Имя колонки не должно быть пустым
+        """
+        if not self.name:
+            raise ValueError("Имя колонки не может быть пустым")
+
+        if self.column_type == ColumnType.FORMULA and not self.formula_template:
+            raise ValueError(
+                f"Для колонки '{self.name}' типа FORMULA необходимо указать formula_template"
+            )
+
+        # Нормализуем имя колонки (убираем лишние пробелы)
+        self.name = self.name.strip()
+
+
+@dataclass
+class TableConfig:
+    """
+    Конфигурация структуры таблицы Google Sheets.
+
+    Атрибуты:
+        worksheet_name (str): Имя листа в таблице
+        columns (List[ColumnDefinition]): Список определений колонок
+        id_column (str): Имя колонки, содержащей идентификатор записи (по умолчанию "id")
+        unique_key_columns (Optional[List[str]]): Список колонок, формирующих уникальный ключ
+        id_formula_template (Optional[str]): Шаблон формулы для вычисления ID
+        header_row (int): Номер строки с заголовками (по умолчанию 1)
+
+    Внутренние атрибуты:
+        _column_index_map (Dict[str, int]): Маппинг имени колонки -> индекс (начинается с 1)
+        _letter_index_map (Dict[str, str]): Маппинг имени колонки -> буква колонки (A, B, C)
+    """
+    worksheet_name: str
+    columns: List[ColumnDefinition]
+    id_column: str = "id"
+    unique_key_columns: Optional[List[str]] = None
+    id_formula_template: Optional[str] = None  # Шаблон формулы для Id
+    header_row: int = 1  # Строка с заголовками (обычно 1)
+
+    # Внутренние поля (не инициализируются пользователем)
+    _column_index_map: Dict[str, int] = field(default_factory=dict, init=False)
+    _letter_index_map: Dict[str, str] = field(default_factory=dict, init=False)
+
+    def __post_init__(self):
+        """
+        Инициализация после создания объекта.
+
+        Выполняет:
+        1. Автоматическое определение unique_key_columns, если не заданы явно
+        2. Проверку уникальности имен колонок
+        3. Проверку наличия id_column в списке колонок
+        """
+        # Проверяем уникальность имен колонок
+        column_names = [col.name for col in self.columns]
+        if len(column_names) != len(set(column_names)):
+            duplicates = [name for name in column_names if column_names.count(name) > 1]
+            raise ValueError(f"Обнаружены дублирующиеся имена колонок: {duplicates}")
+
+        # Автоматически определяем unique_key_columns, если не заданы
+        if self.unique_key_columns is None:
+            self.unique_key_columns = [col.name for col in self.columns if col.unique_key]
+
+        # Проверяем, что id_column существует в таблице
+        if self.id_column not in column_names:
+            raise ValueError(f"Колонка id_column='{self.id_column}' не найдена в списке колонок")
+
+        # Проверяем, что все unique_key_columns существуют
+        for key in self.unique_key_columns:
+            if key not in column_names:
+                raise ValueError(f"Колонка уникального ключа '{key}' не найдена в списке колонок")
+
+        # Проверяем id_formula_template, если указан
+        if self.id_formula_template and self.id_column:
+            id_col_def = self.get_column(self.id_column)
+            if id_col_def and id_col_def.column_type != ColumnType.FORMULA:
+                raise ValueError(
+                    f"Колонка '{self.id_column}' должна быть типа FORMULA "
+                    f"если указан id_formula_template"
+                )
+
+    @property
+    def column_names(self) -> List[str]:
+        """Возвращает список всех имен колонок."""
+        return [col.name for col in self.columns]
+
+    @property
+    def required_headers(self) -> List[str]:
+        """Возвращает список обязательных заголовков."""
+        return [col.name for col in self.columns if col.required]
+
+    @property
+    def data_columns(self) -> List[ColumnDefinition]:
+        """Возвращает колонки с данными (DATA и CALCULATED)."""
+        return [col for col in self.columns if col.column_type in (ColumnType.DATA, ColumnType.CALCULATED)]
+
+    @property
+    def formula_columns(self) -> List[ColumnDefinition]:
+        """Возвращает колонки с формулами."""
+        return [col for col in self.columns if col.column_type == ColumnType.FORMULA]
+
+    def get_column(self, name: str) -> Optional[ColumnDefinition]:
+        """Возвращает определение колонки по имени."""
+        for col in self.columns:
+            if col.name == name:
+                return col
+        return None
+
+    def is_unique_key(self, column_name: str) -> bool:
+        """Проверяет, является ли колонка частью уникального ключа."""
+        return column_name in (self.unique_key_columns or [])
+
+    def get_column_index(self, column_name: str) -> Optional[int]:
+        """Возвращает индекс колонки (начиная с 1) по имени."""
+        return self._column_index_map.get(column_name)
+
+    def get_column_letter(self, column_name: str) -> Optional[str]:
+        """Возвращает букву колонки (A, B, C) по имени."""
+        return self._letter_index_map.get(column_name)
+
+    def build_column_indexes(self, headers: List[str]):
+        """
+        Строит индексы колонок на основе реальных заголовков таблицы.
+
+        Args:
+            headers: Список заголовков из первой строки таблицы
+
+        Raises:
+            ValueError: Если какие-то обязательные колонки отсутствуют в таблице
+        """
+        self._column_index_map.clear()
+        self._letter_index_map.clear()
+
+        # Проверяем наличие обязательных колонок
+        missing_required = []
+        for col_def in self.columns:
+            if col_def.required and col_def.name not in headers:
+                missing_required.append(col_def.name)
+
+        if missing_required:
+            raise ValueError(
+                f"В таблице отсутствуют обязательные колонки: {missing_required}. "
+                f"Найдены колонки: {headers}"
+            )
+
+        # Строим маппинги
+        for idx, header in enumerate(headers, start=1):
+            col_def = self.get_column(header)
+            if col_def:
+                self._column_index_map[header] = idx
+                letter = self._index_to_column_letter(idx)
+                self._letter_index_map[header] = letter
+                col_def.column_letter = letter
+
+        # Логируем результат
+        if len(self._column_index_map) < len(self.columns):
+            configured_columns = set(self.column_names)
+            found_columns = set(headers)
+            missing = configured_columns - found_columns
+            extra = found_columns - configured_columns
+
+            if missing:
+                print(f"Предупреждение: В таблице отсутствуют настроенные колонки: {missing}")
+            if extra:
+                print(f"Предупреждение: В таблице найдены лишние колонки: {extra}")
+
+    @staticmethod
+    def _index_to_column_letter(index: int) -> str:
+        """
+        Преобразует индекс колонки в буквенное обозначение.
+
+        Args:
+            index: Номер колонки (начинается с 1)
+
+        Returns:
+            Буквенное обозначение колонки (A, B, ..., Z, AA, AB, ...)
+
+        Examples:
+            1 -> 'A'
+            26 -> 'Z'
+            27 -> 'AA'
+            28 -> 'AB'
+        """
+        letter = ''
+        while index > 0:
+            index, remainder = divmod(index - 1, 26)
+            letter = chr(65 + remainder) + letter
+        return letter
+
+    @staticmethod
+    def from_headers(headers: List[str], worksheet_name: str = "Лист1", id_column: str = "id") -> 'TableConfig':
+        """
+        Создает базовую конфигурацию из списка заголовков.
+
+        Args:
+            headers: Список заголовков из таблицы
+            worksheet_name: Имя листа
+            id_column: Имя колонки идентификатора (должно быть в списке headers)
+
+        Returns:
+            TableConfig с колонками типа DATA
+        """
+        columns = [
+            ColumnDefinition(name=header, column_type=ColumnType.DATA)
+            for header in headers
+        ]
+        # Если id_column не в списке headers, используем первый заголовок или оставляем пустым
+        actual_id_column = id_column if id_column in headers else headers[0] if headers else "id"
+        return TableConfig(
+            worksheet_name=worksheet_name,
+            columns=columns,
+            id_column=actual_id_column
+        )
+
+
+def create_kpi_table_config() -> TableConfig:
+    """
+    Создает предварительно настроенную конфигурацию для таблицы KPI.
+
+    Соответствует структуре:
+        id, Дата, ПВЗ, Количество выдач, Прямой поток, Возвратный поток
+
+    Returns:
+        TableConfig для таблицы KPI
+    """
+    return TableConfig(
+        worksheet_name="KPI",
+        columns=[
+            ColumnDefinition(
+                name="id",
+                column_type=ColumnType.FORMULA,
+                formula_template="=B{row}&C{row}"
+            ),
+            ColumnDefinition(
+                name="Дата",
+                column_type=ColumnType.DATA,
+                required=True,
+                unique_key=True
+            ),
+            ColumnDefinition(
+                name="ПВЗ",
+                column_type=ColumnType.DATA,
+                required=True,
+                unique_key=True
+            ),
+            ColumnDefinition(
+                name="Количество выдач",
+                column_type=ColumnType.DATA
+            ),
+            ColumnDefinition(
+                name="Прямой поток",
+                column_type=ColumnType.DATA
+            ),
+            ColumnDefinition(
+                name="Возвратный поток",
+                column_type=ColumnType.DATA
+            ),
+        ],
+        id_column="id",
+        id_formula_template="=B{row}&C{row}"
+    )
+
+
+def create_basic_table_config(worksheet_name: str = "Лист1",
+                             id_column: str = "id",
+                             unique_keys: Optional[List[str]] = None) -> TableConfig:
+    """
+    Создает базовую конфигурацию таблицы.
+
+    Args:
+        worksheet_name: Имя листа
+        id_column: Имя колонки идентификатора
+        unique_keys: Список колонок уникального ключа
+
+    Returns:
+        Базовая TableConfig
+    """
+    return TableConfig(
+        worksheet_name=worksheet_name,
+        columns=[],
+        id_column=id_column,
+        unique_key_columns=unique_keys
+    )
+
+
+if __name__ == "__main__":
+    """
+    Тестирование классов конфигурации.
+    Запустить: python -m scheduler_runner.utils.google_sheets
+    """
+
+    print("=" * 60)
+    print("Тестирование классов конфигурации таблицы")
+    print("=" * 60)
+
+    # Тест 1: Создание конфигурации KPI
+    print("\n1. Тест конфигурации KPI:")
+    kpi_config = create_kpi_table_config()
+    print(f"   Лист: {kpi_config.worksheet_name}")
+    print(f"   Колонки: {kpi_config.column_names}")
+    print(f"   Уникальные ключи: {kpi_config.unique_key_columns}")
+    print(f"   Обязательные: {kpi_config.required_headers}")
+
+    # Тест 2: Построение индексов
+    print("\n2. Тест построения индексов:")
+    headers = ["id", "Дата", "ПВЗ", "Количество выдач", "Прямой поток", "Возвратный поток"]
+    kpi_config.build_column_indexes(headers)
+
+    for col_name in kpi_config.column_names:
+        idx = kpi_config.get_column_index(col_name)
+        letter = kpi_config.get_column_letter(col_name)
+        print(f"   {col_name}: индекс={idx}, буква={letter}")
+
+    # Тест 3: Конвертация индекса в букву
+    print("\n3. Тест конвертации индекса в букву:")
+    test_indices = [1, 2, 26, 27, 28, 52, 53]
+    for idx in test_indices:
+        letter = TableConfig._index_to_column_letter(idx)
+        print(f"   Индекс {idx:3} -> '{letter}'")
+
+    # Тест 4: Создание из заголовков
+    print("\n4. Тест создания конфигурации из заголовков:")
+    custom_headers = ["OrderID", "Customer", "Amount", "Status"]
+    # Используем метод from_headers, который теперь корректно обрабатывает id_column
+    custom_config = TableConfig.from_headers(custom_headers, "Orders", id_column="OrderID")
+    print(f"   Лист: {custom_config.worksheet_name}")
+    print(f"   Колонки: {custom_config.column_names}")
+    print(f"   Уникальные ключи: {custom_config.unique_key_columns}")
+
+    print("\n" + "=" * 60)
+    print("Все тесты пройдены успешно!")
+    print("=" * 60)
 
 
 class GoogleSheetsReporter:
