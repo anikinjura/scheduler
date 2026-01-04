@@ -101,35 +101,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 date_match = re.search(r'(?:startSentMoment|endSentMoment)%22:%22(\d{4}-\d{2}-\d{2})', current_url_encoded)
                 report_date = date_match.group(1) if date_match else datetime.now().strftime('%Y-%m-%d')
 
-                # Используем специфичные методы из базового класса ОЗОН для извлечения информации о ПВЗ
-                pvz_info = ""
-
-                # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
-                # Это input с ID "input___v-0-0" и значением названия ПВЗ
-                pvz_value = self.extract_ozon_element_by_xpath("//input[@id='input___v-0-0' and @readonly]", "value")
-                if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS[:2]) or '_' in pvz_value):
-                    pvz_info = pvz_value
-
-                # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
-                if not pvz_info:
-                    pvz_value = self.extract_ozon_element_by_xpath("//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]", "value")
-                    if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS[:2]) or '_' in pvz_value):
-                        pvz_info = pvz_value
-
-                # Если не нашли в элементах, ищем в общем тексте
-                # Ищем все возможные ПВЗ в формате НАЗВАНИЕ_число
-                if not pvz_info:
-                    page_text = self.driver.find_element(By.TAG_NAME, "body").text
-                    pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
-                    if pvz_matches:
-                        # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
-                        for match in pvz_matches:
-                            if '_' in match and any(keyword in match.upper() for keyword in PVZ_KEYWORDS):
-                                pvz_info = match
-                                break
-                        # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
-                        if not pvz_info and pvz_matches:
-                            pvz_info = pvz_matches[0]
+                # Извлекаем информацию о ПВЗ с помощью вспомогательного метода
+                pvz_info = self._extract_pvz_info()
 
                 # Определяем тип перевозки из закодированного URL
                 flow_type = FLOW_TYPE_UNKNOWN
