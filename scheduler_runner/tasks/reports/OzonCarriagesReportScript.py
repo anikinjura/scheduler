@@ -80,69 +80,16 @@ class OzonCarriagesReportParser(BaseOzonParser):
             self.logger.info(f"Текущий URL: {self.driver.current_url}")
             self.logger.info(f"Заголовок страницы: {self.driver.title}")
 
-        # Проверяем, остались ли мы на странице логина
-        if any(indicator in self.driver.current_url.lower() for indicator in LOGIN_INDICATORS):
-            if self.logger:
-                self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
-            return {
-                'marketplace': MARKETPLACE_NAME,
-                'report_type': REPORT_TYPE_CARRIAGES,
-                'date': datetime.now().strftime('%Y-%m-%d'),
-                'timestamp': datetime.now().isoformat(),
-                'error': 'Still on login page - session not active or insufficient permissions',
-                'current_url': self.driver.current_url,
-                'page_title': self.driver.title,
-            }
+        # Проверяем статус авторизации
+        is_logged_in, error_response = self._check_authorization_status()
+        if not is_logged_in:
+            return error_response
         else:
-            if self.logger:
-                self.logger.info("Успешно вошли в систему")
-
             # Ждем полной загрузки страницы
             time.sleep(3)
 
             # Пытаемся установить правильный пункт выдачи
-            try:
-                # Находим элемент выпадающего списка по ID
-                pvz_input = self.driver.find_element(By.XPATH, "//input[@id='input___v-0-0']")
-
-                # Получаем текущее значение
-                current_value = pvz_input.get_attribute("value")
-                if self.logger:
-                    self.logger.info(f"Текущий пункт выдачи: {current_value}")
-
-                # Получаем ожидаемый ПВЗ из конфига (должен совпадать с PVZ_ID)
-                expected_pvz = self.config.get('EXPECTED_PVZ_CODE', '')  # Используем ожидаемый ПВЗ из конфига
-                if self.logger:
-                    self.logger.info(f"Ожидаемый пункт выдачи: {expected_pvz}")
-
-                # Если текущий пункт выдачи не соответствует ожидаемому, пытаемся изменить
-                if current_value != expected_pvz:
-                    if self.logger:
-                        self.logger.info(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
-
-                    # Сохраняем текущий URL до изменения
-                    original_url = self.driver.current_url
-                    if self.logger:
-                        self.logger.info(f"Сохраненный URL до изменения: {original_url}")
-
-                    # Используем специфичный метод из базового класса ОЗОН для выбора опции в выпадающем списке
-                    success = self.select_pvz_dropdown_option(
-                        expected_pvz=expected_pvz,
-                        original_url=original_url
-                    )
-
-                    if not success:
-                        if self.logger:
-                            self.logger.error(f"Не удалось установить пункт выдачи {expected_pvz}")
-                            self.logger.info("Продолжаем с текущим пунктом выдачи...")
-                else:
-                    if self.logger:
-                        self.logger.info(f"Пункт выдачи уже установлен правильно: {current_value}")
-
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
-                # Продолжаем выполнение, даже если не удалось установить правильный пункт выдачи
+            self._try_set_pvz()
 
             # Извлечение базовой информации
             try:
@@ -198,8 +145,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
                 # Формируем итоговые данные
                 data = {
-                    'marketplace': 'Ozon',
-                    'report_type': f'carriages_{flow_type.lower()}',
+                    'marketplace': MARKETPLACE_NAME,
+                    'report_type': f'{REPORT_TYPE_CARRIAGES}_{flow_type.lower()}',
                     'date': report_date,
                     'timestamp': datetime.now().isoformat(),
                     'page_title': self.driver.title,
@@ -276,6 +223,107 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     },
                     'pvz_info': '',
                 }
+
+    def _check_authorization_status(self) -> tuple:
+        """Проверка статуса авторизации и возврат ошибки при необходимости
+
+        Returns:
+            tuple[bool, dict]: (успешно ли авторизован, словарь ошибки если нет)
+        """
+        current_url = self.driver.current_url.lower()
+        is_logged_in = not any(indicator in current_url for indicator in LOGIN_INDICATORS)
+
+        if not is_logged_in:
+            if self.logger:
+                self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
+            error_response = {
+                'marketplace': MARKETPLACE_NAME,
+                'report_type': REPORT_TYPE_CARRIAGES,
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'timestamp': datetime.now().isoformat(),
+                'error': 'Still on login page - session not active or insufficient permissions',
+                'current_url': self.driver.current_url,
+                'page_title': self.driver.title,
+            }
+            return False, error_response
+
+        if self.logger:
+            self.logger.info("Успешно вошли в систему")
+        return True, None
+
+    def _try_set_pvz(self):
+        """Попытка установки правильного ПВЗ"""
+        try:
+            from selenium.webdriver.common.by import By
+            pvz_input = self.driver.find_element(By.XPATH, "//input[@id='input___v-0-0']")
+
+            current_value = pvz_input.get_attribute("value")
+            if self.logger:
+                self.logger.info(f"Текущий пункт выдачи: {current_value}")
+
+            expected_pvz = self.config.get('EXPECTED_PVZ_CODE', '')
+            if self.logger:
+                self.logger.info(f"Ожидаемый пункт выдачи: {expected_pvz}")
+
+            if current_value != expected_pvz:
+                if self.logger:
+                    self.logger.info(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
+
+                original_url = self.driver.current_url
+                if self.logger:
+                    self.logger.info(f"Сохраненный URL до изменения: {original_url}")
+
+                success = self.select_pvz_dropdown_option(
+                    expected_pvz=expected_pvz,
+                    original_url=original_url
+                )
+
+                if not success:
+                    if self.logger:
+                        self.logger.error(f"Не удалось установить пункт выдачи {expected_pvz}")
+                        self.logger.info("Продолжаем с текущим пунктом выдачи...")
+            else:
+                if self.logger:
+                    self.logger.info(f"Пункт выдачи уже установлен правильно: {current_value}")
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
+
+    def _extract_pvz_info(self) -> str:
+        """Извлечение информации о пункте выдачи"""
+        from selenium.webdriver.common.by import By
+        import re
+
+        # Используем специфичные методы из базового класса ОЗОН для извлечения информации о ПВЗ
+        pvz_info = ""
+
+        # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
+        pvz_value = self.extract_ozon_element_by_xpath("//input[@id='input___v-0-0' and @readonly]", "value")
+        if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS) or '_' in pvz_value):
+            pvz_info = pvz_value
+
+        # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
+        if not pvz_info:
+            pvz_value = self.extract_ozon_element_by_xpath("//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]", "value")
+            if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS) or '_' in pvz_value):
+                pvz_info = pvz_value
+
+        # Если не нашли в элементах, ищем в общем тексте
+        if not pvz_info:
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
+            if pvz_matches:
+                # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
+                for match in pvz_matches:
+                    if '_' in match and any(keyword in match.upper() for keyword in PVZ_KEYWORDS):
+                        pvz_info = match
+                        break
+                # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
+                if not pvz_info and pvz_matches:
+                    pvz_info = pvz_matches[0]
+
+        return pvz_info
 
     def process_flow_type(self, flow_type: str, report_date: str) -> Dict[str, Any]:
         """Обработка одного типа перевозок (Direct или Return)"""
