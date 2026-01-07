@@ -18,8 +18,8 @@ LOGIN_INDICATORS = ['login', 'signin', 'auth']
 # Базовый URL для отчетов
 BASE_URL = "https://turbo-pvz.ozon.ru/reports/giveout"
 
-# Шаблон фильтра по дате
-DATE_FILTER_TEMPLATE = "?filter=%7B%22startDate%22:%22{date}%22,%22endDate%22:%22{date}%22"
+# Шаблон фильтра по дате с типом операции
+DATE_FILTER_TEMPLATE = "?filter=%7B%22startDate%22:%22{date}T00:00%2B03:00%22,%22endDate%22:%22{date}T23:59%2B03:00%22,%22operationTypes%22:[%22GiveoutAll%22]"
 
 # Шаблон полного URL (составляется из базового URL и шаблона фильтра)
 ERP_URL_TEMPLATE = BASE_URL + DATE_FILTER_TEMPLATE + "%7D"
@@ -39,8 +39,7 @@ SELECTORS = {
     "PVZ_INPUT_READONLY": "//input[@id='input___v-0-0' and @readonly]",
     "PVZ_INPUT_CLASS_READONLY": "//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]",
     "TOTAL_GIVEOUT": "//div[contains(@class, '_total_1n8st_15')]",  # Количество выдач на странице
-    "GIVEOUT_ITEMS": "//div[contains(@class, 'giveout-item')]",  # Элементы с информацией о выдачах
-    "GIVEOUT_COUNT": "//div[contains(@class, 'giveout-count') or contains(@class, 'issued-packages')]",  # Количество выданных посылок
+    "GIVEOUT_COUNT": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R') and contains(., 'Всего:')]",  # Количество выданных посылок (содержит "Всего: N")
 }
 
 

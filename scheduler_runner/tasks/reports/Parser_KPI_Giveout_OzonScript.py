@@ -48,8 +48,7 @@ class OzonGiveoutReportParser(BaseOzonParser):
     """Парсер для получения данных о выдачах из ERP-системы ОЗОН"""
 
     def __init__(self, config, logger=None):
-        super().__init__(config)
-        self.logger = logger
+        super().__init__(config, logger)
 
     def login(self):
         """Вход в ERP-систему ОЗОН"""
@@ -64,241 +63,52 @@ class OzonGiveoutReportParser(BaseOzonParser):
         if self.logger:
             self.logger.info("Навигация к отчету о выдачах выполнена")
 
-    def extract_data(self) -> Dict[str, Any]:
-        """Извлечение данных о выдачах из ERP-системы ОЗОН"""
-        from selenium.webdriver.common.by import By
-        import time
+    def get_report_type(self) -> str:
+        """Возвращает тип отчета"""
+        return 'giveout'
 
-        if self.logger:
-            self.logger.info(f"Текущий URL: {self.driver.current_url}")
-            self.logger.info(f"Заголовок страницы: {self.driver.title}")
+    def get_default_selectors(self) -> Dict[str, str]:
+        """Возвращает селекторы по умолчанию для данного типа отчета"""
+        return self.config.get('SELECTORS', {})
 
-        # Проверяем статус авторизации
-        is_logged_in, error_response = self._check_authorization_status()
-        if not is_logged_in:
-            return error_response
-        else:
-            # Ждем полной загрузки страницы
-            time.sleep(3)
-
-            # Пытаемся установить правильный пункт выдачи
-            self._try_set_pvz()
-
-            # Извлечение базовой информации
-            try:
-                # Получаем дату из текущего URL или используем текущую дату
-                import re
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', self.driver.current_url)
-                report_date = date_match.group(1) if date_match else datetime.now().strftime('%Y-%m-%d')
-
-                # Извлекаем информацию о ПВЗ с помощью вспомогательного метода
-                pvz_info = self._extract_pvz_info()
-
-                # Извлекаем количество выдач
-                total_packages = self._extract_total_giveout()
-
-                # Извлекаем количество выданных посылок
-                issued_packages = self._extract_issued_packages()
-
-                # Формируем итоговые данные
-                # Формируем структуру данных с использованием REPORT_DATA_SCHEMA из конфигурации
-                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
-
-                # Подготавливаем все возможные значения для подстановки
-                all_values = {
-                    'date': report_date,
-                    'timestamp': datetime.now().isoformat(),
-                    'page_title': self.driver.title,
-                    'current_url': self.driver.current_url,
-                    'issued_packages': issued_packages,
-                    'total_packages': total_packages,
-                    'pvz_info': pvz_info,
-                    'page_source_length': len(self.driver.page_source),
-                    'page_text_length': len(self.driver.find_element(By.TAG_NAME, "body").text)
-                }
-
-                # Формируем структуру данных с подстановкой значений
-                raw_data = self._substitute_values_in_schema(REPORT_DATA_SCHEMA, all_values)
-
-                # Используем raw_data как итоговую структуру, так как она уже сформирована по шаблону
-                data = raw_data
-
-                if self.logger:
-                    self.logger.info(f"Информация о ПВЗ: {pvz_info}")
-                    self.logger.info(f"Количество выдач: {issued_packages}")
-                    self.logger.info(f"Всего пакетов: {total_packages}")
-
-                return data
-            except NoSuchElementException as e:
-                if self.logger:
-                    self.logger.error(f"Не найден элемент на странице: {e}")
-                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
-                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
-                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
-                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'giveout')
-
-                return {
-                    'marketplace': default_marketplace,
-                    'report_type': default_report_type,
-                    'date': datetime.now().strftime('%Y-%m-%d'),
-                    'timestamp': datetime.now().isoformat(),
-                    'error': f'Element not found: {str(e)}',
-                    'current_url': self.driver.current_url,
-                    'page_title': self.driver.title,
-                    'issued_packages': 0,
-                    'total_packages': 0,
-                    'pvz_info': '',
-                }
-            except TimeoutException as e:
-                if self.logger:
-                    self.logger.error(f"Таймаут ожидания элемента: {e}")
-                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
-                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
-                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
-                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'giveout')
-
-                return {
-                    'marketplace': default_marketplace,
-                    'report_type': default_report_type,
-                    'date': datetime.now().strftime('%Y-%m-%d'),
-                    'timestamp': datetime.now().isoformat(),
-                    'error': f'Timeout: {str(e)}',
-                    'current_url': self.driver.current_url,
-                    'page_title': self.driver.title,
-                    'issued_packages': 0,
-                    'total_packages': 0,
-                    'pvz_info': '',
-                }
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(f"Неожиданная ошибка при извлечении данных: {e}")
-                    import traceback
-                    self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
-                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
-                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
-                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'giveout')
-
-                return {
-                    'marketplace': default_marketplace,
-                    'report_type': default_report_type,
-                    'date': datetime.now().strftime('%Y-%m-%d'),
-                    'timestamp': datetime.now().isoformat(),
-                    'error': f'Error extracting data: {str(e)}',
-                    'current_url': self.driver.current_url,
-                    'page_title': self.driver.title,
-                    'issued_packages': 0,
-                    'total_packages': 0,
-                    'pvz_info': '',
-                }
-
-    def _check_authorization_status(self) -> tuple:
-        """Проверка статуса авторизации и возврат ошибки при необходимости
-
-        Returns:
-            tuple[bool, dict]: (успешно ли авторизован, словарь ошибки если нет)
-        """
-        current_url = self.driver.current_url.lower()
-        is_logged_in = not any(indicator in current_url for indicator in LOGIN_INDICATORS)
-
-        if not is_logged_in:
-            if self.logger:
-                self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
-            # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
-            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
-            default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
-            default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'giveout')
-
-            error_response = {
-                'marketplace': default_marketplace,
-                'report_type': default_report_type,
-                'date': datetime.now().strftime('%Y-%m-%d'),
-                'timestamp': datetime.now().isoformat(),
-                'error': 'Still on login page - session not active or insufficient permissions',
-                'current_url': self.driver.current_url,
-                'page_title': self.driver.title,
-            }
-            return False, error_response
-
-        if self.logger:
-            self.logger.info("Успешно вошли в систему")
-        return True, None
-
-    def _try_set_pvz(self):
-        """Попытка установки правильного ПВЗ"""
-        try:
-            from selenium.webdriver.common.by import By
-            pvz_input = self.driver.find_element(By.XPATH, self.config['SELECTORS']['PVZ_INPUT'])
-
-            current_value = pvz_input.get_attribute("value")
-            if self.logger:
-                self.logger.info(f"Текущий пункт выдачи: {current_value}")
-
-            expected_pvz = self.config.get('PVZ_ID', '')
-            if self.logger:
-                self.logger.info(f"Ожидаемый пункт выдачи: {expected_pvz}")
-
-            if current_value != expected_pvz:
-                if self.logger:
-                    self.logger.info(f"Текущий пункт выдачи ({current_value}) не совпадает с ожидаемым ({expected_pvz}). Пытаемся изменить...")
-
-                original_url = self.driver.current_url
-                if self.logger:
-                    self.logger.info(f"Сохраненный URL до изменения: {original_url}")
-
-                success = self.select_pvz_dropdown_option(
-                    expected_pvz=expected_pvz,
-                    original_url=original_url
-                )
-
-                if not success:
-                    if self.logger:
-                        self.logger.error(f"Не удалось установить пункт выдачи {expected_pvz}")
-                        self.logger.info("Продолжаем с текущим пунктом выдачи...")
-            else:
-                if self.logger:
-                    self.logger.info(f"Пункт выдачи уже установлен правильно: {current_value}")
-
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
-
-    def _extract_pvz_info(self) -> str:
-        """Извлечение информации о пункте выдачи"""
+    def extract_specific_data(self) -> Dict[str, Any]:
+        """Извлекает специфичные данные для отчета о выдачах"""
         from selenium.webdriver.common.by import By
         import re
 
-        # Используем специфичные методы из базового класса ОЗОН для извлечения информации о ПВЗ
-        pvz_info = ""
+        try:
+            # Извлекаем количество выдач
+            total_packages = self._extract_total_giveout()
 
-        # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
-        pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_READONLY'], "value")
-        if pvz_value:
-            pvz_info = pvz_value
+            # Извлекаем количество выданных посылок
+            issued_packages = self._extract_issued_packages()
 
-        # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
-        if not pvz_info:
-            pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_CLASS_READONLY'], "value")
-            if pvz_value:
-                pvz_info = pvz_value
+            return {
+                'issued_packages': issued_packages,
+                'total_packages': total_packages,
+            }
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при извлечении специфичных данных: {e}")
+            return {
+                'issued_packages': 0,
+                'total_packages': 0,
+            }
 
-        # Если не нашли в элементах, ищем в общем тексте
-        if not pvz_info:
-            page_text = self.driver.find_element(By.TAG_NAME, "body").text
-            # Ищем возможные названия ПВЗ в тексте страницы
-            pvz_keywords = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
-            pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
-            if pvz_matches:
-                # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
-                for match in pvz_matches:
-                    if '_' in match and any(keyword in match.upper() for keyword in pvz_keywords):
-                        pvz_info = match
-                        break
-                # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
-                if not pvz_info and pvz_matches:
-                    pvz_info = pvz_matches[0]
+    def get_report_schema(self) -> Dict[str, Any]:
+        """Возвращает схему данных отчета о выдачах"""
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
+        return REPORT_DATA_SCHEMA
 
-        return pvz_info
+    def extract_data(self) -> Dict[str, Any]:
+        """Извлечение данных о выдачах из ERP-системы ОЗОН"""
+        # Извлекаем специфичные данные
+        specific_data = self.extract_specific_data()
+
+        # Обрабатываем общую структуру данных с учетом специфичных данных
+        processed_data = self.process_report_data(specific_data)
+
+        return processed_data
 
     def _extract_total_giveout(self) -> int:
         """Извлечение общего количества выдач"""
@@ -324,79 +134,25 @@ class OzonGiveoutReportParser(BaseOzonParser):
         from selenium.webdriver.common.by import By
         import re
 
+        # Используем правильный селектор для поиска элемента с "Всего: N"
         try:
-            # Используем специфичный метод из базового класса ОЗОН для поиска "Всего: N"
-            page_text = self.driver.find_element(By.TAG_NAME, "body").text
-            total_text = self.extract_ozon_data_by_pattern(r'Всего:\s*(\d+)', page_text)
-            if total_text:
-                return int(total_text)
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Не удалось извлечь количество выданных посылок по паттерну 'Всего: N': {e}")
+            # Ждем немного для полной загрузки страницы
+            time.sleep(2)
 
-        # Если не нашли по основному паттерну, пробуем искать в элементах по селектору
-        try:
-            issued_packages_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['GIVEOUT_COUNT'], "textContent")
-            if issued_packages_text:
-                # Извлекаем число из текста
-                numbers = re.findall(r'\d+', issued_packages_text)
+            # Пробуем извлечь элемент напрямую
+            elements = self.driver.find_elements(By.XPATH, self.config['SELECTORS']['GIVEOUT_COUNT'])
+
+            if elements:
+                element_text = elements[0].text
+                # Извлекаем число из текста "Всего: N"
+                numbers = re.findall(r'\d+', element_text)
                 if numbers:
                     return int(numbers[0])
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"Не удалось извлечь количество выданных посылок: {e}")
-
-        # Если не нашли по основному селектору, пробуем искать в общем тексте страницы
-        try:
-            page_text = self.driver.find_element(By.TAG_NAME, "body").text
-            # Ищем возможные упоминания количества выдач
-            patterns = [
-                r'выдано\s*(\d+)',
-                r'выдач[иа]\s*(\d+)',
-                r'(\d+)\s*выдано',
-                r'(\d+)\s*выдач'
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    return int(match.group(1))
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Не удалось извлечь количество выдач из текста страницы: {e}")
+                self.logger.warning(f"Не удалось извлечь количество выданных посылок по селектору: {e}")
 
         return 0
-
-    def _substitute_values_in_schema(self, schema: dict, values: dict) -> dict:
-        """
-        Рекурсивно подставляет значения в шаблон структуры данных.
-
-        Args:
-            schema: Шаблон структуры данных с плейсхолдерами
-            values: Значения для подстановки
-
-        Returns:
-            dict: Структура данных с подставленными значениями
-        """
-        result = {}
-
-        for key, value in schema.items():
-            if isinstance(value, dict):
-                # Если значение - словарь, рекурсивно обрабатываем его
-                result[key] = self._substitute_values_in_schema(value, values)
-            elif isinstance(value, str) and value.startswith('{') and value.endswith('}'):
-                # Если значение - плейсхолдер вида {key}, подставляем соответствующее значение
-                placeholder = value[1:-1]  # Убираем фигурные скобки
-                if placeholder in values:
-                    result[key] = values[placeholder]
-                else:
-                    # Если значение не найдено, используем пустое значение или оставляем плейсхолдер
-                    # Вместо оставления плейсхолдера, используем None для лучшей совместимости
-                    result[key] = None
-            else:
-                # В противном случае используем значение как есть
-                result[key] = value
-
-        return result
 
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
@@ -453,7 +209,7 @@ def main():
         logger.info(f"Запуск парсинга данных о выдачах ERP-системы ОЗОН за дату: {target_date}")
 
         # 4. Создание копии конфигурации с обновленным URL для указанной даты
-        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import ERP_URL_TEMPLATE, DATE_FORMAT
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import ERP_URL_TEMPLATE
 
         # Формируем готовый URL, подставив дату в шаблон
         erp_url = ERP_URL_TEMPLATE.format(date=target_date)
