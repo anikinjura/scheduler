@@ -1,28 +1,78 @@
 """
 google_sheets.py
 
-Универсальный модуль для работы с Google-таблицами.
+Универсальный модуль для работы с Google-таблицами с использованием системы конфигураций.
 Предоставляет классы и функции для подключения к Google-таблице,
-чтения, записи и обновления данных.
+чтения, записи и обновления данных с использованием конфигурации таблицы.
 
-Функции:
-    - GoogleSheetsReporter: класс для работы с Google-таблицами
-    - connect_to_spreadsheet: функция подключения к таблице
-    - read_data_from_sheet: функция чтения данных
-    - write_data_to_sheet: функция записи данных
+Основные возможности:
+    - Универсальный метод update_or_append_data_with_config для обновления/добавления данных
+    - Поиск строк по ID с использованием get_row_by_id (только в ID-колонке)
+    - Поиск строк по уникальным ключам с использованием batch-запросов (get_rows_by_unique_keys)
+    - Поддержка формул в колонках
+    - Валидация данных по конфигурации
+    - Обработка дубликатов
+    - Нормализация заголовков (регистронезависимый поиск, удаление пробелов)
+
+Основные входные данные:
+    1. Конфигурация таблицы (TableConfig):
+       - Определяет структуру таблицы (имена колонок, типы, уникальные ключи)
+       - Создается в вызывающем коде как объект Python
+
+    2. Данные для записи (Dict[str, Any]):
+       - Словарь с данными для записи в таблицу
+       - Ключи соответствуют именам колонок из конфигурации
+       - Значения - строковые представления данных
+
+Пример использования:
+    # Создание конфигурации таблицы
+    config = TableConfig(
+        worksheet_name="Лист1",
+        id_column="id",
+        columns=[
+            ColumnDefinition(name="id", column_type=ColumnType.FORMULA, formula_template="=B{row}&C{row}"),
+            ColumnDefinition(name="Дата", column_type=ColumnType.DATA, required=True, unique_key=True),
+            ColumnDefinition(name="ПВЗ", column_type=ColumnType.DATA, required=True, unique_key=True),
+            ColumnDefinition(name="Количество выдач", column_type=ColumnType.DATA)
+        ],
+        unique_key_columns=["Дата", "ПВЗ"]
+    )
+
+    # Подготовка данных для записи
+    data = {
+        "Дата": "01.01.2026",
+        "ПВЗ": "TEST_PVZ",
+        "Количество выдач": "1000"
+    }
+
+    # Запись данных в таблицу
+    reporter = GoogleSheetsReporter(
+        credentials_path="path/to/credentials.json",
+        spreadsheet_name="table_id_or_name",
+        table_config=config
+    )
+    result = reporter.update_or_append_data_with_config(data, config=config)
+
+    # Поиск строки по ID
+    row = reporter.get_row_by_id("46028TEST_PVZ", config=config)
+
+    # Поиск строк по уникальным ключам
+    rows = reporter.get_rows_by_unique_keys({"Дата": "01.01.2026", "ПВЗ": "TEST_PVZ"}, config=config)
 
 Author: anikinjura
 """
-__version__ = '0.0.1'
+__version__ = '0.0.3'
 
 import gspread
 from google.oauth2.service_account import Credentials
 from pathlib import Path
-import json
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable, TypeVar, Union
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import time
+import random
+from functools import wraps
 
 from scheduler_runner.utils.logging import configure_logger
 
@@ -32,13 +82,11 @@ class ColumnType(Enum):
     Типы колонок в таблице Google Sheets.
 
     Используется для семантического разделения колонок:
-    - ID: Идентификатор записи (часто формула)
     - DATA: Простые данные, вводимые пользователем или из отчетов
     - FORMULA: Колонки с формулами Google Sheets
     - CALCULATED: Вычисляемые значения на стороне Python-скрипта
     - IGNORE: Колонки, которые игнорируются при операциях записи
     """
-    ID = auto()          # Идентификатор (часто формула)
     DATA = auto()        # Простые данные
     FORMULA = auto()     # Формулы Google Sheets
     CALCULATED = auto()  # Вычисляемые значения (на стороне скрипта)
@@ -191,110 +239,104 @@ class TableConfig:
         """Возвращает букву колонки (A, B, C) по имени."""
         return self._letter_index_map.get(column_name)
 
+    @classmethod
+    def from_headers(cls, headers: List[str], worksheet_name: str = "Лист1", id_column: str = "id") -> 'TableConfig':
+        """
+        Создает базовую конфигурацию из заголовков таблицы.
+
+        Args:
+            headers: Список заголовков из таблицы
+            worksheet_name: Имя листа
+            id_column: Имя колонки ID
+
+        Returns:
+            TableConfig: Базовая конфигурация
+        """
+        columns = []
+        for header in headers:
+            if header == id_column:
+                # Предполагаем, что ID колонка - это формула
+                columns.append(ColumnDefinition(
+                    name=header,
+                    column_type=ColumnType.FORMULA,
+                    formula_template=f"=B{{row}}&C{{row}}",  # Пример простой формулы
+                    unique_key=False
+                ))
+            else:
+                # Все остальные колонки как DATA
+                columns.append(ColumnDefinition(
+                    name=header,
+                    column_type=ColumnType.DATA,
+                    required=False,
+                    unique_key=True if header in ["Дата", "ПВЗ"] else False  # Пример уникальных ключей
+                ))
+
+        return cls(
+            worksheet_name=worksheet_name,
+            columns=columns,
+            id_column=id_column
+        )
+
     def build_column_indexes(self, headers: List[str]):
         """
         Строит индексы колонок на основе реальных заголовков таблицы.
 
         Args:
             headers: Список заголовков из первой строки таблицы
-
-        Raises:
-            ValueError: Если какие-то обязательные колонки отсутствуют в таблице
         """
         self._column_index_map.clear()
         self._letter_index_map.clear()
 
-        # Проверяем наличие обязательных колонок
-        missing_required = []
-        for col_def in self.columns:
-            if col_def.required and col_def.name not in headers:
-                missing_required.append(col_def.name)
+        # Создаем маппинг имя колонки -> индекс
+        for i, header in enumerate(headers):
+            if header in self.column_names:
+                self._column_index_map[header] = i + 1  # Индексы начинаются с 1
+                self._letter_index_map[header] = _index_to_column_letter(i + 1)
 
-        if missing_required:
-            raise ValueError(
-                f"В таблице отсутствуют обязательные колонки: {missing_required}. "
-                f"Найдены колонки: {headers}"
-            )
+        # Обновляем буквы колонок в определениях
+        for col in self.columns:
+            if col.name in self._letter_index_map:
+                col.column_letter = self._letter_index_map[col.name]
 
-        # Строим маппинги
-        for idx, header in enumerate(headers, start=1):
-            col_def = self.get_column(header)
-            if col_def:
-                self._column_index_map[header] = idx
-                letter = self._index_to_column_letter(idx)
-                self._letter_index_map[header] = letter
-                col_def.column_letter = letter
 
-        # Логируем результат
-        if len(self._column_index_map) < len(self.columns):
-            configured_columns = set(self.column_names)
-            found_columns = set(headers)
-            missing = configured_columns - found_columns
-            extra = found_columns - configured_columns
+def _index_to_column_letter(index: int) -> str:
+    """
+    Преобразует числовой индекс колонки в буквенное обозначение (A, B, C...).
 
-            if missing:
-                print(f"Предупреждение: В таблице отсутствуют настроенные колонки: {missing}")
-            if extra:
-                print(f"Предупреждение: В таблице найдены лишние колонки: {extra}")
+    Args:
+        index: Числовой индекс колонки (начиная с 1)
 
-    @staticmethod
-    def _index_to_column_letter(index: int) -> str:
-        """
-        Преобразует индекс колонки в буквенное обозначение.
+    Returns:
+        Буквенное обозначение колонки
+    """
+    if index <= 0:
+        raise ValueError("Индекс колонки должен быть положительным числом")
 
-        Args:
-            index: Номер колонки (начинается с 1)
+    result = ""
+    while index > 0:
+        index -= 1
+        result = chr(index % 26 + ord('A')) + result
+        index //= 26
 
-        Returns:
-            Буквенное обозначение колонки (A, B, ..., Z, AA, AB, ...)
+    return result
 
-        Examples:
-            1 -> 'A'
-            26 -> 'Z'
-            27 -> 'AA'
-            28 -> 'AB'
-        """
-        letter = ''
-        while index > 0:
-            index, remainder = divmod(index - 1, 26)
-            letter = chr(65 + remainder) + letter
-        return letter
 
-    @staticmethod
-    def from_headers(headers: List[str], worksheet_name: str = "Лист1", id_column: str = "id") -> 'TableConfig':
-        """
-        Создает базовую конфигурацию из списка заголовков.
+def _letter_to_index(letter: str) -> int:
+    """Преобразует букву колонки в числовой индекс."""
+    result = 0
+    for char in letter:
+        result = result * 26 + (ord(char.upper()) - ord('A') + 1)
+    return result
 
-        Args:
-            headers: Список заголовков из таблицы
-            worksheet_name: Имя листа
-            id_column: Имя колонки идентификатора (должно быть в списке headers)
 
-        Returns:
-            TableConfig с колонками типа DATA
-        """
-        columns = [
-            ColumnDefinition(name=header, column_type=ColumnType.DATA)
-            for header in headers
-        ]
-        # Если id_column не в списке headers, используем первый заголовок или оставляем пустым
-        actual_id_column = id_column if id_column in headers else headers[0] if headers else "id"
-        return TableConfig(
-            worksheet_name=worksheet_name,
-            columns=columns,
-            id_column=actual_id_column
-        )
 
 
 def create_kpi_table_config() -> TableConfig:
     """
-    Создает предварительно настроенную конфигурацию для таблицы KPI.
-
-    Соответствует структуре:
-        id, Дата, ПВЗ, Количество выдач, Прямой поток, Возвратный поток
+    Создает конфигурацию для таблицы KPI с формулами.
 
     Returns:
-        TableConfig для таблицы KPI
+        TableConfig: Конфигурация таблицы KPI
     """
     return TableConfig(
         worksheet_name="KPI",
@@ -302,7 +344,8 @@ def create_kpi_table_config() -> TableConfig:
             ColumnDefinition(
                 name="id",
                 column_type=ColumnType.FORMULA,
-                formula_template="=B{row}&C{row}"
+                formula_template="=B{row}&C{row}",
+                unique_key=False
             ),
             ColumnDefinition(
                 name="Дата",
@@ -318,96 +361,123 @@ def create_kpi_table_config() -> TableConfig:
             ),
             ColumnDefinition(
                 name="Количество выдач",
-                column_type=ColumnType.DATA
+                column_type=ColumnType.DATA,
+                unique_key=False
             ),
             ColumnDefinition(
                 name="Прямой поток",
-                column_type=ColumnType.DATA
+                column_type=ColumnType.DATA,
+                unique_key=False
             ),
             ColumnDefinition(
                 name="Возвратный поток",
-                column_type=ColumnType.DATA
-            ),
+                column_type=ColumnType.DATA,
+                unique_key=False
+            )
         ],
         id_column="id",
+        unique_key_columns=["Дата", "ПВЗ"],
         id_formula_template="=B{row}&C{row}"
     )
 
 
 def create_basic_table_config(worksheet_name: str = "Лист1",
-                             id_column: str = "id",
-                             unique_keys: Optional[List[str]] = None) -> TableConfig:
+                              id_column: str = "id",
+                              unique_keys: List[str] = None) -> TableConfig:
     """
     Создает базовую конфигурацию таблицы.
 
     Args:
         worksheet_name: Имя листа
-        id_column: Имя колонки идентификатора
-        unique_keys: Список колонок уникального ключа
+        id_column: Имя колонки ID
+        unique_keys: Список уникальных ключей
 
     Returns:
-        Базовая TableConfig
+        TableConfig: Базовая конфигурация
     """
+    if unique_keys is None:
+        unique_keys = ["Дата", "ПВЗ"]
+
     return TableConfig(
         worksheet_name=worksheet_name,
-        columns=[],
+        columns=[
+            ColumnDefinition(
+                name=id_column,
+                column_type=ColumnType.FORMULA,
+                formula_template="=B{row}&C{row}",
+                unique_key=False
+            ),
+            ColumnDefinition(
+                name="Дата",
+                column_type=ColumnType.DATA,
+                required=True,
+                unique_key=True
+            ),
+            ColumnDefinition(
+                name="ПВЗ",
+                column_type=ColumnType.DATA,
+                required=True,
+                unique_key=True
+            )
+        ],
         id_column=id_column,
         unique_key_columns=unique_keys
     )
 
 
-if __name__ == "__main__":
+def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
     """
-    Тестирование классов конфигурации.
-    Запустить: python -m scheduler_runner.utils.google_sheets
+    Декоратор для retry-механизма при ошибках API Google Sheets.
+
+    Args:
+        max_retries: Максимальное количество попыток
+        base_delay: Базовая задержка в секундах
+        max_delay: Максимальная задержка в секундах
     """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Получаем логгер из экземпляра класса, если возможно
+            logger = None
+            if args and hasattr(args[0], 'logger'):
+                logger = args[0].logger
 
-    print("=" * 60)
-    print("Тестирование классов конфигурации таблицы")
-    print("=" * 60)
+            last_exception = None
 
-    # Тест 1: Создание конфигурации KPI
-    print("\n1. Тест конфигурации KPI:")
-    kpi_config = create_kpi_table_config()
-    print(f"   Лист: {kpi_config.worksheet_name}")
-    print(f"   Колонки: {kpi_config.column_names}")
-    print(f"   Уникальные ключи: {kpi_config.unique_key_columns}")
-    print(f"   Обязательные: {kpi_config.required_headers}")
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except gspread.exceptions.APIError as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        # Exponential backoff с jitter
+                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        jitter = random.uniform(0, 0.1 * delay)
+                        actual_delay = delay + jitter
 
-    # Тест 2: Построение индексов
-    print("\n2. Тест построения индексов:")
-    headers = ["id", "Дата", "ПВЗ", "Количество выдач", "Прямой поток", "Возвратный поток"]
-    kpi_config.build_column_indexes(headers)
+                        if logger:
+                            logger.warning(f"API ошибка: {e}. Повторная попытка {attempt + 1}/{max_retries} через {actual_delay:.2f} секунд...")
+                        else:
+                            print(f"API ошибка: {e}. Повторная попытка {attempt + 1}/{max_retries} через {actual_delay:.2f} секунд...")
+                        time.sleep(actual_delay)
+                    else:
+                        if logger:
+                            logger.error(f"Все попытки исчерпаны. Последняя ошибка: {e}")
+                        else:
+                            print(f"Все попытки исчерпаны. Последняя ошибка: {e}")
+                        raise last_exception
+                except Exception as e:
+                    # Не API ошибки не retry-им
+                    raise e
 
-    for col_name in kpi_config.column_names:
-        idx = kpi_config.get_column_index(col_name)
-        letter = kpi_config.get_column_letter(col_name)
-        print(f"   {col_name}: индекс={idx}, буква={letter}")
-
-    # Тест 3: Конвертация индекса в букву
-    print("\n3. Тест конвертации индекса в букву:")
-    test_indices = [1, 2, 26, 27, 28, 52, 53]
-    for idx in test_indices:
-        letter = TableConfig._index_to_column_letter(idx)
-        print(f"   Индекс {idx:3} -> '{letter}'")
-
-    # Тест 4: Создание из заголовков
-    print("\n4. Тест создания конфигурации из заголовков:")
-    custom_headers = ["OrderID", "Customer", "Amount", "Status"]
-    # Используем метод from_headers, который теперь корректно обрабатывает id_column
-    custom_config = TableConfig.from_headers(custom_headers, "Orders", id_column="OrderID")
-    print(f"   Лист: {custom_config.worksheet_name}")
-    print(f"   Колонки: {custom_config.column_names}")
-    print(f"   Уникальные ключи: {custom_config.unique_key_columns}")
-
-    print("\n" + "=" * 60)
-    print("Все тесты пройдены успешно!")
-    print("=" * 60)
+            return None
+        return wrapper
+    return decorator
 
 
 class GoogleSheetsReporter:
     """
-    Класс для работы с Google-таблицами.
+    Класс для работы с Google-таблицами с использованием системы конфигураций.
     Предоставляет методы для подключения к Google-таблице, определения последней строки с данными,
     добавления новых строк, обновления существующих записей и валидации структуры данных.
     """
@@ -443,7 +513,7 @@ class GoogleSheetsReporter:
             detailed=True
         )
 
-        # Настройка аутентификации (без изменений)
+        # Настройка аутентификации
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
@@ -454,7 +524,7 @@ class GoogleSheetsReporter:
             scopes=scope
         )
 
-        # Подключение к Google Sheets (без изменений)
+        # Подключение к Google Sheets
         self.gc = gspread.authorize(credentials)
 
         # Открытие таблицы
@@ -473,6 +543,7 @@ class GoogleSheetsReporter:
         if self.table_config:
             self.logger.info(f"Используется конфигурация таблицы с {len(self.table_config.columns)} колонками")
 
+    @retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
     def _sync_table_structure(self) -> None:
         """
         Синхронизирует конфигурацию таблицы с реальной структурой Google Sheets.
@@ -498,564 +569,940 @@ class GoogleSheetsReporter:
                 # Синхронизация существующей конфигурации
                 self.logger.debug(f"Синхронизация конфигурации с заголовками: {headers}")
 
-                try:
-                    # Строим индексы колонок на основе реальных заголовков
-                    self.table_config.build_column_indexes(headers)
-                    self.logger.info(f"Конфигурация синхронизирована, найдено {len(self.table_config._column_index_map)} колонок")
+                # Строим индексы колонок на основе реальных заголовков
+                self.table_config.build_column_indexes(headers)
+                self.logger.info(f"Конфигурация синхронизирована, найдено {len(self.table_config._column_index_map)} колонок")
 
-                    # Проверяем соответствие структуры
-                    self._validate_table_structure()
-
-                except ValueError as e:
-                    self.logger.error(f"Ошибка синхронизации конфигурации: {e}")
-                    raise
+                # Проверяем соответствие структуры
+                if not self._validate_table_structure():
+                    error_msg = "Структура таблицы не соответствует конфигурации"
+                    self.logger.error(error_msg)
+                    raise ValueError(error_msg)
 
             else:
-                # Создаем базовую конфигурацию из заголовков таблицы
-                self.logger.info(f"Создание конфигурации из заголовков таблицы: {headers}")
-                self.table_config = TableConfig.from_headers(headers, self.worksheet_name)
+                # Создаем базовую конфигурацию из заголовков
+                self.logger.info("Создание базовой конфигурации из заголовков таблицы")
+                self.table_config = TableConfig.from_headers(
+                    headers=headers,
+                    worksheet_name=self.worksheet_name
+                )
+                # ДОБАВИТЬ эту строку:
                 self.table_config.build_column_indexes(headers)
-                self.logger.info(f"Создана базовая конфигурация с {len(self.table_config.columns)} колонками")
+                self.logger.info(f"Базовая конфигурация создана с {len(self.table_config.columns)} колонками")
 
-        except gspread.exceptions.APIError as e:
-            self.logger.error(f"API ошибка при синхронизации структуры таблицы: {e}")
+        except gspread.exceptions.WorksheetNotFound:
+            self.logger.error(f"Лист '{self.worksheet_name}' не найден в таблице")
             raise
         except Exception as e:
-            self.logger.error(f"Неожиданная ошибка при синхронизации структуры таблицы: {e}")
-            # Продолжаем работу без конфигурации
-            self.table_config = None
+            self.logger.error(f"Ошибка синхронизации структуры таблицы: {e}")
+            raise
 
     def _validate_table_structure(self) -> bool:
         """
-        Проверяет соответствие реальной таблицы заданной конфигурации.
+        Проверяет соответствие структуры таблицы конфигурации.
 
         Returns:
-            bool: True если структура соответствует конфигурации
-
-        Raises:
-            ValueError: если обнаружены критические расхождения
+            bool: True если структура корректна
         """
         if not self.table_config:
-            self.logger.warning("Конфигурация не задана, проверка структуры пропущена")
-            return True
+            return False
 
         try:
-            # Получаем текущие заголовки из таблицы
-            current_headers = self.worksheet.row_values(1)
+            # Получаем заголовки из таблицы
+            headers = self.worksheet.row_values(1)
 
-            # Проверяем обязательные колонки
-            missing_required = []
+            # Проверяем, что все обязательные колонки из конфигурации присутствуют в таблице
+            missing_columns = []
             for col_def in self.table_config.columns:
-                if col_def.required and col_def.name not in current_headers:
-                    missing_required.append(col_def.name)
+                if col_def.required and col_def.name not in headers:
+                    missing_columns.append(col_def.name)
 
-            if missing_required:
-                error_msg = f"Отсутствуют обязательные колонки: {missing_required}"
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
+            if missing_columns:
+                self.logger.error(f"Отсутствуют обязательные колонки в таблице: {missing_columns}")
+                return False
 
-            # Проверяем уникальность колонок в таблице
-            if len(current_headers) != len(set(current_headers)):
-                duplicates = [h for h in current_headers if current_headers.count(h) > 1]
-                error_msg = f"Обнаружены дублирующиеся заголовки: {duplicates}"
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
+            # Проверяем, что все колонки из конфигурации могут быть найдены в таблице
+            for col_def in self.table_config.columns:
+                if col_def.name in headers:
+                    continue  # Колонка найдена
+                else:
+                    # Проверяем, может быть это колонка, которая не обязательна
+                    self.logger.warning(f"Колонка '{col_def.name}' из конфигурации не найдена в таблице")
 
-            # Предупреждаем о лишних колонках
-            configured_set = set(self.table_config.column_names)
-            current_set = set(current_headers)
-            extra_columns = current_set - configured_set
-
-            if extra_columns:
-                self.logger.warning(f"В таблице обнаружены лишние колонки: {extra_columns}")
-
-            self.logger.debug("Структура таблицы успешно проверена")
+            self.logger.info("Структура таблицы соответствует конфигурации")
             return True
 
         except Exception as e:
-            self.logger.error(f"Ошибка при проверке структуры таблицы: {e}")
-            raise
+            self.logger.error(f"Ошибка валидации структуры таблицы: {e}")
+            return False
 
     def validate_data_structure(self, data: Dict, required_headers: Optional[List[str]] = None) -> bool:
         """
-        Проверяет, что структура данных соответствует требованиям таблицы.
+        Проверяет структуру данных на соответствие требованиям.
 
-        Если задана конфигурация таблицы, использует required_headers из нее.
-        Иначе использует переданный список required_headers.
+        DEPRECATED: Используйте update_or_append_data_with_config, который автоматически
+        вызывает _validate_data_for_config, или используйте валидацию вручную.
 
         Args:
-            data: словарь с данными для проверки
-            required_headers: список обязательных заголовков (используется если нет конфигурации)
+            data: Данные для проверки
+            required_headers: Список обязательных заголовков (если None, использует конфигурацию)
 
         Returns:
-            bool: True, если структура данных корректна
+            bool: True если данные корректны
         """
-        try:
-            # Определяем список обязательных заголовков
-            if self.table_config:
-                headers_to_check = self.table_config.required_headers
-                self.logger.debug(f"Используются обязательные заголовки из конфигурации: {headers_to_check}")
-            elif required_headers:
-                headers_to_check = required_headers
-                self.logger.debug(f"Используются переданные обязательные заголовки: {headers_to_check}")
-            else:
-                self.logger.warning("Не указаны обязательные заголовки и нет конфигурации")
-                return True  # Если ничего не задано, считаем данные валидными
+        # Перенаправляем на унифицированный метод валидации
+        if self.table_config:
+            return self._validate_data_for_config(data, self.table_config)
+        else:
+            # Если конфигурации нет, используем старую логику
+            try:
+                if not data:
+                    self.logger.error("Данные пусты")
+                    return False
 
-            # Проверяем наличие обязательных полей
-            missing_fields = []
-            for header in headers_to_check:
-                # Определяем ключ данных для проверки
-                data_key = header
-                if self.table_config:
-                    col_def = self.table_config.get_column(header)
-                    if col_def and col_def.data_key:
-                        data_key = col_def.data_key
+                # Определяем обязательные заголовки
+                if required_headers is None and self.table_config:
+                    required_headers = self.table_config.required_headers
+                elif required_headers is None:
+                    required_headers = []
 
-                if data_key not in data:
-                    missing_fields.append(header)
+                # Проверяем наличие обязательных полей
+                missing_fields = []
+                for header in required_headers:
+                    if header not in data:
+                        missing_fields.append(header)
 
-            if missing_fields:
-                self.logger.error(f"Отсутствуют обязательные поля: {missing_fields}")
+                if missing_fields:
+                    self.logger.error(f"Отсутствуют обязательные поля в данных: {missing_fields}")
+                    return False
+
+                # Проверяем, что все значения являются строками или числами
+                for key, value in data.items():
+                    if not isinstance(value, (str, int, float, type(None))):
+                        self.logger.warning(f"Поле '{key}' имеет неожиданный тип: {type(value)}")
+
+                self.logger.debug(f"Данные прошли валидацию: {list(data.keys())}")
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Ошибка валидации данных: {e}")
                 return False
-
-            # Дополнительная проверка для конфигурации
-            if self.table_config:
-                # Проверяем типы данных для числовых полей
-                for col_def in self.table_config.columns:
-                    if col_def.name in data or (col_def.data_key and col_def.data_key in data):
-                        # Для полей с ожидаемым числовым значением проверяем тип
-                        if col_def.column_type == ColumnType.DATA:
-                            value = data.get(col_def.name) or data.get(col_def.data_key, "")
-                            # Можно добавить дополнительную валидацию типов данных
-                            pass
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Ошибка при валидации структуры данных: {e}")
-            return False
 
     def get_table_headers(self) -> List[str]:
         """
         Возвращает заголовки таблицы.
 
         Returns:
-            List[str]: список заголовков
-
-        Note:
-            Если есть конфигурация, возвращает заголовки из нее.
-            Иначе загружает из таблицы.
-        """
-        if self.table_config:
-            return self.table_config.column_names
-        else:
-            try:
-                return self.worksheet.row_values(1)
-            except Exception as e:
-                self.logger.error(f"Ошибка при получении заголовков: {e}")
-                return []
-
-    def get_last_row_with_data(self, column_index: Optional[int] = None,
-                              column_name: Optional[str] = None) -> int:
-        """
-        Определяет последнюю строку с данными в указанном столбце.
-
-        Приоритет параметров: column_name > column_index
-
-        Args:
-            column_index (Optional[int]): индекс столбца для проверки (по умолчанию 1 - столбец A)
-            column_name (Optional[str]): имя колонки для проверки (используется если есть конфигурация)
-
-        Returns:
-            int: номер последней строки с данными
+            List[str]: Список заголовков
         """
         try:
-            # Определяем индекс колонки
-            col_idx = 1  # значение по умолчанию
-
-            if column_name and self.table_config:
-                # Получаем индекс из конфигурации
-                idx = self.table_config.get_column_index(column_name)
-                if idx:
-                    col_idx = idx
-                else:
-                    self.logger.warning(f"Колонка '{column_name}' не найдена в конфигурации, использую индекс {col_idx}")
-            elif column_index:
-                col_idx = column_index
-
-            # Получаем все значения в столбце
-            col_values = self.worksheet.col_values(col_idx)
-            # Возвращаем длину списка, что соответствует последней строке с данными
-            return len(col_values)
+            headers = self.worksheet.row_values(1)
+            return headers
         except Exception as e:
-            self.logger.error(f"Ошибка при получении последней строки: {e}")
-            return 1  # Возвращаем первую строку как безопасное значение
+            self.logger.error(f"Ошибка получения заголовков: {e}")
+            return []
+
+    def get_last_row_with_data(self, column_index: Optional[int] = None,
+                               start_row: int = 2) -> int:
+        """
+        Определяет последнюю строку с данными в таблице.
+
+        Args:
+            column_index: Индекс колонки для проверки (по умолчанию использует первую колонку)
+            start_row: Начальная строка для поиска (по умолчанию 2, пропуская заголовки)
+
+        Returns:
+            int: Номер последней строки с данными
+        """
+        try:
+            if column_index is None:
+                # Используем первую колонку для определения последней строки
+                column_values = self.worksheet.col_values(1)
+            else:
+                column_values = self.worksheet.col_values(column_index)
+
+            # Безопасная проверка пустых строк
+            for row_num in range(len(column_values), start_row - 1, -1):
+                if row_num - 1 < len(column_values):
+                    cell_value = column_values[row_num - 1]
+                    if cell_value and str(cell_value).strip():
+                        return row_num
+
+            # Если не нашли данных, возвращаем последнюю строку перед заголовками
+            return start_row - 1 if start_row > 1 else 1
+
+        except Exception as e:
+            self.logger.error(f"Ошибка определения последней строки: {e}")
+            return 1
 
     def get_column_letter_by_name(self, column_name: str) -> Optional[str]:
         """
-        Возвращает букву колонки по ее имени.
+        Возвращает букву колонки по имени.
 
         Args:
-            column_name: имя колонки
+            column_name: Имя колонки
 
         Returns:
-            Optional[str]: буква колонки (A, B, C) или None если не найдена
+            Буква колонки (A, B, C) или None если не найдена
         """
-        if not self.table_config:
-            self.logger.warning("Конфигурация не задана, невозможно получить букву колонки")
-            return None
-
-        return self.table_config.get_column_letter(column_name)
+        if self.table_config:
+            return self.table_config.get_column_letter(column_name)
+        return None
 
     def get_column_index_by_name(self, column_name: str) -> Optional[int]:
         """
-        Возвращает индекс колонки по ее имени.
+        Возвращает индекс колонки по имени.
 
         Args:
-            column_name: имя колонки
+            column_name: Имя колонки
 
         Returns:
-            Optional[int]: индекс колонки (начиная с 1) или None если не найдена
+            Индекс колонки (начиная с 1) или None если не найдена
         """
-        if not self.table_config:
-            self.logger.warning("Конфигурация не задана, невозможно получить индекс колонки")
-            return None
+        if self.table_config:
+            return self.table_config.get_column_index(column_name)
+        return None
 
-        return self.table_config.get_column_index(column_name)
-    
-    def append_row_data_with_row_number(self, data: List,
-                                       start_column: str = "A") -> int:
+    def update_or_append_data_with_config(self,
+                                         data: Dict[str, Any],
+                                         config: Optional[TableConfig] = None,
+                                         strategy: str = "update_or_append",
+                                         formula_row_placeholder: str = "{row}") -> Dict[str, Any]:
         """
-        Добавляет данные в следующую строку после последней заполненной и возвращает номер строки.
+        Универсальный метод для обновления или добавления данных с использованием конфигурации.
 
         Args:
-            data: список значений для записи в строку
-            start_column: колонка с которой начинать запись (по умолчанию "A")
+            data: Словарь с данными для записи
+            config: Конфигурация таблицы (если None, используется self.table_config)
+            strategy: Стратегия поведения:
+                - "update_or_append": обновить если существует, иначе добавить (по умолчанию)
+                - "append_only": всегда добавлять как новую строку
+                - "update_only": обновлять только существующие строки
+            formula_row_placeholder: Плейсхолдер для номера строки в формулах
 
         Returns:
-            int: номер добавленной строки, или 0 при ошибке
+            Dict с результатами операции:
+            {
+                "success": bool,
+                "row_number": int,
+                "action": str,  # "updated", "appended", "skipped", "error"
+                "message": str,
+                "data": Dict[str, Any]  # записанные данные
+            }
         """
+        # Начало операции
+        operation_start = datetime.now()
+
+        # Определяем конфигурацию для использования
+        use_config = config or self.table_config
+        if not use_config:
+            return self._create_result(
+                success=False,
+                action="error",
+                message="Не указана конфигурация таблицы",
+                data=data
+            )
+
         try:
-            # Получаем текущую последнюю строку
-            current_last_row = self.get_last_row_with_data()
+            # 1. Подготовка данных
+            prepared_data = self._prepare_data_for_table(data, use_config)
 
-            # Определяем целевую строку
-            target_row = current_last_row + 1
+            # 2. Валидация данных
+            if not self._validate_data_for_config(prepared_data, use_config):
+                return self._create_result(
+                    success=False,
+                    action="error",
+                    message="Данные не прошли валидацию",
+                    data=prepared_data
+                )
 
-            # Проверяем, пустая ли эта строка
-            try:
-                # Проверяем, есть ли данные в целевой строке
-                row_values = self.worksheet.row_values(target_row)
-                if not any(row_values):
-                    # Строка пустая, можно использовать
-                    # Определяем диапазон для записи
-                    end_column = self._get_end_column(start_column, len(data))
-                    range_name = f'{start_column}{target_row}:{end_column}{target_row}'
+            # 3. Поиск существующей строки (если нужно)
+            existing_row = None
+            if strategy in ["update_or_append", "update_only"] and use_config.unique_key_columns:
+                # используем batch-версию, ищем по unique_key_columns из конфигурации
+                search_keys = {k: prepared_data.get(k) for k in (use_config.unique_key_columns or []) if prepared_data.get(k) is not None}
+                existing = self.get_rows_by_unique_keys(search_keys, config=use_config, first_only=True, raise_on_duplicate=False)
+                # existing может быть dict или None
+                existing_row = existing.get("_row_number") if existing else None
 
-                    self.worksheet.update(range_name, [data], value_input_option='USER_ENTERED')
-                    self.logger.info(f"Данные успешно добавлены в пустую строку {target_row}")
-                else:
-                    # Строка содержит данные, используем append_rows для добавления новой строки
-                    self.worksheet.append_rows([data], value_input_option='USER_ENTERED')
-                    # Получаем новую последнюю строку
-                    new_last_row = self.get_last_row_with_data()
-                    if new_last_row > current_last_row:
-                        target_row = new_last_row
-                        self.logger.info(f"Данные успешно добавлены в новую строку {target_row}")
-                    else:
-                        self.logger.error("Не удалось добавить новую строку")
-                        return 0
-            except Exception as e:
-                # Если возникла ошибка при проверке строки, используем append_rows
-                self.logger.warning(f"Ошибка при проверке строки {target_row}: {e}, используем append_rows")
-                self.worksheet.append_rows([data], value_input_option='USER_ENTERED')
-                new_last_row = self.get_last_row_with_data()
-                if new_last_row > current_last_row:
-                    target_row = new_last_row
-                else:
-                    self.logger.error("Не удалось добавить новую строку через append_rows")
-                    return 0
+            # 4. Определение действия
+            action_result = self._determine_action(
+                existing_row=existing_row,
+                strategy=strategy
+            )
 
-            return target_row
-        except Exception as e:
-            self.logger.error(f"Ошибка при добавлении строки: {e}")
-            import traceback
-            self.logger.error(f"Полный стек трейс: {traceback.format_exc()}")
-            return 0
-
-    def _get_end_column(self, start_column: str, data_length: int) -> str:
-        """
-        Вычисляет конечную колонку на основе начальной и длины данных.
-
-        Args:
-            start_column: начальная колонка (A, B, C)
-            data_length: количество колонок данных
-
-        Returns:
-            str: буква конечной колонки
-        """
-        # Конвертируем букву в индекс
-        def letter_to_index(letter: str) -> int:
-            index = 0
-            for char in letter:
-                index = index * 26 + (ord(char.upper()) - ord('A') + 1)
-            return index
-
-        # Конвертируем индекс в букву
-        def index_to_letter(index: int) -> str:
-            letters = ''
-            while index > 0:
-                index, remainder = divmod(index - 1, 26)
-                letters = chr(65 + remainder) + letters
-            return letters
-
-        start_idx = letter_to_index(start_column)
-        end_idx = start_idx + data_length - 1
-        return index_to_letter(end_idx)
-    
-    def update_or_append_data(self, data: Dict, date_key: str = "Дата", pvz_key: str = "ПВЗ") -> bool:
-        """
-        Обновляет данные, если запись с такой датой и ПВЗ уже существует, или добавляет новую.
-        Использует Id столбец (A) для определения уникальности записи.
-        Предотвращает дублирование данных при одновременной записи из разных ПВЗ.
-
-        Args:
-            data: словарь с данными для записи
-            date_key: ключ в словаре, содержащий дату для поиска дубликатов (по умолчанию "Дата")
-            pvz_key: ключ в словаре, содержащий ПВЗ для поиска дубликатов (по умолчанию "ПВЗ")
-
-        Returns:
-            bool: True при успешной записи
-        """
-        try:
-            # Получаем дату и ПВЗ из данных
-            date_value = data.get(date_key)
-            pvz_value = data.get(pvz_key)
-
-            self.logger.debug(f"update_or_append_data: date_value='{date_value}', pvz_value='{pvz_value}'")
-
-            if date_value and pvz_value:
-                # Ищем запись с такой датой и ПВЗ (вместо поиска по Id, ищем по дате и ПВЗ)
-                try:
-                    # Сначала ищем в столбце даты
-                    date_matches = self.worksheet.findall(date_value)
-
-                    # Среди найденных ищем совпадение по ПВЗ
-                    for date_cell in date_matches:
-                        pvz_cell_value = self.worksheet.cell(date_cell.row, 3).value  # ПВЗ в 3-м столбце
-                        if pvz_cell_value == pvz_value:
-                            # Нашли совпадение, обновляем строку
-                            row_num = date_cell.row
-                            self.logger.debug(f"update_or_append_data: найдено совпадение в строке {row_num}")
-
-                            # Проверяем, существует ли строка физически
-                            try:
-                                # Проверяем, есть ли хотя бы одно значение в строке
-                                row_values = self.worksheet.row_values(row_num)
-                                if not any(row_values):
-                                    # Строка физически удалена, нужно добавить новую
-                                    self.logger.warning(f"Строка {row_num} физически удалена, добавляем новую")
-                                    break
-
-                                # Обновляем строку новыми значениями, но оставляем Id столбец с формулой
-                                # Получаем заголовки из первой строки, чтобы определить порядок колонок
-                                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
-
-                                # Подготавливаем новые значения, но оставляем Id столбец (A) без изменений
-                                updated_values = [row_values[0] if len(row_values) > 0 else ""]  # Id столбец - оставляем как есть
-
-                                # Для каждой колонки (кроме Id) получаем соответствующее значение из данных
-                                for i in range(1, len(headers)):  # начиная с 2-го столбца (B), т.к. A - Id
-                                    if i < len(row_values):
-                                        current_value = row_values[i]
-                                    else:
-                                        current_value = ""
-
-                                    # Если есть заголовок и он есть в данных, используем значение из данных
-                                    if i < len(headers) and headers[i] in data:
-                                        updated_values.append(data[headers[i]])
-                                    else:
-                                        # Оставляем текущее значение, если поле не найдено в новых данных
-                                        updated_values.append(current_value)
-
-                                # Обновляем диапазон
-                                self.worksheet.update(f'A{row_num}:{chr(64+len(updated_values))}{row_num}',
-                                                      [updated_values],
-                                                      value_input_option='USER_ENTERED')
-
-                                expected_id = f"{date_value}{pvz_value}"
-                                self.logger.info(f"Данные за {date_value} для ПВЗ {pvz_value} обновлены в строке {row_num} (Id: {expected_id})")
-                                return True
-
-                            except Exception as e:
-                                self.logger.warning(f"Ошибка при обновлении строки {row_num}: {e}, строка, вероятно, удалена")
-                                break
-                except Exception as e:
-                    self.logger.error(f"Ошибка при поиске существующей записи: {e}")
-
-                # Если не найдено совпадение или строка была удалена, добавляем новую строку с формулой в Id столбце
-                self.logger.debug(f"update_or_append_data: запись с датой '{date_value}' и ПВЗ '{pvz_value}' не найдена, добавляем новую строку")
-
-                # Подготовим данные для добавления, но сначала добавим строку с пустым Id
-                # Затем установим формулу в Id столбце
-                current_last_row = self.get_last_row_with_data()
-
-                # Получаем заголовки из первой строки, чтобы определить порядок колонок
-                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
-
-                # Подготовим данные в правильном порядке в соответствии с заголовками таблицы
-                values = [""]
-                for header in headers[1:]:  # начиная со второго столбца (первый - Id)
-                    if header in data:
-                        value = data[header]
-                        # Проверяем тип данных и конвертируем при необходимости
-                        if isinstance(value, str) and value.isdigit():
-                            value = int(value)
-                        elif isinstance(value, (int, float)):
-                            pass  # уже число
-                        else:
-                            value = value if value is not None else ""
-                        values.append(value)
-                    else:
-                        values.append("")  # если поле не найдено в данных, добавляем пустое значение
-
-                row_num = self.append_row_data_with_row_number(values)
-                if row_num > 0:
-                    self.logger.debug(f"update_or_append_data: строка добавлена в строку {row_num}")
-                    # Теперь установим формулу в Id столбце для этой строки
-                    formula = f"=B{row_num}&C{row_num}"  # формула: дата + ПВЗ для этой строки
-                    # Используем update с правильным value_input_option для корректной записи формулы
-                    self.worksheet.update(values=[[formula]], range_name=f'A{row_num}', value_input_option='USER_ENTERED')
-                    self.logger.info(f"Формула Id установлена в строке {row_num}: {formula}")
-                    return True
-                else:
-                    self.logger.error("Не удалось добавить строку")
-                    return False
+            # 5. Выполнение действия
+            if action_result["action"] == "update" and existing_row:
+                result = self._update_existing_row(
+                    row_number=existing_row,
+                    data=prepared_data,
+                    config=use_config,
+                    formula_row_placeholder=formula_row_placeholder
+                )
+            elif action_result["action"] == "append":
+                result = self._append_new_row(
+                    data=prepared_data,
+                    config=use_config,
+                    formula_row_placeholder=formula_row_placeholder
+                )
+            elif action_result["action"] == "skip":
+                result = self._create_result(
+                    success=True,
+                    action="skipped",
+                    message="Стратегия указывает пропустить операцию",
+                    data=prepared_data
+                )
             else:
-                self.logger.debug(f"update_or_append_data: дата или ПВЗ не указаны, добавляем новую строку")
-                # Если дата или ПВЗ не указаны, просто добавляем новую строку
-                # Получаем заголовки из первой строки
-                headers = self.worksheet.row_values(1) if self.worksheet.row_count >= 1 else []
+                result = self._create_result(
+                    success=False,
+                    action="error",
+                    message="Неизвестное действие",
+                    data=prepared_data
+                )
 
-                # Подготовим данные в правильном порядке в соответствии с заголовками таблицы
-                values = [""]
-                for header in headers[1:]:  # начиная со второго столбца (первый - Id)
-                    if header in data:
-                        value = data[header]
-                        # Проверяем тип данных и конвертируем при необходимости
-                        if isinstance(value, str) and value.isdigit():
-                            value = int(value)
-                        elif isinstance(value, (int, float)):
-                            pass  # уже число
-                        else:
-                            value = value if value is not None else ""
-                        values.append(value)
-                    else:
-                        values.append("")  # если поле не найдено в данных, добавляем пустое значение
+            # 6. Логирование результата
+            operation_duration = (datetime.now() - operation_start).total_seconds()
+            self.logger.info(f"Операция завершена: {result['action']} за {operation_duration:.2f}с")
 
-                result = self.append_row_data_with_row_number(values)
-                return result != 0
+            return result
+
         except Exception as e:
-            self.logger.error(f"Ошибка при обновлении/добавлении данных: {e}")
-            import traceback
-            self.logger.error(f"Полный стек трейс: {traceback.format_exc()}")
+            self.logger.error(f"Критическая ошибка в update_or_append_data_with_config: {e}")
+            return self._create_result(
+                success=False,
+                action="error",
+                message=f"Критическая ошибка: {str(e)}",
+                data=data
+            )
+
+    def _prepare_data_for_table(self, data: Dict[str, Any], config: TableConfig) -> Dict[str, Any]:
+        """
+        Подготавливает данные для записи в таблицу.
+
+        Args:
+            data: Исходные данные
+            config: Конфигурация таблицы
+
+        Returns:
+            Подготовленные данные
+        """
+        prepared_data = {}
+
+        for col_def in config.columns:
+            # Пропускаем формульные колонки - они заполняются формулами
+            if col_def.column_type == ColumnType.FORMULA:
+                continue
+
+            # Определяем ключ в данных
+            data_key = col_def.data_key or col_def.name
+
+            if data_key in data and data[data_key] is not None:
+                # Сохраняем значение как есть (Google Sheets сам определит тип)
+                prepared_data[col_def.name] = data[data_key]
+            elif col_def.required:
+                # Для обязательных колонок устанавливаем пустое значение
+                prepared_data[col_def.name] = ""
+            # Необязательные колонки без данных не включаем в результат
+
+        return prepared_data
+
+    def _validate_data_for_config(self, data: Dict[str, Any], config: TableConfig) -> bool:
+        """
+        Валидирует данные для указанной конфигурации.
+
+        Args:
+            data: Данные для валидации
+            config: Конфигурация таблицы
+
+        Returns:
+            bool: True если данные корректны
+        """
+        try:
+            # Проверяем обязательные поля
+            for col_def in config.columns:
+                if col_def.required:
+                    # Проверяем, что ключ есть и значение не None и не пустая строка
+                    if col_def.name not in data or data[col_def.name] is None:
+                        self.logger.error(f"Обязательное поле '{col_def.name}' отсутствует или None")
+                        return False
+                    # Дополнительная проверка: если значение - пустая строка, это может быть ошибкой
+                    elif isinstance(data[col_def.name], str) and data[col_def.name].strip() == "":
+                        self.logger.error(f"Обязательное поле '{col_def.name}' содержит пустое значение")
+                        return False
+
+            # Проверяем уникальные ключи
+            for key in config.unique_key_columns or []:
+                if key not in data or data[key] is None:
+                    self.logger.error(f"Поле уникального ключа '{key}' отсутствует или None")
+                    return False
+                # Проверяем, что уникальные ключи не пустые
+                elif isinstance(data[key], str) and data[key].strip() == "":
+                    self.logger.error(f"Поле уникального ключа '{key}' содержит пустое значение")
+                    return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Ошибка валидации данных для конфигурации: {e}")
             return False
 
-    def append_rows_data(self, data: List[List]) -> bool:
+
+    def get_rows_by_unique_keys(
+        self,
+        unique_key_values: Dict[str, Any],
+        config: Optional[TableConfig] = None,
+        return_raw: bool = False,
+        first_only: bool = True,
+        raise_on_duplicate: bool = False
+    ) -> Union[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Добавляет несколько строк данных в конец таблицы.
+        Находит и возвращает строки по уникальным ключам с использованием batch_get.
 
         Args:
-            data: список списков значений для записи
+            unique_key_values: Словарь с значениями уникальных ключей.
+            config: Конфигурация таблицы (если None, используется self.table_config)
+            return_raw: Если True, возвращает сырые значения без преобразования типов
+            first_only: Если True, возвращает только первую найденную строку, иначе список всех
+            raise_on_duplicate: Если True, бросает исключение при наличии дубликатов
 
         Returns:
-            bool: True при успешной записи
+            Dict[str, Any] с данными строки, список строк или None если строка не найдена
+        """
+        if not unique_key_values:
+            self.logger.error("Не указаны значения уникальных ключей для поиска")
+            return [] if not first_only else None
+
+        use_config = config or self.table_config
+        if not use_config:
+            self.logger.error("Не указана конфигурация таблицы")
+            return [] if not first_only else None
+
+        # Фильтруем переданные ключи, оставляем только те, что есть в данных (не обязательно уникальные)
+        filtered_unique_key_values = {}
+        for key, value in unique_key_values.items():
+            filtered_unique_key_values[key] = value
+
+        if not filtered_unique_key_values:
+            self.logger.error("Нет ключей для поиска")
+            return [] if not first_only else None
+
+        try:
+            # Находим строки по ключам с использованием batch_get
+            row_numbers = self._find_rows_by_unique_keys_batch(filtered_unique_key_values, use_config, strict_mode=False)
+
+            if not row_numbers:
+                self.logger.debug(f"Строки не найдены по ключам: {filtered_unique_key_values}")
+                return [] if not first_only else None
+
+            # Проверяем дубликаты
+            if len(row_numbers) > 1:
+                self.logger.warning(f"Найдено несколько строк по ключам {filtered_unique_key_values}: {row_numbers}")
+                if raise_on_duplicate:
+                    raise ValueError(f"Найдено несколько строк по ключам {filtered_unique_key_values}: {row_numbers}")
+
+            # Читаем данные строк
+            results = []
+            for row_num in row_numbers:
+                row_data = self._get_row_by_number(row_num, use_config, return_raw=return_raw)
+                if row_data:
+                    row_data["_row_number"] = row_num
+                    results.append(row_data)
+
+            if not results:
+                self.logger.warning(f"Найденные строки {row_numbers}, но не удалось прочитать данные")
+                return [] if not first_only else None
+
+            self.logger.info(f"Найдено {len(results)} строк по ключам: {filtered_unique_key_values}")
+
+            if first_only:
+                result = results[0]
+                self.logger.info(f"Возвращена первая строка: строка {result['_row_number']}, ключи: {filtered_unique_key_values}")
+                return result
+            else:
+                return results
+        except ValueError:
+            # Не перехватываем ValueError, особенно при дубликатах
+            raise
+        except Exception as e:
+            self.logger.exception(f"Ошибка при поиске строк по ключам {filtered_unique_key_values}: {e}")
+            return [] if not first_only else None
+
+    def get_row_by_unique_keys(
+        self,
+        unique_key_values: Dict[str, Any],
+        config: Optional[TableConfig] = None,
+        return_raw: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Находит и возвращает строку по уникальным ключам (обертка над get_rows_by_unique_keys).
+
+        Args:
+            unique_key_values: Словарь с значениями уникальных ключей.
+            config: Конфигурация таблицы (если None, используется self.table_config)
+            return_raw: Если True, возвращает сырые значения без преобразования типов
+
+        Returns:
+            Dict[str, Any] с данными строки или None если строка не найдена
+        """
+        return self.get_rows_by_unique_keys(
+            unique_key_values=unique_key_values,
+            config=config,
+            return_raw=return_raw,
+            first_only=True,
+            raise_on_duplicate=False
+        )
+
+    def _prepare_value_for_search(self, value: Any) -> str:
+        """
+        Подготавливает значение для поиска в таблице — нормализует формат дат/чисел/строк.
+        """
+        if value is None:
+            return ""
+
+        # datetime -> "DD.MM.YYYY"
+        if isinstance(value, datetime):
+            return value.strftime("%d.%m.%Y")
+
+        # float без лишних нулей
+        if isinstance(value, float):
+            if value.is_integer():
+                return str(int(value))
+            return str(value).rstrip('0').rstrip('.')
+
+        if isinstance(value, int):
+            return str(value)
+
+        s = str(value).strip()
+        if s.endswith(" 00:00:00"):
+            s = s.replace(" 00:00:00", "")
+        return s
+
+    def _get_row_by_number(
+        self,
+        row_number: int,
+        config: TableConfig,
+        return_raw: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Читает данные строки по номеру и возвращает словарь header->value.
+        Если return_raw=True — возвращает значения, как есть в таблице.
+        """
+        try:
+            headers = self.worksheet.row_values(1)
+            if not headers:
+                self.logger.error("Таблица не содержит заголовков")
+                return None
+
+            if row_number < 1:
+                self.logger.error(f"Некорректный номер строки: {row_number}")
+                return None
+
+            row_values = self.worksheet.row_values(row_number)
+            # Дополняем до длины заголовков
+            if len(row_values) < len(headers):
+                row_values.extend([""] * (len(headers) - len(row_values)))
+
+            row_data: Dict[str, Any] = {}
+            for idx, header in enumerate(headers):
+                header_name = header.strip()
+                raw_value = row_values[idx] if idx < len(row_values) else ""
+
+                if return_raw:
+                    row_data[header_name] = raw_value
+                    continue
+
+                col_def = config.get_column(header_name)
+                if col_def and col_def.column_type == ColumnType.DATA:
+                    row_data[header_name] = self._convert_value_by_type(raw_value, col_def)
+                else:
+                    # Формулы и игнорируемые колонки — возвращаем как есть
+                    row_data[header_name] = raw_value
+
+            row_data["_row_number"] = row_number
+            return row_data
+        except Exception as e:
+            self.logger.exception(f"Ошибка чтения строки {row_number}: {e}")
+            return None
+
+    def _convert_value_by_type(self, value: str, col_def: ColumnDefinition) -> Any:
+        """
+        Попытка привести строку к наиболее подходящему типу: int, float, datetime или оставить строкой.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+
+        v = value.strip()
+        if v == "":
+            return ""
+
+        # Целые числа
+        if v.isdigit() or (v.startswith('-') and v[1:].isdigit()):
+            try:
+                return int(v)
+            except Exception:
+                pass
+
+        # Вещественные числа (учёт запятых)
+        norm = v.replace(',', '.')
+        if norm.replace('.', '', 1).replace('-', '', 1).isdigit():
+            try:
+                return float(norm)
+            except Exception:
+                pass
+
+        # Даты: пробуем несколько форматов
+        date_formats = [
+            "%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d",
+            "%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"
+        ]
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(v, fmt)
+            except Exception:
+                continue
+
+        return v
+
+    def _normalize_for_comparison(self, value: Any) -> str:
+        """
+        Нормализует значение для сравнения. Используется, если потребуется сравнение
+        в логике поиска (вместо прямого str == str).
+        """
+        if value is None:
+            return ""
+        s = str(value).strip()
+        if s.endswith(" 00:00:00"):
+            s = s.replace(" 00:00:00", "")
+        return s
+
+    def get_row_by_id(self, id_value: Any, config: Optional[TableConfig] = None, return_raw: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        Находит и возвращает строку по значению ID.
+
+        Args:
+            id_value: Значение ID для поиска (обычно результат формулы в колонке id)
+            config: Конфигурация таблицы (если None, используется self.table_config)
+            return_raw: Если True, возвращает сырые значения без преобразования типов
+
+        Returns:
+            Dict[str, Any] с данными строки или None если строка не найдена
+        """
+        use_config = config or self.table_config
+        if not use_config or not getattr(use_config, "id_column", None):
+            self.logger.debug("Нет id_column в конфигурации")
+            return None
+
+        id_idx = use_config.get_column_index(use_config.id_column)
+        if not id_idx:
+            self.logger.debug("id_column не найден в синхронизированных индексах (build_column_indexes)")
+            return None
+
+        try:
+            cell = self.worksheet.find(str(id_value), in_column=id_idx)
+            if not cell:
+                self.logger.debug(f"Ячейка с ID '{id_value}' не найдена")
+                return None
+
+            row_data = self._get_row_by_number(cell.row, use_config, return_raw=return_raw)
+            if row_data:
+                self.logger.info(f"Найдена строка по ID {id_value}: строка {cell.row}")
+            return row_data
+        except gspread.exceptions.CellNotFound:
+            return None
+        except Exception as e:
+            self.logger.exception(f"Ошибка при поиске строки по ID {id_value}: {e}")
+            return None
+
+    def _find_rows_by_unique_keys_batch(self, data: Dict[str, Any], config: TableConfig, strict_mode: bool = False) -> List[int]:
+        """
+        Находит строки по уникальным ключам с использованием batch_get для лучшей производительности.
+
+        Args:
+            data: Данные для поиска (только те ключи, которые нужно проверить)
+            config: Конфигурация таблицы
+            strict_mode: Если True, бросает исключение при отсутствии обязательных колонок
+
+        Returns:
+            Список номеров строк, соответствующих критериям
         """
         try:
             if not data:
-                return True
+                self.logger.warning("Не переданы данные для поиска")
+                return []
 
-            # Добавляем строки с помощью append_rows
-            self.worksheet.append_rows(data, value_input_option='USER_ENTERED')
+            # Получаем заголовки из первой строки и нормализуем их
+            raw_headers = self.worksheet.row_values(1)
+            headers = [h.strip() for h in raw_headers]
+            # Создаем маппинг нормализованных заголовков для поиска
+            normalized_header_to_idx = {h.lower(): i+1 for i, h in enumerate(headers)}
 
-            self.logger.info(f"Успешно добавлено {len(data)} строк")
-            return True
+            # Проверяем, что все ключи из данных существуют в заголовках (с нормализацией)
+            key_col_idxs = {}
+            missing_columns = []
+            for k in data.keys():
+                normalized_key = k.lower().strip()
+                if normalized_key in normalized_header_to_idx:
+                    key_col_idxs[k] = normalized_header_to_idx[normalized_key]  # Сохраняем оригинальный ключ, но ищем по нормализованному
+                else:
+                    missing_columns.append(k)
+
+            # Если есть отсутствующие колонки
+            if missing_columns:
+                if strict_mode:
+                    # В строгом режиме бросаем исключение
+                    raise ValueError(f"Обязательные колонки не найдены в заголовках: {missing_columns}. Доступные колонки: {list(normalized_header_to_idx.keys())}")
+                else:
+                    # В нестрогом режиме логируем и возвращаем пустой список
+                    self.logger.warning(f"Колонки '{missing_columns}' не найдены в заголовках (нормализованные заголовки: {list(normalized_header_to_idx.keys())})")
+                    return []
+
+            # Определяем максимальное количество строк для чтения
+            # Используем get_last_row_with_data() для оптимизации, но добавляем буфер для свежих данных
+            last_data_row = self.get_last_row_with_data()
+            max_row = min(self.worksheet.row_count, last_data_row + 10)  # добавляем буфер в 10 строк для свежих данных
+
+            # Формируем диапазоны для batch_get
+            ranges = []
+            key_order = []
+            for key, col_idx in key_col_idxs.items():
+                col_letter = _index_to_column_letter(col_idx)
+                ranges.append(f"{col_letter}2:{col_letter}{max_row}")
+                key_order.append(key)
+
+            # Выполняем batch_get запрос
+            try:
+                batch_values = self.worksheet.batch_get(ranges)  # list of ValueRange objects
+            except Exception as e:
+                self.logger.exception("batch_get error: %s", e)
+                return []
+
+            # Обрабатываем полученные значения
+            cols_values = {}
+            for key, vals in zip(key_order, batch_values):
+                # vals - это ValueRange объект, который можно итерировать
+                # ValueRange содержит данные в формате [[value1], [value2], ...]
+                flat = []
+                for item in vals:
+                    if isinstance(item, list) and len(item) > 0:
+                        flat.append(item[0])
+                    else:
+                        flat.append(item if not isinstance(item, list) else "")
+                cols_values[key] = flat
+
+            # Подготавливаем ожидаемые нормализованные значения
+            expected = {k: self._normalize_for_comparison(self._prepare_value_for_search(data.get(k, ""))) for k in key_order}
+
+            # Сканируем строки
+            matches = []
+            max_len = max((len(v) for v in cols_values.values()), default=0)
+            for i in range(max_len):
+                ok = True
+                for k in key_order:
+                    actual = cols_values[k][i] if i < len(cols_values[k]) else ""
+                    if self._normalize_for_comparison(actual) != expected[k]:
+                        ok = False
+                        break
+                if ok:
+                    matches.append(i + 2)  # +2 потому что i начинается с 0, а строки начинаются с 2 (пропускаем заголовки)
+            return matches
         except Exception as e:
-            self.logger.error(f"Ошибка при добавлении строк: {e}")
-            return False
+            self.logger.error(f"Ошибка поиска строк по ключам (batch): {e}")
+            return []
 
+    def _determine_action(self, existing_row: Optional[int],
+                         strategy: str) -> Dict[str, Any]:
+        """
+        Определяет действие на основе существующей строки и стратегии.
 
-def connect_to_spreadsheet(credentials_path: str, spreadsheet_name: str, worksheet_name: str = "Лист1") -> GoogleSheetsReporter:
-    """
-    Функция подключения к Google-таблице.
+        Args:
+            existing_row: Номер существующей строки или None
+            strategy: Стратегия поведения
 
-    Args:
-        credentials_path (str): путь к файлу учетных данных
-        spreadsheet_name (str): ID или имя таблицы
-        worksheet_name (str): имя листа (по умолчанию "Лист1")
-
-    Returns:
-        GoogleSheetsReporter: экземпляр класса для работы с таблицей
-    """
-    return GoogleSheetsReporter(credentials_path, spreadsheet_name, worksheet_name)
-
-
-def read_data_from_sheet(reporter: GoogleSheetsReporter, start_row: int = 1, end_row: int = None) -> List[List[str]]:
-    """
-    Функция чтения данных из листа.
-
-    Args:
-        reporter (GoogleSheetsReporter): экземпляр класса для работы с таблицей
-        start_row (int): начальная строка для чтения
-        end_row (int): конечная строка для чтения (если None, читает до конца)
-
-    Returns:
-        List[List[str]]: список строк с данными
-    """
-    try:
-        if end_row is None:
-            all_values = reporter.worksheet.get_all_values()
-            return all_values[start_row-1:]
+        Returns:
+            Словарь с информацией о действии
+        """
+        if strategy == "append_only":
+            return {"action": "append"}
+        elif strategy == "update_only":
+            if existing_row:
+                return {"action": "update"}
+            else:
+                return {"action": "skip"}
+        elif strategy == "update_or_append":
+            if existing_row:
+                return {"action": "update"}
+            else:
+                return {"action": "append"}
         else:
-            range_name = f'A{start_row}:Z{end_row}'  # предполагаем максимум 26 столбцов
-            values = reporter.worksheet.get(range_name)
-            return values
-    except Exception as e:
-        reporter.logger.error(f"Ошибка при чтении данных из листа: {e}")
-        return []
+            self.logger.error(f"Неизвестная стратегия: {strategy}")
+            return {"action": "error"}
+
+    @retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
+    def _update_existing_row(self, row_number: int,
+                           data: Dict[str, Any],
+                           config: TableConfig,
+                           formula_row_placeholder: str) -> Dict[str, Any]:
+        """
+        Обновляет существующую строку.
+
+        Args:
+            row_number: Номер строки для обновления
+            data: Данные для обновления
+            config: Конфигурация таблицы
+            formula_row_placeholder: Плейсхолдер для номера строки
+
+        Returns:
+            Результат операции
+        """
+        try:
+            # Получаем заголовки
+            headers = self.worksheet.row_values(1)
+
+            # Подготавливаем значения для обновления
+            values = self._prepare_row_values(data, config, row_number, formula_row_placeholder)
+
+            # Обновляем строку
+            start_col = config.get_column_letter(headers[0]) or "A"
+            end_col = config.get_column_letter(headers[-1]) or _index_to_column_letter(len(headers))
+            range_str = f"{start_col}{row_number}:{end_col}{row_number}"
+
+            self.worksheet.update(range_str, [values], value_input_option='USER_ENTERED')
+
+            result = self._create_result(
+                success=True,
+                action="updated",
+                message=f"Строка {row_number} обновлена",
+                data=data,
+                row_number=row_number
+            )
+
+            self.logger.info(f"Строка {row_number} успешно обновлена")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Ошибка обновления строки {row_number}: {e}")
+            return self._create_result(
+                success=False,
+                action="error",
+                message=f"Ошибка обновления строки: {str(e)}",
+                data=data
+            )
+
+    def _prepare_row_values(self, data: Dict[str, Any], config: TableConfig,
+                           row_number: int, formula_row_placeholder: str) -> List[Any]:
+        """
+        Подготавливает значения для строки с учетом формул и конфигурации колонок.
+
+        Этот метод унифицирует логику подготовки значений для использования
+        в методах _update_existing_row и _append_new_row, устраняя дублирование кода.
+
+        Args:
+            data: Данные для подготовки
+            config: Конфигурация таблицы
+            row_number: Номер строки для формул
+            formula_row_placeholder: Плейсхолдер для номера строки
+
+        Returns:
+            Список значений для строки
+        """
+        headers = self.worksheet.row_values(1)
+        values = []
+
+        for header in headers:
+            col_def = config.get_column(header)
+            if not col_def:
+                values.append("")
+                continue
+
+            if col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+                # Заменяем плейсхолдер в формуле
+                formula = col_def.formula_template.replace(
+                    formula_row_placeholder,
+                    str(row_number)
+                )
+                values.append(formula)
+            elif col_def.name in data:
+                values.append(data[col_def.name])
+            else:
+                values.append("")
+
+        return values
+
+    @retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
+    def _append_new_row(self, data: Dict[str, Any],
+                       config: TableConfig,
+                       formula_row_placeholder: str) -> Dict[str, Any]:
+        """
+        Добавляет новую строку с данными одним запросом.
+
+        Args:
+            data: Данные для добавления
+            config: Конфигурация таблицы
+            formula_row_placeholder: Плейсхолдер для номера строки
+
+        Returns:
+            Результат операции
+        """
+        try:
+            last_row = self.get_last_row_with_data()
+            new_row_num = last_row + 1
+
+            # Подготавливаем значения с формулами
+            values = self._prepare_row_values(data, config, new_row_num, formula_row_placeholder)
+
+            # ОДИН запрос к API
+            self.worksheet.append_rows(
+                values=[values],
+                value_input_option='USER_ENTERED'
+            )
+
+            # Логирование
+            self.logger.info(f"Новая строка {new_row_num} добавлена")
+
+            return self._create_result(
+                success=True,
+                action="appended",
+                message=f"Строка {new_row_num} добавлена",
+                data=data,
+                row_number=new_row_num
+            )
+
+        except Exception as e:
+            self.logger.error(f"Ошибка добавления новой строки: {e}")
+            return self._create_result(
+                success=False,
+                action="error",
+                message=f"Ошибка добавления строки: {str(e)}",
+                data=data
+            )
 
 
-def write_data_to_sheet(reporter: GoogleSheetsReporter, data: List[List[Any]], start_row: int = None) -> bool:
-    """
-    Функция записи данных в лист.
+    def _create_result(self, success: bool, action: str, message: str,
+                      data: Dict[str, Any], row_number: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Создает стандартный результат операции.
 
-    Args:
-        reporter (GoogleSheetsReporter): экземпляр класса для работы с таблицей
-        data (List[List[Any]]): данные для записи
-        start_row (int): строка начала записи (если None, добавляет в конец)
+        Args:
+            success: Успешность операции
+            action: Тип действия
+            message: Сообщение
+            data: Данные
+            row_number: Номер строки (если применимо)
 
-    Returns:
-        bool: True при успешной записи
-    """
-    try:
-        if start_row is None:
-            # Если строка не указана, добавляем в конец
-            last_row = reporter.get_last_row_with_data()
-            start_row = last_row + 1
-        
-        # Определяем диапазон для записи
-        num_rows = len(data)
-        num_cols = max(len(row) for row in data) if data else 0
-        end_col = chr(64 + num_cols)  # Преобразуем число в букву столбца (A=1, B=2, ..., Z=26)
-        
-        range_name = f'A{start_row}:{end_col}{start_row + num_rows - 1}'
-        
-        # Записываем данные
-        reporter.worksheet.update(range_name, data, value_input_option='USER_ENTERED')
-        
-        reporter.logger.info(f"Данные успешно записаны в диапазон {range_name}")
-        return True
-    except Exception as e:
-        reporter.logger.error(f"Ошибка при записи данных в лист: {e}")
-        return False
+        Returns:
+            Стандартный результат операции
+        """
+        result = {
+            "success": success,
+            "action": action,
+            "message": message,
+            "data": data,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        if row_number is not None:
+            result["row_number"] = row_number
+
+        return result

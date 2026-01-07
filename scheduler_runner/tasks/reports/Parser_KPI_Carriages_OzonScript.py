@@ -1,28 +1,33 @@
 """
-OzonCarriagesReportScript.py
+Parser_KPI_Carriages_OzonScript.py
 
-Скрипт формирования отчета по перевозкам (прямые и возвратные) для маркетплейса ОЗОН для домена (задачи) reports.
-Собирает статистику из ERP-системы ОЗОН с использованием уже активной сессии пользователя,
-с возможностью выбора нужного пункта выдачи и извлечения количества перевозок обоих типов (прямые и возвратные) за текущий день.
+Скрипт для автоматического парсинга данных о перевозках из маркетплейса ОЗОН.
+Использует новую архитектуру с универсальной загрузкой данных и форматированием.
+
+Функции:
+- Парсинг веб-страницы ОЗОН для получения данных о перевозках
+- Сохранение данных в JSON-файл
+- Обеспечение логирования процесса
+- Совместимость с системой уведомлений и загрузки в Google Sheets
 
 Архитектура:
-- Все параметры задаются в config/scripts/OzonCarriagesReportScript_config.py.
-- Использует Selenium для автоматизации браузера Edge.
-- Завершает все процессы Edge перед запуском для избежания конфликтов.
-- Использует существующую сессию пользователя.
-- Сохраняет отчет по перевозкам в JSON-файл.
+- Использует конфигурацию из Parser_KPI_Carriages_OzonScript_config.py
+- Использует базовый класс BaseOzonParser для парсинга
+- Использует универсальный модуль scheduler_runner/utils/google_sheets.py для загрузки данных
+- Использует транслитерацию для кириллических имен ПВЗ при поиске файлов
+- Обеспечивает уникальность записей с помощью Id столбца с формулой (для совместимости)
 
 Author: anikinjura
+Version: 3.0.0 (новая архитектура)
 """
 __version__ = '1.0.0'
 
 import argparse
 import sys
 import time
+import json
 from pathlib import Path
 from datetime import datetime
-import json
-import re
 from typing import Dict, Any
 
 # Импорты для обработки исключений Selenium
@@ -38,17 +43,16 @@ FLOW_TYPE_UNKNOWN = 'Unknown'
 FOUND_PATTERN = r'Найдено:\s*(\d+)'
 PVZ_KEYWORDS = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
 
-# Добавляем путь к корню проекта для импорта модулей
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Добавляем корень проекта в sys.path для корректного импорта
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scheduler_runner.utils.logging import configure_logger
 from scheduler_runner.tasks.reports.BaseOzonParser import BaseOzonParser
-from scheduler_runner.tasks.reports.config.scripts.OzonCarriagesReportScript_config import SCRIPT_CONFIG
+from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import SCRIPT_CONFIG
 
 
 class OzonCarriagesReportParser(BaseOzonParser):
-    """Парсер для получения отчета по перевозкам (прямые и возвратные) из ERP-системы ОЗОН"""
+    """Парсер для получения данных о перевозках из ERP-системы ОЗОН"""
 
     def __init__(self, config, logger=None):
         super().__init__(config)
@@ -56,25 +60,22 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
     def login(self):
         """Вход в ERP-систему ОЗОН"""
-        # Заходим на страницу с базовым URL (без типа перевозки)
+        # Заходим на страницу с базовым URL
         self.driver.get(self.config['ERP_URL'])
-        # Реализация входа (если требуется, обычно сессия уже активна)
+        if self.logger:
+            self.logger.info(f"Переход на страницу: {self.config['ERP_URL']}")
 
     def navigate_to_reports(self):
-        """Навигация к странице отчета по перевозкам ОЗОН"""
-        pass
+        """Навигация к странице отчета о выдачах ОЗОН"""
+        # В данном случае навигация уже выполнена в login(), так как мы переходим сразу к нужной странице
+        if self.logger:
+            self.logger.info("Навигация к отчету о выдачах выполнена")
 
-    def extract_data(self, target_url: str = None) -> Dict[str, Any]:
-        """Извлечение отчета по перевозкам из ERP-системы ОЗОН"""
+    def extract_data(self, flow_type: str = FLOW_TYPE_UNKNOWN) -> Dict[str, Any]:
+        """Извлечение данных о перевозках из ERP-системы ОЗОН"""
         from selenium.webdriver.common.by import By
         import time
         from urllib.parse import unquote
-
-        # Если передан целевой URL, переходим на него
-        if target_url:
-            self.driver.get(target_url)
-            if self.logger:
-                self.logger.info(f"Переходим на целевой URL: {target_url}")
 
         if self.logger:
             self.logger.info(f"Текущий URL: {self.driver.current_url}")
@@ -105,11 +106,11 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 pvz_info = self._extract_pvz_info()
 
                 # Определяем тип перевозки из закодированного URL
-                flow_type = FLOW_TYPE_UNKNOWN
-                if "flowType%22:%22Direct%22" in current_url_encoded:
-                    flow_type = FLOW_TYPE_DIRECT
-                elif "flowType%22:%22Return%22" in current_url_encoded:
-                    flow_type = FLOW_TYPE_RETURN
+                if flow_type == FLOW_TYPE_UNKNOWN:
+                    if "flowType%22:%22Direct%22" in current_url_encoded:
+                        flow_type = FLOW_TYPE_DIRECT
+                    elif "flowType%22:%22Return%22" in current_url_encoded:
+                        flow_type = FLOW_TYPE_RETURN
 
                 # Обработка конкретного типа перевозок
                 if self.logger:
@@ -117,17 +118,35 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 flow_data = self.process_flow_type(flow_type, report_date)
 
                 # Формируем итоговые данные
-                data = {
-                    'marketplace': MARKETPLACE_NAME,
-                    'report_type': f'{REPORT_TYPE_CARRIAGES}_{flow_type.lower()}',
+                # Формируем структуру данных с использованием REPORT_DATA_SCHEMA из конфигурации
+                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+
+                # Подготавливаем все возможные значения для подстановки
+                all_values = {
                     'date': report_date,
                     'timestamp': datetime.now().isoformat(),
                     'page_title': self.driver.title,
                     'current_url': self.driver.current_url,
-                    'flow_type': flow_type,
-                    f'{flow_type.lower()}_flow': flow_data,
-                    'pvz_info': pvz_info,  # Информация о пункте выдачи
+                    'direct_flow_type': FLOW_TYPE_DIRECT if flow_type == FLOW_TYPE_DIRECT else '',
+                    'return_flow_type': FLOW_TYPE_RETURN if flow_type == FLOW_TYPE_RETURN else '',
+                    'total_direct_carriages': flow_data['total_carriages_found'] if flow_type == FLOW_TYPE_DIRECT else 0,
+                    'total_return_carriages': flow_data['total_carriages_found'] if flow_type == FLOW_TYPE_RETURN else 0,
+                    'direct_carriage_numbers': flow_data['carriage_numbers'] if flow_type == FLOW_TYPE_DIRECT else [],
+                    'return_carriage_numbers': flow_data['carriage_numbers'] if flow_type == FLOW_TYPE_RETURN else [],
+                    'direct_carriage_details': flow_data['carriage_details'] if flow_type == FLOW_TYPE_DIRECT else [],
+                    'return_carriage_details': flow_data['carriage_details'] if flow_type == FLOW_TYPE_RETURN else [],
+                    'total_direct_items': flow_data['total_items_count'] if flow_type == FLOW_TYPE_DIRECT else 0,
+                    'total_return_items': flow_data['total_items_count'] if flow_type == FLOW_TYPE_RETURN else 0,
+                    'pvz_info': pvz_info,
+                    'page_source_length': len(self.driver.page_source),
+                    'page_text_length': len(self.driver.find_element(By.TAG_NAME, "body").text)
                 }
+
+                # Формируем структуру данных с подстановкой значений
+                raw_data = self._substitute_values_in_schema(REPORT_DATA_SCHEMA, all_values)
+
+                # Используем raw_data как итоговую структуру, так как она уже сформирована по шаблону
+                data = raw_data
 
                 if self.logger:
                     self.logger.info(f"Информация о ПВЗ: {pvz_info}")
@@ -137,16 +156,28 @@ class OzonCarriagesReportParser(BaseOzonParser):
             except NoSuchElementException as e:
                 if self.logger:
                     self.logger.error(f"Не найден элемент на странице: {e}")
+                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
+                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
+                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'carriages')
+
                 return {
-                    'marketplace': MARKETPLACE_NAME,
-                    'report_type': REPORT_TYPE_CARRIAGES,
+                    'marketplace': default_marketplace,
+                    'report_type': default_report_type,
                     'date': datetime.now().strftime('%Y-%m-%d'),
                     'timestamp': datetime.now().isoformat(),
                     'error': f'Element not found: {str(e)}',
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
-                    'flow_type': FLOW_TYPE_UNKNOWN,
-                    'unknown_flow': {
+                    'direct_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'total_carriages_found': 0,
+                        'carriage_numbers': [],
+                        'carriage_details': [],
+                        'total_items_count': 0
+                    },
+                    'return_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -157,16 +188,28 @@ class OzonCarriagesReportParser(BaseOzonParser):
             except TimeoutException as e:
                 if self.logger:
                     self.logger.error(f"Таймаут ожидания элемента: {e}")
+                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
+                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
+                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'carriages')
+
                 return {
-                    'marketplace': MARKETPLACE_NAME,
-                    'report_type': REPORT_TYPE_CARRIAGES,
+                    'marketplace': default_marketplace,
+                    'report_type': default_report_type,
                     'date': datetime.now().strftime('%Y-%m-%d'),
                     'timestamp': datetime.now().isoformat(),
                     'error': f'Timeout: {str(e)}',
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
-                    'flow_type': FLOW_TYPE_UNKNOWN,
-                    'unknown_flow': {
+                    'direct_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'total_carriages_found': 0,
+                        'carriage_numbers': [],
+                        'carriage_details': [],
+                        'total_items_count': 0
+                    },
+                    'return_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -179,16 +222,28 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     self.logger.error(f"Неожиданная ошибка при извлечении данных: {e}")
                     import traceback
                     self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
+                from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+                default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
+                default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'carriages')
+
                 return {
-                    'marketplace': MARKETPLACE_NAME,
-                    'report_type': REPORT_TYPE_CARRIAGES,
+                    'marketplace': default_marketplace,
+                    'report_type': default_report_type,
                     'date': datetime.now().strftime('%Y-%m-%d'),
                     'timestamp': datetime.now().isoformat(),
                     'error': f'Error extracting data: {str(e)}',
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
-                    'flow_type': FLOW_TYPE_UNKNOWN,
-                    'unknown_flow': {
+                    'direct_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'total_carriages_found': 0,
+                        'carriage_numbers': [],
+                        'carriage_details': [],
+                        'total_items_count': 0
+                    },
+                    'return_flow': {
+                        'flow_type': FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -209,9 +264,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
         if not is_logged_in:
             if self.logger:
                 self.logger.warning("Все еще на странице логина - сессия не активна или недостаточно прав")
+            # Получаем значения по умолчанию из REPORT_DATA_SCHEMA
+            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+            default_marketplace = REPORT_DATA_SCHEMA.get('marketplace', 'Ozon')
+            default_report_type = REPORT_DATA_SCHEMA.get('report_type', 'carriages')
+
             error_response = {
-                'marketplace': MARKETPLACE_NAME,
-                'report_type': REPORT_TYPE_CARRIAGES,
+                'marketplace': default_marketplace,
+                'report_type': default_report_type,
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'timestamp': datetime.now().isoformat(),
                 'error': 'Still on login page - session not active or insufficient permissions',
@@ -228,13 +288,13 @@ class OzonCarriagesReportParser(BaseOzonParser):
         """Попытка установки правильного ПВЗ"""
         try:
             from selenium.webdriver.common.by import By
-            pvz_input = self.driver.find_element(By.XPATH, "//input[@id='input___v-0-0']")
+            pvz_input = self.driver.find_element(By.XPATH, self.config['SELECTORS']['PVZ_INPUT'])
 
             current_value = pvz_input.get_attribute("value")
             if self.logger:
                 self.logger.info(f"Текущий пункт выдачи: {current_value}")
 
-            expected_pvz = self.config.get('EXPECTED_PVZ_CODE', '')
+            expected_pvz = self.config.get('PVZ_ID', '')
             if self.logger:
                 self.logger.info(f"Ожидаемый пункт выдачи: {expected_pvz}")
 
@@ -272,24 +332,26 @@ class OzonCarriagesReportParser(BaseOzonParser):
         pvz_info = ""
 
         # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
-        pvz_value = self.extract_ozon_element_by_xpath("//input[@id='input___v-0-0' and @readonly]", "value")
-        if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS) or '_' in pvz_value):
+        pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_READONLY'], "value")
+        if pvz_value:
             pvz_info = pvz_value
 
         # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
         if not pvz_info:
-            pvz_value = self.extract_ozon_element_by_xpath("//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]", "value")
-            if pvz_value and (any(keyword in pvz_value.upper() for keyword in PVZ_KEYWORDS) or '_' in pvz_value):
+            pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_CLASS_READONLY'], "value")
+            if pvz_value:
                 pvz_info = pvz_value
 
         # Если не нашли в элементах, ищем в общем тексте
         if not pvz_info:
             page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            # Ищем возможные названия ПВЗ в тексте страницы
+            pvz_keywords = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
             pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
             if pvz_matches:
                 # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
                 for match in pvz_matches:
-                    if '_' in match and any(keyword in match.upper() for keyword in PVZ_KEYWORDS):
+                    if '_' in match and any(keyword in match.upper() for keyword in pvz_keywords):
                         pvz_info = match
                         break
                 # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
@@ -471,6 +533,149 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
         return flow_data
 
+    def _extract_total_carriages(self) -> int:
+        """Извлечение общего количества перевозок"""
+        from selenium.webdriver.common.by import By
+        import re
+
+        try:
+            # Ищем элемент с общей информацией о перевозках
+            total_carriages_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['TOTAL_CARRIAGES'], "textContent")
+            if total_carriages_text:
+                # Извлекаем число из текста "Найдено: N"
+                found_count_match = re.search(FOUND_PATTERN, total_carriages_text)
+                if found_count_match:
+                    return int(found_count_match.group(1))
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь общее количество перевозок: {e}")
+
+        return 0
+
+    def _extract_direct_flow_count(self) -> int:
+        """Извлечение количества прямого потока"""
+        from selenium.webdriver.common.by import By
+        import re
+
+        try:
+            # Используем специфичный метод из базового класса ОЗОН для поиска "Прямой поток: N"
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            direct_flow_text = self.extract_ozon_data_by_pattern(r'Прямой\s*поток:\s*(\d+)', page_text)
+            if direct_flow_text:
+                return int(direct_flow_text)
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество прямого потока по паттерну 'Прямой поток: N': {e}")
+
+        # Если не нашли по основному паттерну, пробуем искать в элементах по селектору
+        try:
+            direct_flow_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['DIRECT_FLOW_COUNT'], "textContent")
+            if direct_flow_text:
+                # Извлекаем число из текста
+                numbers = re.findall(r'\d+', direct_flow_text)
+                if numbers:
+                    return int(numbers[0])
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество прямого потока: {e}")
+
+        # Если не нашли по основному селектору, пробуем искать в общем тексте страницы
+        try:
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            # Ищем возможные упоминания количества прямого потока
+            patterns = [
+                r'прямой\s*поток\s*(\d+)',
+                r'(\d+)\s*прямой\s*поток',
+                r'прямой\s*(\d+)'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество прямого потока из текста страницы: {e}")
+
+        return 0
+
+    def _extract_return_flow_count(self) -> int:
+        """Извлечение количества возвратного потока"""
+        from selenium.webdriver.common.by import By
+        import re
+
+        try:
+            # Используем специфичный метод из базового класса ОЗОН для поиска "Возвратный поток: N"
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            return_flow_text = self.extract_ozon_data_by_pattern(r'Возвратный\s*поток:\s*(\d+)', page_text)
+            if return_flow_text:
+                return int(return_flow_text)
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество возвратного потока по паттерну 'Возвратный поток: N': {e}")
+
+        # Если не нашли по основному паттерну, пробуем искать в элементах по селектору
+        try:
+            return_flow_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['RETURN_FLOW_COUNT'], "textContent")
+            if return_flow_text:
+                # Извлекаем число из текста
+                numbers = re.findall(r'\d+', return_flow_text)
+                if numbers:
+                    return int(numbers[0])
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество возвратного потока: {e}")
+
+        # Если не нашли по основному селектору, пробуем искать в общем тексте страницы
+        try:
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            # Ищем возможные упоминания количества возвратного потока
+            patterns = [
+                r'возвратный\s*поток\s*(\d+)',
+                r'(\d+)\s*возвратный\s*поток',
+                r'возврат\s*(\d+)'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь количество возвратного потока из текста страницы: {e}")
+
+        return 0
+
+    def _substitute_values_in_schema(self, schema: dict, values: dict) -> dict:
+        """
+        Рекурсивно подставляет значения в шаблон структуры данных.
+
+        Args:
+            schema: Шаблон структуры данных с плейсхолдерами
+            values: Значения для подстановки
+
+        Returns:
+            dict: Структура данных с подставленными значениями
+        """
+        result = {}
+
+        for key, value in schema.items():
+            if isinstance(value, dict):
+                # Если значение - словарь, рекурсивно обрабатываем его
+                result[key] = self._substitute_values_in_schema(value, values)
+            elif isinstance(value, str) and value.startswith('{') and value.endswith('}'):
+                # Если значение - плейсхолдер вида {key}, подставляем соответствующее значение
+                placeholder = value[1:-1]  # Убираем фигурные скобки
+                if placeholder in values:
+                    result[key] = values[placeholder]
+                else:
+                    # Если значение не найдено, используем пустое значение или оставляем плейсхолдер
+                    # Вместо оставления плейсхолдера, используем None для лучшей совместимости
+                    result[key] = None
+            else:
+                # В противном случае используем значение как есть
+                result[key] = value
+
+        return result
+
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
         pass
@@ -478,13 +683,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
 
 def parse_arguments() -> argparse.Namespace:
     """
-    Парсит аргументы командной строки для скрипта формирования отчета ОЗОН.
+    Парсит аргументы командной строки для скрипта парсинга выдач ОЗОН.
 
     --detailed_logs              - включить детализированные логи
+    --date                       - дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)
     """
     parser = argparse.ArgumentParser(
-        description="Формирование отчета по перевозкам (прямые и возвратные) ERP-системы ОЗОН",
-        epilog="Пример: python OzonCarriagesReportScript.py --detailed_logs"
+        description="Парсинг данных о выдачах из ERP-системы ОЗОН",
+        epilog="Пример: python Parser_KPI_Giveout_OzonScript.py --detailed_logs --date 2026-01-01"
     )
     parser.add_argument(
         "--detailed_logs",
@@ -492,12 +698,13 @@ def parse_arguments() -> argparse.Namespace:
         default=False,
         help="Включить детализированные логи"
     )
+    parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)"
+    )
     return parser.parse_args()
-
-
-def main_for_data_extraction():
-    """Основная функция скрипта, возвращающая данные отчета"""
-    pass
 
 
 def main():
@@ -507,6 +714,12 @@ def main():
         args = parse_arguments()
         detailed_logs = args.detailed_logs or SCRIPT_CONFIG.get("DETAILED_LOGS", False)
 
+        # Получаем дату из аргументов или используем текущую
+        target_date = args.date
+        if target_date is None:
+            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import DATE_FORMAT
+            target_date = datetime.now().strftime(DATE_FORMAT)
+
         # 2. Настройка логирования
         logger = configure_logger(
             user=SCRIPT_CONFIG["USER"],
@@ -515,57 +728,91 @@ def main():
         )
 
         # 3. Логирование начала процесса
-        logger.info("Запуск формирования отчета по перевозкам (прямые и возвратные) ERP-системы ОЗОН")
+        logger.info(f"Запуск парсинга данных о перевозках ERP-системы ОЗОН за дату: {target_date}")
 
-        # 4. Создание экземпляра парсера
-        parser = OzonCarriagesReportParser(SCRIPT_CONFIG, logger)
+        # 4. Создание копии конфигурации с обновленным URL для указанной даты
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import (
+            ERP_URL_TEMPLATE,
+            DIRECT_FLOW_URL_TEMPLATE,
+            RETURN_FLOW_URL_TEMPLATE,
+            DATE_FORMAT
+        )
 
-        # 5. Настройка драйвера
+        # Создаем копию конфигурации
+        script_config = SCRIPT_CONFIG.copy()
+        # Обновляем ERP_URL в конфигурации, чтобы использовать target_date вместо current_date
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import ERP_URL_TEMPLATE
+        script_config["ERP_URL"] = ERP_URL_TEMPLATE.format(date=target_date)
+
+        # 5. Создание экземпляра парсера
+        parser = OzonCarriagesReportParser(script_config, logger)
+
+        # 6. Настройка драйвера
         try:
             parser.setup_driver() # setup_driver() определена в базовом классе BaseOzonParser, создает и настраивает экземпляр браузера, готовый к работе с ERP-системой Ozon.
 
-            # 6. Выполнение основных операций
+            # 7. Выполнение основных операций
             parser.login()
             parser.navigate_to_reports()
 
             # Извлечение данных для прямых перевозок
-            direct_url = parser.config['DIRECT_FLOW_URL']
-            direct_data = parser.extract_data(direct_url)
+            # Формируем URL для прямых перевозок, подставив дату и тип перевозки в шаблон
+            direct_flow_url = DIRECT_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Direct')
+            # Переходим на страницу прямых перевозок
+            parser.driver.get(direct_flow_url)
+            direct_data = parser.extract_data(FLOW_TYPE_DIRECT)
 
             # Возвращаемся на начальную страницу
             parser.login()
 
             # Извлечение данных для возвратных перевозок
-            return_url = parser.config['RETURN_FLOW_URL']
-            return_data = parser.extract_data(return_url)
+            # Формируем URL для возвратных перевозок, подставив дату и тип перевозки в шаблон
+            return_flow_url = RETURN_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Return')
+            # Переходим на страницу возвратных перевозок
+            parser.driver.get(return_flow_url)
+            return_data = parser.extract_data(FLOW_TYPE_RETURN)
 
             # Объединяем данные
+            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import ERP_URL_TEMPLATE
+
             combined_data = {
                 'marketplace': 'Ozon',
                 'report_type': 'carriages_combined',
-                'date': direct_data.get('date', return_data.get('date', datetime.now().strftime('%Y-%m-%d'))),
+                'date': target_date,  # Используем дату из аргументов командной строки
                 'timestamp': datetime.now().isoformat(),
                 'page_title': direct_data.get('page_title', return_data.get('page_title', '')),
-                'current_url': parser.config['ERP_URL'],  # Базовый URL с фильтром по дате
+                'current_url': ERP_URL_TEMPLATE.format(date=target_date),  # Используем шаблон из конфигурации
                 'direct_flow': direct_data.get('direct_flow', direct_data.get('unknown_flow', {})),
                 'return_flow': return_data.get('return_flow', return_data.get('unknown_flow', {})),
                 'pvz_info': direct_data.get('pvz_info', return_data.get('pvz_info', '')),
+                'raw_data': {
+                    'page_source_length': direct_data.get('raw_data', {}).get('page_source_length', 0),
+                    'page_text_length': direct_data.get('raw_data', {}).get('page_text_length', 0)
+                }
             }
 
             parser.logout()
 
-            # 7. Сохранение данных
-            output_dir = Path(SCRIPT_CONFIG['OUTPUT_DIR'])
+            # 8. Сохранение данных
+            output_dir = Path(script_config['OUTPUT_DIR'])
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = output_dir / f"ozon_carriages_report_{timestamp}.json"
+            # Формируем имя файла с использованием шаблона из конфигурации
+            date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
+            pvz_id = combined_data.get('pvz_info', script_config['PVZ_ID'])
+            # Транслитерируем ПВЗ для использования в имени файла
+            from scheduler_runner.utils.system import SystemUtils
+            translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
+
+            # Используем шаблон из конфигурации для формирования имени файла
+            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import FILE_PATTERN
+            filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str)
+            filename = output_dir / filename_template
 
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(combined_data, f, ensure_ascii=False, indent=2, default=str)
 
-            # 8. Логирование завершения
-            logger.info(f"Отчет по перевозкам ОЗОН успешно сохранен в {filename}")
+            logger.info(f"Отчет о перевозках ОЗОН успешно сохранен в {filename}")
             logger.info(f"Извлеченные данные: {combined_data}")
         finally:
             # 9. Завершение работы
@@ -573,5 +820,11 @@ def main():
 
     except Exception as e:
         # 10. Обработка исключений
-        logger.error(f"Ошибка при формировании отчета по перевозкам ERP-системы ОЗОН: {e}")
+        import traceback
+        logger.error(f"Ошибка при парсинге данных о перевозках ERP-системы ОЗОН: {e}")
+        logger.error(f"Полный стек трейса: {traceback.format_exc()}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
