@@ -108,28 +108,8 @@ class OzonGiveoutReportParser(BaseOzonParser):
 
     def _extract_issued_packages(self) -> int:
         """Извлечение количества выданных посылок"""
-        from selenium.webdriver.common.by import By
-        import re
-
-        # Используем правильный селектор для поиска элемента с "Всего: N"
-        try:
-            # Ждем немного для полной загрузки страницы
-            time.sleep(2)
-
-            # Пробуем извлечь элемент напрямую
-            elements = self.driver.find_elements(By.XPATH, self.config['SELECTORS']['GIVEOUT_COUNT'])
-
-            if elements:
-                element_text = elements[0].text
-                # Извлекаем число из текста "Всего: N"
-                numbers = re.findall(r'\d+', element_text)
-                if numbers:
-                    return int(numbers[0])
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Не удалось извлечь количество выданных посылок по селектору: {e}")
-
-        return 0
+        # Используем универсальный метод из базового класса
+        return self.extract_number_by_selector('GIVEOUT_COUNT', wait_time=2)
 
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""

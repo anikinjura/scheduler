@@ -167,6 +167,37 @@ class BaseOzonParser(BaseParser, ABC):
         """
         return self.extract_element_by_xpath(xpath, attribute)
 
+    def extract_number_by_selector(self, selector_key: str, wait_time: int = 0) -> int:
+        """
+        Извлекает числовое значение из элемента по ключу селектора
+
+        Args:
+            selector_key: Ключ селектора в конфигурации
+            wait_time: Время ожидания перед извлечением (в секундах)
+
+        Returns:
+            int: Извлеченное числовое значение или 0 в случае ошибки
+        """
+        import re
+        import time
+
+        try:
+            if wait_time > 0:
+                time.sleep(wait_time)
+
+            xpath = self.config['SELECTORS'][selector_key]
+            element_text = self.extract_ozon_element_by_xpath(xpath, "textContent")
+
+            if element_text:
+                numbers = re.findall(r'\d+', element_text)
+                if numbers:
+                    return int(numbers[0])
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось извлечь числовое значение по селектору {selector_key}: {e}")
+
+        return 0
+
     def send_ozon_notification(self, message: str, logger=None) -> bool:
         """
         Отправляет уведомление через Telegram с использованием настроек ОЗОН
