@@ -58,13 +58,6 @@ class OzonCarriagesReportParser(BaseOzonParser):
         super().__init__(config)
         self.logger = logger
 
-    def login(self):
-        """Вход в ERP-систему ОЗОН"""
-        # Заходим на страницу с базовым URL
-        self.driver.get(self.config['ERP_URL'])
-        if self.logger:
-            self.logger.info(f"Переход на страницу: {self.config['ERP_URL']}")
-
     def navigate_to_reports(self):
         """Навигация к странице отчета о выдачах ОЗОН"""
         # В данном случае навигация уже выполнена в login(), так как мы переходим сразу к нужной странице
@@ -675,10 +668,6 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 result[key] = value
 
         return result
-
-    def logout(self):
-        """Выход из системы (обычно не требуется при использовании существующей сессии)"""
-        pass
 
 
 def parse_arguments() -> argparse.Namespace:

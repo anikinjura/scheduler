@@ -481,6 +481,13 @@ class BaseOzonParser(BaseParser, ABC):
         """Возвращает селекторы по умолчанию для данного типа отчета"""
         return self.config.get('SELECTORS', {})
 
+    def login(self):
+        """Вход в ERP-систему"""
+        # Заходим на страницу с базовым URL
+        self.driver.get(self.config['ERP_URL'])
+        if self.logger:
+            self.logger.info(f"Переход на страницу: {self.config['ERP_URL']}")
+
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
         pass
