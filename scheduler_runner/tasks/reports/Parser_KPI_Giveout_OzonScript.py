@@ -68,6 +68,16 @@ class OzonGiveoutReportParser(BaseOzonParser):
         return 'giveout'
 
 
+    def extract_data(self) -> Dict[str, Any]:
+        """Извлечение данных о выдачах из ERP-системы ОЗОН"""
+        # Извлекаем специфичные данные
+        specific_data = self.extract_specific_data()
+
+        # Обрабатываем общую структуру данных с учетом специфичных данных
+        processed_data = self.process_report_data(specific_data)
+
+        return processed_data
+
     def extract_specific_data(self) -> Dict[str, Any]:
         """Извлекает специфичные данные для отчета о выдачах"""
         from selenium.webdriver.common.by import By

@@ -476,15 +476,6 @@ class BaseOzonParser(BaseParser, ABC):
                 self.logger.error(f"Отсутствует обязательный параметр для формирования URL: {e}")
             raise
 
-    def extract_data(self) -> Dict[str, Any]:
-        """Извлечение данных из ERP-системы"""
-        # Извлекаем специфичные данные
-        specific_data = self.extract_specific_data()
-
-        # Обрабатываем общую структуру данных с учетом специфичных данных
-        processed_data = self.process_report_data(specific_data)
-
-        return processed_data
 
     def get_default_selectors(self) -> Dict[str, str]:
         """Возвращает селекторы по умолчанию для данного типа отчета"""
