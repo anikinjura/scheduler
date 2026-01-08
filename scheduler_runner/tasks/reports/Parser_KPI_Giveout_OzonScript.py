@@ -95,16 +95,6 @@ class OzonGiveoutReportParser(BaseOzonParser):
         from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
         return REPORT_DATA_SCHEMA
 
-    def extract_data(self) -> Dict[str, Any]:
-        """Извлечение данных о выдачах из ERP-системы ОЗОН"""
-        # Извлекаем специфичные данные
-        specific_data = self.extract_specific_data()
-
-        # Обрабатываем общую структуру данных с учетом специфичных данных
-        processed_data = self.process_report_data(specific_data)
-
-        return processed_data
-
 
     def _extract_issued_packages(self) -> int:
         """Извлечение количества выданных посылок"""
