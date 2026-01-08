@@ -485,3 +485,7 @@ class BaseOzonParser(BaseParser, ABC):
         processed_data = self.process_report_data(specific_data)
 
         return processed_data
+
+    def logout(self):
+        """Выход из системы (обычно не требуется при использовании существующей сессии)"""
+        pass

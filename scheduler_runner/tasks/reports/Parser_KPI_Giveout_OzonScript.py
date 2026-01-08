@@ -101,10 +101,6 @@ class OzonGiveoutReportParser(BaseOzonParser):
         # Используем универсальный метод из базового класса
         return self.extract_number_by_selector('GIVEOUT_COUNT', wait_time=2)
 
-    def logout(self):
-        """Выход из системы (обычно не требуется при использовании существующей сессии)"""
-        pass
-
 
 def parse_arguments() -> argparse.Namespace:
     """
