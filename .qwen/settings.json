@@ -1,0 +1,8 @@
+{
+  "tools": {
+    "shell": {
+      "enableInteractiveShell": true
+    }
+  },
+  "$version": 2
+}

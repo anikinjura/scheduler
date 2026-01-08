@@ -38,7 +38,6 @@ SELECTORS = {
     "PVZ_INPUT": "//input[@id='input___v-0-0']",
     "PVZ_INPUT_READONLY": "//input[@id='input___v-0-0' and @readonly]",
     "PVZ_INPUT_CLASS_READONLY": "//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]",
-    "TOTAL_GIVEOUT": "//div[contains(@class, '_total_1n8st_15')]",  # Количество выдач на странице
     "GIVEOUT_COUNT": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R') and contains(., 'Всего:')]",  # Количество выданных посылок (содержит "Всего: N")
 }
 
@@ -52,7 +51,6 @@ REPORT_DATA_SCHEMA = {
     'page_title': '{page_title}',  # будет заменено значением заголовка страницы
     'current_url': '{current_url}',  # будет заменено значением текущего URL
     'issued_packages': '{issued_packages}',  # будет заменено значением количества выдач
-    'total_packages': '{total_packages}',  # будет заменено значением общего количества
     'pvz_info': '{pvz_info}',  # будет заменено значением информации о ПВЗ
     'raw_data': {
         'page_source_length': '{page_source_length}',  # будет заменено значением длины исходного кода страницы

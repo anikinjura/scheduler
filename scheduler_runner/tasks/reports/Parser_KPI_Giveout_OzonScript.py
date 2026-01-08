@@ -77,22 +77,17 @@ class OzonGiveoutReportParser(BaseOzonParser):
         import re
 
         try:
-            # Извлекаем количество выдач
-            total_packages = self._extract_total_giveout()
-
             # Извлекаем количество выданных посылок
             issued_packages = self._extract_issued_packages()
 
             return {
                 'issued_packages': issued_packages,
-                'total_packages': total_packages,
             }
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении специфичных данных: {e}")
             return {
                 'issued_packages': 0,
-                'total_packages': 0,
             }
 
     def get_report_schema(self) -> Dict[str, Any]:
@@ -110,24 +105,6 @@ class OzonGiveoutReportParser(BaseOzonParser):
 
         return processed_data
 
-    def _extract_total_giveout(self) -> int:
-        """Извлечение общего количества выдач"""
-        from selenium.webdriver.common.by import By
-        import re
-
-        try:
-            # Ищем элемент с общей информацией о выдачах
-            total_giveout_text = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['TOTAL_GIVEOUT'], "textContent")
-            if total_giveout_text:
-                # Извлекаем число из текста
-                numbers = re.findall(r'\d+', total_giveout_text)
-                if numbers:
-                    return int(numbers[0])
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Не удалось извлечь общее количество выдач: {e}")
-
-        return 0
 
     def _extract_issued_packages(self) -> int:
         """Извлечение количества выданных посылок"""
