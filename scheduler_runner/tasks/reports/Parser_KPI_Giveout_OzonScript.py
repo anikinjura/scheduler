@@ -67,9 +67,6 @@ class OzonGiveoutReportParser(BaseOzonParser):
         """Возвращает тип отчета"""
         return 'giveout'
 
-    def get_default_selectors(self) -> Dict[str, str]:
-        """Возвращает селекторы по умолчанию для данного типа отчета"""
-        return self.config.get('SELECTORS', {})
 
     def extract_specific_data(self) -> Dict[str, Any]:
         """Извлекает специфичные данные для отчета о выдачах"""

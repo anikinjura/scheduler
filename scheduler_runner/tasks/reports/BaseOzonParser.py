@@ -486,6 +486,10 @@ class BaseOzonParser(BaseParser, ABC):
 
         return processed_data
 
+    def get_default_selectors(self) -> Dict[str, str]:
+        """Возвращает селекторы по умолчанию для данного типа отчета"""
+        return self.config.get('SELECTORS', {})
+
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
         pass
