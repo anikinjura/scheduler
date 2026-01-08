@@ -356,10 +356,9 @@ class BaseOzonParser(BaseParser, ABC):
         """Возвращает тип отчета"""
         pass
 
-    @abstractmethod
     def get_default_selectors(self) -> Dict[str, str]:
         """Возвращает селекторы по умолчанию для данного типа отчета"""
-        pass
+        return self.config.get('SELECTORS', {})
 
     @abstractmethod
     def extract_specific_data(self) -> Dict[str, Any]:
@@ -617,12 +616,15 @@ class BaseOzonParser(BaseParser, ABC):
                 print(f"Полный стек трейса: {traceback.format_exc()}")
             sys.exit(1)
 
-    def run_parser_with_params(self, ERP_URL_TEMPLATE, DATE_FORMAT, FILE_PATTERN, USER, TASK_NAME, OUTPUT_DIR, PVZ_ID, DETAILED_LOGS=False):
+    def run_carriage_parser_with_params(self, ERP_URL_TEMPLATE, DIRECT_FLOW_URL_TEMPLATE, RETURN_FLOW_URL_TEMPLATE,
+                                       DATE_FORMAT, FILE_PATTERN, USER, TASK_NAME, OUTPUT_DIR, PVZ_ID, DETAILED_LOGS=False):
         """
-        Общий метод для запуска парсера с переданными параметрами
+        Общий метод для запуска парсера перевозок с переданными параметрами
 
         Args:
             ERP_URL_TEMPLATE: Шаблон URL для ERP системы
+            DIRECT_FLOW_URL_TEMPLATE: Шаблон URL для прямых перевозок
+            RETURN_FLOW_URL_TEMPLATE: Шаблон URL для возвратных перевозок
             DATE_FORMAT: Формат даты
             FILE_PATTERN: Шаблон имени файла
             USER: Пользователь для логирования
@@ -639,6 +641,11 @@ class BaseOzonParser(BaseParser, ABC):
         from datetime import datetime
         from scheduler_runner.utils.logging import configure_logger
         from scheduler_runner.utils.system import SystemUtils
+
+        # Модульные константы для магических строк
+        FLOW_TYPE_DIRECT = 'Direct'
+        FLOW_TYPE_RETURN = 'Return'
+        FLOW_TYPE_UNKNOWN = 'Unknown'
 
         def parse_arguments():
             parser = argparse.ArgumentParser(
@@ -707,8 +714,39 @@ class BaseOzonParser(BaseParser, ABC):
                 self.login()
                 self.navigate_to_reports()
 
-                # Извлечение данных
-                data = self.extract_data()
+                # Извлечение данных для прямых перевозок
+                # Формируем URL для прямых перевозок, подставив дату и тип перевозки в шаблон
+                direct_flow_url = DIRECT_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Direct')
+                # Переходим на страницу прямых перевозок
+                self.driver.get(direct_flow_url)
+                direct_data = self.extract_data(FLOW_TYPE_DIRECT)
+
+                # Возвращаемся на начальную страницу
+                self.login()
+
+                # Извлечение данных для возвратных перевозок
+                # Формируем URL для возвратных перевозок, подставив дату и тип перевозки в шаблон
+                return_flow_url = RETURN_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Return')
+                # Переходим на страницу возвратных перевозок
+                self.driver.get(return_flow_url)
+                return_data = self.extract_data(FLOW_TYPE_RETURN)
+
+                # Объединяем данные
+                combined_data = {
+                    'marketplace': self.MARKETPLACE_NAME,
+                    'report_type': 'carriages_combined',
+                    'date': target_date,  # Используем дату из аргументов командной строки
+                    'timestamp': datetime.now().isoformat(),
+                    'page_title': direct_data.get('page_title', return_data.get('page_title', '')),
+                    'current_url': ERP_URL_TEMPLATE.format(date=target_date),  # Используем шаблон из конфигурации
+                    'direct_flow': direct_data.get('direct_flow', direct_data.get('unknown_flow', {})),
+                    'return_flow': return_data.get('return_flow', return_data.get('unknown_flow', {})),
+                    'pvz_info': direct_data.get('pvz_info', return_data.get('pvz_info', '')),
+                    'raw_data': {
+                        'page_source_length': direct_data.get('raw_data', {}).get('page_source_length', 0),
+                        'page_text_length': direct_data.get('raw_data', {}).get('page_text_length', 0)
+                    }
+                }
 
                 self.logout()
 
@@ -718,19 +756,19 @@ class BaseOzonParser(BaseParser, ABC):
 
                 # Формируем имя файла с использованием шаблона из конфигурации
                 date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
-                pvz_id = data.get('pvz_info', PVZ_ID)
+                pvz_id = combined_data.get('pvz_info', PVZ_ID)
                 # Транслитерируем ПВЗ для использования в имени файла
                 translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
 
                 # Используем шаблон из конфигурации для формирования имени файла
-                filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str).replace('{report_type}', self.get_report_type())
+                filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str)
                 filename = output_dir / filename_template
 
                 with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+                    json.dump(combined_data, f, ensure_ascii=False, indent=2, default=str)
 
-                logger.info(f"Отчет {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
-                logger.info(f"Извлеченные данные: {data}")
+                logger.info(f"Отчет о перевозках {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
+                logger.info(f"Извлеченные данные: {combined_data}")
             finally:
                 # 9. Завершение работы
                 self.close()
@@ -745,3 +783,4 @@ class BaseOzonParser(BaseParser, ABC):
                 print(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
                 print(f"Полный стек трейса: {traceback.format_exc()}")
             sys.exit(1)
+

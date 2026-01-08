@@ -58,6 +58,22 @@ class OzonCarriagesReportParser(BaseOzonParser):
         super().__init__(config)
         self.logger = logger
 
+    def get_report_type(self) -> str:
+        """Возвращает тип отчета"""
+        return 'carriages'
+
+    def extract_specific_data(self) -> Dict[str, Any]:
+        """Извлекает специфичные данные для отчета о перевозках"""
+        # Этот метод не используется в данном классе, так как extract_data принимает параметр flow_type
+        # Вместо этого, мы реализуем логику в extract_data с параметром flow_type
+        # Возвращаем пустой словарь, так как основная логика обрабатывается в extract_data
+        return {}
+
+    def get_report_schema(self) -> Dict[str, Any]:
+        """Возвращает схему данных отчета"""
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
+        return REPORT_DATA_SCHEMA
+
     def navigate_to_reports(self):
         """Навигация к странице отчета о выдачах ОЗОН"""
         # В данном случае навигация уже выполнена в login(), так как мы переходим сразу к нужной странице
@@ -698,121 +714,30 @@ def parse_arguments() -> argparse.Namespace:
 
 def main():
     """Основная функция скрипта для запуска из командной строки"""
-    try:
-        # 1. Парсинг аргументов командной строки
-        args = parse_arguments()
-        detailed_logs = args.detailed_logs or SCRIPT_CONFIG.get("DETAILED_LOGS", False)
+    from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import (
+        ERP_URL_TEMPLATE,
+        DIRECT_FLOW_URL_TEMPLATE,
+        RETURN_FLOW_URL_TEMPLATE,
+        DATE_FORMAT,
+        FILE_PATTERN
+    )
 
-        # Получаем дату из аргументов или используем текущую
-        target_date = args.date
-        if target_date is None:
-            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import DATE_FORMAT
-            target_date = datetime.now().strftime(DATE_FORMAT)
+    # Создаем экземпляр парсера
+    parser = OzonCarriagesReportParser(SCRIPT_CONFIG)
 
-        # 2. Настройка логирования
-        logger = configure_logger(
-            user=SCRIPT_CONFIG["USER"],
-            task_name=SCRIPT_CONFIG["TASK_NAME"],
-            detailed=detailed_logs
-        )
-
-        # 3. Логирование начала процесса
-        logger.info(f"Запуск парсинга данных о перевозках ERP-системы ОЗОН за дату: {target_date}")
-
-        # 4. Создание копии конфигурации с обновленным URL для указанной даты
-        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import (
-            ERP_URL_TEMPLATE,
-            DIRECT_FLOW_URL_TEMPLATE,
-            RETURN_FLOW_URL_TEMPLATE,
-            DATE_FORMAT
-        )
-
-        # Создаем копию конфигурации
-        script_config = SCRIPT_CONFIG.copy()
-        # Обновляем ERP_URL в конфигурации, чтобы использовать target_date вместо current_date
-        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import ERP_URL_TEMPLATE
-        script_config["ERP_URL"] = ERP_URL_TEMPLATE.format(date=target_date)
-
-        # 5. Создание экземпляра парсера
-        parser = OzonCarriagesReportParser(script_config, logger)
-
-        # 6. Настройка драйвера
-        try:
-            parser.setup_driver() # setup_driver() определена в базовом классе BaseOzonParser, создает и настраивает экземпляр браузера, готовый к работе с ERP-системой Ozon.
-
-            # 7. Выполнение основных операций
-            parser.login()
-            parser.navigate_to_reports()
-
-            # Извлечение данных для прямых перевозок
-            # Формируем URL для прямых перевозок, подставив дату и тип перевозки в шаблон
-            direct_flow_url = DIRECT_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Direct')
-            # Переходим на страницу прямых перевозок
-            parser.driver.get(direct_flow_url)
-            direct_data = parser.extract_data(FLOW_TYPE_DIRECT)
-
-            # Возвращаемся на начальную страницу
-            parser.login()
-
-            # Извлечение данных для возвратных перевозок
-            # Формируем URL для возвратных перевозок, подставив дату и тип перевозки в шаблон
-            return_flow_url = RETURN_FLOW_URL_TEMPLATE.format(date=target_date, flow_type='Return')
-            # Переходим на страницу возвратных перевозок
-            parser.driver.get(return_flow_url)
-            return_data = parser.extract_data(FLOW_TYPE_RETURN)
-
-            # Объединяем данные
-            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import ERP_URL_TEMPLATE
-
-            combined_data = {
-                'marketplace': 'Ozon',
-                'report_type': 'carriages_combined',
-                'date': target_date,  # Используем дату из аргументов командной строки
-                'timestamp': datetime.now().isoformat(),
-                'page_title': direct_data.get('page_title', return_data.get('page_title', '')),
-                'current_url': ERP_URL_TEMPLATE.format(date=target_date),  # Используем шаблон из конфигурации
-                'direct_flow': direct_data.get('direct_flow', direct_data.get('unknown_flow', {})),
-                'return_flow': return_data.get('return_flow', return_data.get('unknown_flow', {})),
-                'pvz_info': direct_data.get('pvz_info', return_data.get('pvz_info', '')),
-                'raw_data': {
-                    'page_source_length': direct_data.get('raw_data', {}).get('page_source_length', 0),
-                    'page_text_length': direct_data.get('raw_data', {}).get('page_text_length', 0)
-                }
-            }
-
-            parser.logout()
-
-            # 8. Сохранение данных
-            output_dir = Path(script_config['OUTPUT_DIR'])
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Формируем имя файла с использованием шаблона из конфигурации
-            date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
-            pvz_id = combined_data.get('pvz_info', script_config['PVZ_ID'])
-            # Транслитерируем ПВЗ для использования в имени файла
-            from scheduler_runner.utils.system import SystemUtils
-            translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
-
-            # Используем шаблон из конфигурации для формирования имени файла
-            from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import FILE_PATTERN
-            filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str)
-            filename = output_dir / filename_template
-
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(combined_data, f, ensure_ascii=False, indent=2, default=str)
-
-            logger.info(f"Отчет о перевозках ОЗОН успешно сохранен в {filename}")
-            logger.info(f"Извлеченные данные: {combined_data}")
-        finally:
-            # 9. Завершение работы
-            parser.close()
-
-    except Exception as e:
-        # 10. Обработка исключений
-        import traceback
-        logger.error(f"Ошибка при парсинге данных о перевозках ERP-системы ОЗОН: {e}")
-        logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-        sys.exit(1)
+    # Вызываем специфичный метод для обработки двух типов перевозок
+    parser.run_carriage_parser_with_params(
+        ERP_URL_TEMPLATE=ERP_URL_TEMPLATE,
+        DIRECT_FLOW_URL_TEMPLATE=DIRECT_FLOW_URL_TEMPLATE,
+        RETURN_FLOW_URL_TEMPLATE=RETURN_FLOW_URL_TEMPLATE,
+        DATE_FORMAT=DATE_FORMAT,
+        FILE_PATTERN=FILE_PATTERN,
+        USER=SCRIPT_CONFIG["USER"],
+        TASK_NAME=SCRIPT_CONFIG["TASK_NAME"],
+        OUTPUT_DIR=SCRIPT_CONFIG['OUTPUT_DIR'],
+        PVZ_ID=SCRIPT_CONFIG['PVZ_ID'],
+        DETAILED_LOGS=SCRIPT_CONFIG.get("DETAILED_LOGS", False)
+    )
 
 
 if __name__ == "__main__":
