@@ -491,3 +491,257 @@ class BaseOzonParser(BaseParser, ABC):
     def logout(self):
         """Выход из системы (обычно не требуется при использовании существующей сессии)"""
         pass
+
+    def run_parser(self, config_module, date_format='%Y-%m-%d', file_pattern='{report_type}_report_{pvz_id}_{date}.json'):
+        """
+        Общий метод для запуска парсера с общей логикой
+
+        Args:
+            config_module: Модуль конфигурации
+            date_format: Формат даты
+            file_pattern: Шаблон имени файла
+        """
+        import argparse
+        import sys
+        import time
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        from scheduler_runner.utils.logging import configure_logger
+        from scheduler_runner.utils.system import SystemUtils
+
+        def parse_arguments():
+            parser = argparse.ArgumentParser(
+                description=f"Парсинг данных из ERP-системы {self.MARKETPLACE_NAME}",
+                epilog="Пример: python script.py --detailed_logs --date 2026-01-01"
+            )
+            parser.add_argument(
+                "--detailed_logs",
+                action="store_true",
+                default=False,
+                help="Включить детализированные логи"
+            )
+            parser.add_argument(
+                "--date",
+                type=str,
+                default=None,
+                help="Дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)"
+            )
+            return parser.parse_args()
+
+        # Инициализируем logger как None для избежания ошибок в блоке except
+        logger = None
+
+        try:
+            # 1. Парсинг аргументов командной строки
+            args = parse_arguments()
+            detailed_logs = args.detailed_logs or getattr(config_module, 'SCRIPT_CONFIG', {}).get("DETAILED_LOGS", False)
+
+            # Получаем дату из аргументов или используем текущую
+            target_date = args.date
+            if target_date is None:
+                target_date = datetime.now().strftime(date_format)
+
+            # 2. Настройка логирования
+            logger = configure_logger(
+                user=getattr(config_module, 'SCRIPT_CONFIG', {}).get("USER", "system"),
+                task_name=getattr(config_module, 'SCRIPT_CONFIG', {}).get("TASK_NAME", "BaseParser"),
+                detailed=detailed_logs
+            )
+
+            # 3. Логирование начала процесса
+            logger.info(f"Запуск парсинга данных ERP-системы {self.MARKETPLACE_NAME} за дату: {target_date}")
+
+            # 4. Создание копии конфигурации с обновленным URL для указанной даты
+            # Формируем готовый URL, подставив дату в шаблон
+            erp_url_template = getattr(config_module, 'ERP_URL_TEMPLATE', '')
+            erp_url = erp_url_template.format(date=target_date)
+
+            # Создаем копию конфигурации и обновляем только URL
+            script_config = getattr(config_module, 'SCRIPT_CONFIG', {}).copy()
+            script_config["ERP_URL"] = erp_url
+
+            # 5. Обновляем конфигурацию в текущем экземпляре
+            # Проверяем, является ли self.config словарем, и если да, то обновляем его
+            if hasattr(self, 'config') and isinstance(self.config, dict):
+                self.config.update(script_config)
+            else:
+                # Если self.config не существует или не является словарем, создаем новый словарь
+                self.config = script_config
+            self.logger = logger
+
+            # 6. Настройка драйвера
+            try:
+                self.setup_driver()
+
+                # 7. Выполнение основных операций
+                self.login()
+                self.navigate_to_reports()
+
+                # Извлечение данных
+                data = self.extract_data()
+
+                self.logout()
+
+                # 8. Сохранение данных
+                output_dir = Path(script_config['OUTPUT_DIR'])
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                # Формируем имя файла с использованием шаблона из конфигурации
+                date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
+                pvz_id = data.get('pvz_info', script_config.get('PVZ_ID', ''))
+                # Транслитерируем ПВЗ для использования в имени файла
+                translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
+
+                # Используем шаблон из конфигурации для формирования имени файла
+                filename_template = file_pattern.replace('{pvz_id}', translit_pvz).replace('{date}', date_str).replace('{report_type}', self.get_report_type())
+                filename = output_dir / filename_template
+
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+                logger.info(f"Отчет {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
+                logger.info(f"Извлеченные данные: {data}")
+            finally:
+                # 9. Завершение работы
+                self.close()
+
+        except Exception as e:
+            # 10. Обработка исключений
+            import traceback
+            if logger:
+                logger.error(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
+                logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            else:
+                print(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
+                print(f"Полный стек трейса: {traceback.format_exc()}")
+            sys.exit(1)
+
+    def run_parser_with_params(self, ERP_URL_TEMPLATE, DATE_FORMAT, FILE_PATTERN, USER, TASK_NAME, OUTPUT_DIR, PVZ_ID, DETAILED_LOGS=False):
+        """
+        Общий метод для запуска парсера с переданными параметрами
+
+        Args:
+            ERP_URL_TEMPLATE: Шаблон URL для ERP системы
+            DATE_FORMAT: Формат даты
+            FILE_PATTERN: Шаблон имени файла
+            USER: Пользователь для логирования
+            TASK_NAME: Имя задачи для логирования
+            OUTPUT_DIR: Директория для вывода
+            PVZ_ID: ID пункта выдачи
+            DETAILED_LOGS: Флаг детализированных логов
+        """
+        import argparse
+        import sys
+        import time
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        from scheduler_runner.utils.logging import configure_logger
+        from scheduler_runner.utils.system import SystemUtils
+
+        def parse_arguments():
+            parser = argparse.ArgumentParser(
+                description=f"Парсинг данных из ERP-системы {self.MARKETPLACE_NAME}",
+                epilog="Пример: python script.py --detailed_logs --date 2026-01-01"
+            )
+            parser.add_argument(
+                "--detailed_logs",
+                action="store_true",
+                default=False,
+                help="Включить детализированные логи"
+            )
+            parser.add_argument(
+                "--date",
+                type=str,
+                default=None,
+                help="Дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)"
+            )
+            return parser.parse_args()
+
+        # Инициализируем logger как None для избежания ошибок в блоке except
+        logger = None
+
+        try:
+            # 1. Парсинг аргументов командной строки
+            args = parse_arguments()
+            detailed_logs = args.detailed_logs or DETAILED_LOGS
+
+            # Получаем дату из аргументов или используем текущую
+            target_date = args.date
+            if target_date is None:
+                target_date = datetime.now().strftime(DATE_FORMAT)
+
+            # 2. Настройка логирования
+            logger = configure_logger(
+                user=USER,
+                task_name=TASK_NAME,
+                detailed=detailed_logs
+            )
+
+            # 3. Логирование начала процесса
+            logger.info(f"Запуск парсинга данных ERP-системы {self.MARKETPLACE_NAME} за дату: {target_date}")
+
+            # 4. Создание копии конфигурации с обновленным URL для указанной даты
+            # Формируем готовый URL, подставив дату в шаблон
+            erp_url = ERP_URL_TEMPLATE.format(date=target_date)
+
+            # Создаем копию конфигурации и обновляем только URL
+            script_config = self.config.copy() if isinstance(self.config, dict) else {}
+            script_config["ERP_URL"] = erp_url
+
+            # 5. Обновляем конфигурацию в текущем экземпляре
+            # Проверяем, является ли self.config словарем, и если да, то обновляем его
+            if hasattr(self, 'config') and isinstance(self.config, dict):
+                self.config.update(script_config)
+            else:
+                # Если self.config не существует или не является словарем, создаем новый словарь
+                self.config = script_config
+            self.logger = logger
+
+            # 6. Настройка драйвера
+            try:
+                self.setup_driver()
+
+                # 7. Выполнение основных операций
+                self.login()
+                self.navigate_to_reports()
+
+                # Извлечение данных
+                data = self.extract_data()
+
+                self.logout()
+
+                # 8. Сохранение данных
+                output_dir = Path(OUTPUT_DIR)
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                # Формируем имя файла с использованием шаблона из конфигурации
+                date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
+                pvz_id = data.get('pvz_info', PVZ_ID)
+                # Транслитерируем ПВЗ для использования в имени файла
+                translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
+
+                # Используем шаблон из конфигурации для формирования имени файла
+                filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str).replace('{report_type}', self.get_report_type())
+                filename = output_dir / filename_template
+
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
+                logger.info(f"Отчет {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
+                logger.info(f"Извлеченные данные: {data}")
+            finally:
+                # 9. Завершение работы
+                self.close()
+
+        except Exception as e:
+            # 10. Обработка исключений
+            import traceback
+            if logger:
+                logger.error(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
+                logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            else:
+                print(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
+                print(f"Полный стек трейса: {traceback.format_exc()}")
+            sys.exit(1)
