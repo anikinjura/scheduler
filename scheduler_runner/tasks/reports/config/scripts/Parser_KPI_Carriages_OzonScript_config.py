@@ -104,6 +104,9 @@ SCRIPT_CONFIG = {
     # Ключевые слова для идентификации ПВЗ
     "PVZ_KEYWORDS": ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС'],
 
+    # Индикаторы страницы логина
+    "LOGIN_INDICATORS": ['login', 'signin', 'auth'],
+
     # Селекторы
     "SELECTORS": SELECTORS,
 

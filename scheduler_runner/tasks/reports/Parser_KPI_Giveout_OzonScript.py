@@ -33,8 +33,6 @@ from typing import Dict, Any
 # Импорты для обработки исключений Selenium
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-# Модульные константы для магических строк
-LOGIN_INDICATORS = ['login', 'signin', 'auth']
 
 # Добавляем корень проекта в sys.path для корректного импорта
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))

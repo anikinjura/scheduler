@@ -33,14 +33,6 @@ from typing import Dict, Any
 # Импорты для обработки исключений Selenium
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-# Модульные константы для магических строк
-LOGIN_INDICATORS = ['login', 'signin', 'auth']
-MARKETPLACE_NAME = 'Ozon'
-REPORT_TYPE_CARRIAGES = 'carriages'
-FLOW_TYPE_DIRECT = 'Direct'
-FLOW_TYPE_RETURN = 'Return'
-FLOW_TYPE_UNKNOWN = 'Unknown'
-FOUND_PATTERN = r'Найдено:\s*(\d+)'
 
 # Добавляем корень проекта в sys.path для корректного импорта
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -85,8 +77,10 @@ class OzonCarriagesReportParser(BaseOzonParser):
         if self.logger:
             self.logger.info("Навигация к отчету о выдачах выполнена")
 
-    def extract_data(self, flow_type: str = FLOW_TYPE_UNKNOWN) -> Dict[str, Any]:
+    def extract_data(self, flow_type: str = None) -> Dict[str, Any]:
         """Извлечение данных о перевозках из ERP-системы ОЗОН"""
+        if flow_type is None:
+            flow_type = self.FLOW_TYPE_UNKNOWN
         from selenium.webdriver.common.by import By
         import time
         from urllib.parse import unquote
@@ -120,11 +114,11 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 pvz_info = self._extract_pvz_info()
 
                 # Определяем тип перевозки из закодированного URL
-                if flow_type == FLOW_TYPE_UNKNOWN:
+                if flow_type == self.FLOW_TYPE_UNKNOWN:
                     if "flowType%22:%22Direct%22" in current_url_encoded:
-                        flow_type = FLOW_TYPE_DIRECT
+                        flow_type = self.FLOW_TYPE_DIRECT
                     elif "flowType%22:%22Return%22" in current_url_encoded:
-                        flow_type = FLOW_TYPE_RETURN
+                        flow_type = self.FLOW_TYPE_RETURN
 
                 # Обработка конкретного типа перевозок
                 if self.logger:
@@ -141,16 +135,16 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'timestamp': datetime.now().isoformat(),
                     'page_title': self.driver.title,
                     'current_url': self.driver.current_url,
-                    'direct_flow_type': FLOW_TYPE_DIRECT if flow_type == FLOW_TYPE_DIRECT else '',
-                    'return_flow_type': FLOW_TYPE_RETURN if flow_type == FLOW_TYPE_RETURN else '',
-                    'total_direct_carriages': flow_data['total_carriages_found'] if flow_type == FLOW_TYPE_DIRECT else 0,
-                    'total_return_carriages': flow_data['total_carriages_found'] if flow_type == FLOW_TYPE_RETURN else 0,
-                    'direct_carriage_numbers': flow_data['carriage_numbers'] if flow_type == FLOW_TYPE_DIRECT else [],
-                    'return_carriage_numbers': flow_data['carriage_numbers'] if flow_type == FLOW_TYPE_RETURN else [],
-                    'direct_carriage_details': flow_data['carriage_details'] if flow_type == FLOW_TYPE_DIRECT else [],
-                    'return_carriage_details': flow_data['carriage_details'] if flow_type == FLOW_TYPE_RETURN else [],
-                    'total_direct_items': flow_data['total_items_count'] if flow_type == FLOW_TYPE_DIRECT else 0,
-                    'total_return_items': flow_data['total_items_count'] if flow_type == FLOW_TYPE_RETURN else 0,
+                    'direct_flow_type': self.FLOW_TYPE_DIRECT if flow_type == self.FLOW_TYPE_DIRECT else '',
+                    'return_flow_type': self.FLOW_TYPE_RETURN if flow_type == self.FLOW_TYPE_RETURN else '',
+                    'total_direct_carriages': flow_data['total_carriages_found'] if flow_type == self.FLOW_TYPE_DIRECT else 0,
+                    'total_return_carriages': flow_data['total_carriages_found'] if flow_type == self.FLOW_TYPE_RETURN else 0,
+                    'direct_carriage_numbers': flow_data['carriage_numbers'] if flow_type == self.FLOW_TYPE_DIRECT else [],
+                    'return_carriage_numbers': flow_data['carriage_numbers'] if flow_type == self.FLOW_TYPE_RETURN else [],
+                    'direct_carriage_details': flow_data['carriage_details'] if flow_type == self.FLOW_TYPE_DIRECT else [],
+                    'return_carriage_details': flow_data['carriage_details'] if flow_type == self.FLOW_TYPE_RETURN else [],
+                    'total_direct_items': flow_data['total_items_count'] if flow_type == self.FLOW_TYPE_DIRECT else 0,
+                    'total_return_items': flow_data['total_items_count'] if flow_type == self.FLOW_TYPE_RETURN else 0,
                     'pvz_info': pvz_info,
                     'page_source_length': len(self.driver.page_source),
                     'page_text_length': len(self.driver.find_element(By.TAG_NAME, "body").text)
@@ -184,14 +178,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
                     'direct_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
                         'total_items_count': 0
                     },
                     'return_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -216,14 +210,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
                     'direct_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
                         'total_items_count': 0
                     },
                     'return_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -250,14 +244,14 @@ class OzonCarriagesReportParser(BaseOzonParser):
                     'current_url': self.driver.current_url,
                     'page_title': self.driver.title,
                     'direct_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
                         'total_items_count': 0
                     },
                     'return_flow': {
-                        'flow_type': FLOW_TYPE_UNKNOWN,
+                        'flow_type': self.FLOW_TYPE_UNKNOWN,
                         'total_carriages_found': 0,
                         'carriage_numbers': [],
                         'carriage_details': [],
@@ -273,7 +267,8 @@ class OzonCarriagesReportParser(BaseOzonParser):
             tuple[bool, dict]: (успешно ли авторизован, словарь ошибки если нет)
         """
         current_url = self.driver.current_url.lower()
-        is_logged_in = not any(indicator in current_url for indicator in LOGIN_INDICATORS)
+        login_indicators = self.config.get('LOGIN_INDICATORS', ['login', 'signin', 'auth'])
+        is_logged_in = not any(indicator in current_url for indicator in login_indicators)
 
         if not is_logged_in:
             if self.logger:
@@ -359,7 +354,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
         if total_carriages_text:
             # Извлекаем число из текста "Найдено: N"
             import re
-            found_count_match = re.search(FOUND_PATTERN, total_carriages_text)
+            found_count_match = re.search(self.FOUND_PATTERN, total_carriages_text)
             if found_count_match:
                 total_carriages = int(found_count_match.group(1))
                 if self.logger:
@@ -430,7 +425,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 if total_items_text:
                     # Извлекаем число из текста "Найдено: N"
                     import re
-                    found_count_match = re.search(FOUND_PATTERN, total_items_text)
+                    found_count_match = re.search(self.FOUND_PATTERN, total_items_text)
                     if found_count_match:
                         items_count = int(found_count_match.group(1))
                         if self.logger:

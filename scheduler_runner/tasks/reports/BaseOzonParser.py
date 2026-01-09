@@ -21,7 +21,6 @@ class BaseOzonParser(BaseParser, ABC):
     """Базовый класс для парсинга отчетов из маркетплейса ОЗОН"""
 
     # Модульные константы для магических строк
-    LOGIN_INDICATORS = ['login', 'signin', 'auth']
     MARKETPLACE_NAME = 'Ozon'
     FLOW_TYPE_DIRECT = 'Direct'
     FLOW_TYPE_RETURN = 'Return'
@@ -139,7 +138,8 @@ class BaseOzonParser(BaseParser, ABC):
             tuple[bool, dict]: (успешно ли авторизован, словарь ошибки если нет)
         """
         current_url = self.driver.current_url.lower()
-        is_logged_in = not any(indicator in current_url for indicator in self.LOGIN_INDICATORS)
+        login_indicators = self.config.get('LOGIN_INDICATORS', ['login', 'signin', 'auth'])
+        is_logged_in = not any(indicator in current_url for indicator in login_indicators)
 
         if not is_logged_in:
             if self.logger:
