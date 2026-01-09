@@ -95,6 +95,11 @@ class OzonGiveoutReportParser(BaseOzonParser):
         from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import REPORT_DATA_SCHEMA
         return REPORT_DATA_SCHEMA
 
+    def _extract_pvz_info(self) -> str:
+        """Извлечение информации о пункте выдачи с использованием ключевых слов из конфигурации"""
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Giveout_OzonScript_config import SCRIPT_CONFIG
+        pvz_keywords = SCRIPT_CONFIG.get('PVZ_KEYWORDS')
+        return super()._extract_pvz_info(pvz_keywords)
 
     def _extract_issued_packages(self) -> int:
         """Извлечение количества выданных посылок"""

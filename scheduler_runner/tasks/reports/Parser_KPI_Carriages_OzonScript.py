@@ -41,7 +41,6 @@ FLOW_TYPE_DIRECT = 'Direct'
 FLOW_TYPE_RETURN = 'Return'
 FLOW_TYPE_UNKNOWN = 'Unknown'
 FOUND_PATTERN = r'Найдено:\s*(\d+)'
-PVZ_KEYWORDS = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
 
 # Добавляем корень проекта в sys.path для корректного импорта
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -73,6 +72,12 @@ class OzonCarriagesReportParser(BaseOzonParser):
         """Возвращает схему данных отчета"""
         from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import REPORT_DATA_SCHEMA
         return REPORT_DATA_SCHEMA
+
+    def _extract_pvz_info(self) -> str:
+        """Извлечение информации о пункте выдачи с использованием ключевых слов из конфигурации"""
+        from scheduler_runner.tasks.reports.config.scripts.Parser_KPI_Carriages_OzonScript_config import SCRIPT_CONFIG
+        pvz_keywords = SCRIPT_CONFIG.get('PVZ_KEYWORDS')
+        return super()._extract_pvz_info(pvz_keywords)
 
     def navigate_to_reports(self):
         """Навигация к странице отчета о выдачах ОЗОН"""

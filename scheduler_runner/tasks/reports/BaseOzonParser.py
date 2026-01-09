@@ -27,7 +27,6 @@ class BaseOzonParser(BaseParser, ABC):
     FLOW_TYPE_RETURN = 'Return'
     FLOW_TYPE_UNKNOWN = 'Unknown'
     FOUND_PATTERN = r'Найдено:\s*(\d+)'
-    PVZ_KEYWORDS = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
 
     def __init__(self, config, logger=None):
         super().__init__(config)
@@ -199,23 +198,27 @@ class BaseOzonParser(BaseParser, ABC):
             if self.logger:
                 self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
 
-    def _extract_pvz_info(self) -> str:
+    def _extract_pvz_info(self, pvz_keywords=None) -> str:
         """Извлечение информации о пункте выдачи"""
         from selenium.webdriver.common.by import By
         import re
+
+        # Если ключевые слова не переданы, используем стандартные
+        if pvz_keywords is None:
+            pvz_keywords = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
 
         # Используем специфичные методы из базового класса ОЗОН для извлечения информации о ПВЗ
         pvz_info = ""
 
         # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
         pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_READONLY'], "value")
-        if pvz_value and (any(keyword in pvz_value.upper() for keyword in self.PVZ_KEYWORDS) or '_' in pvz_value):
+        if pvz_value and (any(keyword in pvz_value.upper() for keyword in pvz_keywords) or '_' in pvz_value):
             pvz_info = pvz_value
 
         # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
         if not pvz_info:
             pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_CLASS_READONLY'], "value")
-            if pvz_value and (any(keyword in pvz_value.upper() for keyword in self.PVZ_KEYWORDS) or '_' in pvz_value):
+            if pvz_value and (any(keyword in pvz_value.upper() for keyword in pvz_keywords) or '_' in pvz_value):
                 pvz_info = pvz_value
 
         # Если не нашли в элементах, ищем в общем тексте
@@ -225,7 +228,7 @@ class BaseOzonParser(BaseParser, ABC):
             if pvz_matches:
                 # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
                 for match in pvz_matches:
-                    if '_' in match and any(keyword in match.upper() for keyword in self.PVZ_KEYWORDS):
+                    if '_' in match and any(keyword in match.upper() for keyword in pvz_keywords):
                         pvz_info = match
                         break
                 # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
