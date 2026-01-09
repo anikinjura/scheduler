@@ -332,43 +332,6 @@ class OzonCarriagesReportParser(BaseOzonParser):
             if self.logger:
                 self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
 
-    def _extract_pvz_info(self) -> str:
-        """Извлечение информации о пункте выдачи"""
-        from selenium.webdriver.common.by import By
-        import re
-
-        # Используем специфичные методы из базового класса ОЗОН для извлечения информации о ПВЗ
-        pvz_info = ""
-
-        # Ищем специфичный элемент с информацией о ПВЗ по точным классам и ID
-        pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_READONLY'], "value")
-        if pvz_value:
-            pvz_info = pvz_value
-
-        # Если не нашли через специфичный XPath, ищем по классу и атрибуту readonly
-        if not pvz_info:
-            pvz_value = self.extract_ozon_element_by_xpath(self.config['SELECTORS']['PVZ_INPUT_CLASS_READONLY'], "value")
-            if pvz_value:
-                pvz_info = pvz_value
-
-        # Если не нашли в элементах, ищем в общем тексте
-        if not pvz_info:
-            page_text = self.driver.find_element(By.TAG_NAME, "body").text
-            # Ищем возможные названия ПВЗ в тексте страницы
-            pvz_keywords = ['ПВЗ', 'PVZ', 'СОС', 'ЧЕБ', 'КАЗ', 'РОС']
-            pvz_matches = re.findall(r'([А-Яа-яЁёA-Za-z_]+\d+)', page_text)
-            if pvz_matches:
-                # Фильтруем найденные совпадения, оставляя только те, что похожи на названия ПВЗ
-                for match in pvz_matches:
-                    if '_' in match and any(keyword in match.upper() for keyword in pvz_keywords):
-                        pvz_info = match
-                        break
-                # Если не нашли подходящий ПВЗ по ключевым словам, берем первый найденный
-                if not pvz_info and pvz_matches:
-                    pvz_info = pvz_matches[0]
-
-        return pvz_info
-
     def process_flow_type(self, flow_type: str, report_date: str) -> Dict[str, Any]:
         """Обработка одного типа перевозок (Direct или Return)"""
         from selenium.webdriver.common.by import By
