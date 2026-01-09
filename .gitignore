@@ -47,3 +47,6 @@ tests/TestEnvironment/D_camera/*
 !tests/TestEnvironment/D_camera/.gitkeep
 tests/TestEnvironment/O_cameras/*
 !tests/TestEnvironment/O_cameras/.gitkeep
+
+# Директория .qwen
+.qwen/ 

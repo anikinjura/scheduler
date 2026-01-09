@@ -44,102 +44,17 @@ class BaseOzonParser(BaseParser, ABC):
         Returns:
             bool: True, если опция была успешно выбрана
         """
-        from selenium.webdriver.common.by import By
-        import time
+        # Используем улучшенный универсальный метод из базового класса
+        return self.select_dropdown_option(
+            dropdown_selector="//div[contains(@class, 'ozi__input-select__inputSelect__UA4xr')]",
+            option_selector="//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD')]",
+            expected_value=expected_pvz,
+            original_url=original_url,
+            report_url_pattern="reports/",
+            exact_match=True,
+            text_content_attr="textContent"
+        )
 
-        try:
-            # Кликаем по выпадающему списку, чтобы открыть опции
-            dropdown_element = self.driver.find_element(By.XPATH, "//div[contains(@class, 'ozi__input-select__inputSelect__UA4xr')]")
-            dropdown_element.click()
-
-            # Ждем появления опций
-            time.sleep(2)
-
-            # Пытаемся найти все доступные опции в выпадающем списке
-            all_option_elements = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD')]")
-
-            if self.logger:
-                self.logger.debug("Доступные опции в выпадающем списке:")
-            available_options = []
-            for element in all_option_elements:
-                # Ищем название ПВЗ в элементе с классом ozi__data-content__label__TA_HC
-                label_elements = element.find_elements(By.XPATH, ".//div[contains(@class, 'ozi__data-content__label__TA_HC')]")
-                if label_elements:
-                    # Используем textContent атрибут для более точного извлечения текста
-                    element_text = label_elements[0].get_attribute("textContent") or label_elements[0].text
-                    element_text = element_text.strip()
-                    if element_text and len(element_text) > 3:  # Фильтруем короткие или пустые значения
-                        available_options.append(element_text)
-                        if self.logger:
-                            self.logger.debug(f"  - {element_text}")
-
-            # Ищем конкретно нужный пункт выдачи среди доступных опций
-            # Сначала проверим, есть ли элемент с ожидаемым текстом в DOM
-            target_option = None
-            for option_element in all_option_elements:
-                label_elements = option_element.find_elements(By.XPATH, ".//div[contains(@class, 'ozi__data-content__label__TA_HC')]")
-                if label_elements:
-                    label_text = label_elements[0].text.strip()
-                    # Проверяем точное совпадение, но также проверим на наличие ожидаемого значения в тексте
-                    if expected_pvz == label_text:
-                        target_option = option_element
-                        if self.logger:
-                            self.logger.debug(f"Найден элемент для ПВЗ {expected_pvz}")
-                        break
-                    elif expected_pvz in label_text:
-                        # Если точное совпадение не найдено, но ожидаемое значение содержится в тексте
-                        target_option = option_element
-                        if self.logger:
-                            self.logger.debug(f"Найден элемент для ПВЗ {expected_pvz} (в виде подстроки в '{label_text}')")
-                        break
-                    else:
-                        if self.logger:
-                            self.logger.debug(f"Проверен элемент с текстом '{label_text}' (ожидалось '{expected_pvz}')")
-                        # Печатаем длину строк для отладки
-                        if self.logger:
-                            self.logger.debug(f"  Длина ожидаемого текста: {len(expected_pvz)}, длина фактического текста: {len(label_text)}")
-                        # Печатаем байты для отладки
-                        if self.logger:
-                            self.logger.debug(f"  Байты ожидаемого текста: {expected_pvz.encode('utf-8')}")
-                            self.logger.debug(f"  Байты фактического текста: {label_text.encode('utf-8')}")
-
-            if target_option:
-                # Используем ActionChains для более надежного клика
-                from selenium.webdriver.common.action_chains import ActionChains
-                actions = ActionChains(self.driver)
-                actions.move_to_element(target_option).click().perform()
-
-                if self.logger:
-                    self.logger.info(f"Установлен пункт выдачи: {expected_pvz}")
-                time.sleep(2)  # Ждем обновления страницы
-
-                # Проверяем, остались ли мы на нужной странице
-                current_url = self.driver.current_url
-                if self.logger:
-                    self.logger.debug(f"Текущий URL после смены ПВЗ: {current_url}")
-
-                # Если мы не на странице отчета, возвращаемся туда
-                if "reports/" not in current_url:
-                    if self.logger:
-                        self.logger.info("Мы покинули страницу отчета, возвращаемся...")
-                    # Восстанавливаем URL с фильтрами
-                    self.driver.get(original_url)
-                    time.sleep(3)  # Ждем загрузки страницы
-                else:
-                    if self.logger:
-                        self.logger.debug("Мы остались на странице отчета")
-
-                return True
-            else:
-                if self.logger:
-                    self.logger.warning(f"Не найдена опция для пункта выдачи {expected_pvz}")
-                    self.logger.debug(f"Доступные пункты выдачи: {available_options}")
-                return False
-
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Ошибка при установке пункта выдачи: {e}")
-            return False
 
     def extract_ozon_data_by_pattern(self, pattern: str, page_text: str = None) -> str:
         """
@@ -476,10 +391,6 @@ class BaseOzonParser(BaseParser, ABC):
             raise
 
 
-    def get_default_selectors(self) -> Dict[str, str]:
-        """Возвращает селекторы по умолчанию для данного типа отчета"""
-        return self.config.get('SELECTORS', {})
-
     def login(self):
         """Вход в ERP-систему"""
         # Заходим на страницу с базовым URL
@@ -500,121 +411,13 @@ class BaseOzonParser(BaseParser, ABC):
             date_format: Формат даты
             file_pattern: Шаблон имени файла
         """
-        import argparse
-        import sys
-        import time
-        import json
-        from pathlib import Path
-        from datetime import datetime
-        from scheduler_runner.utils.logging import configure_logger
-        from scheduler_runner.utils.system import SystemUtils
-
-        def parse_arguments():
-            parser = argparse.ArgumentParser(
-                description=f"Парсинг данных из ERP-системы {self.MARKETPLACE_NAME}",
-                epilog="Пример: python script.py --detailed_logs --date 2026-01-01"
-            )
-            parser.add_argument(
-                "--detailed_logs",
-                action="store_true",
-                default=False,
-                help="Включить детализированные логи"
-            )
-            parser.add_argument(
-                "--date",
-                type=str,
-                default=None,
-                help="Дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)"
-            )
-            return parser.parse_args()
-
-        # Инициализируем logger как None для избежания ошибок в блоке except
-        logger = None
-
-        try:
-            # 1. Парсинг аргументов командной строки
-            args = parse_arguments()
-            detailed_logs = args.detailed_logs or getattr(config_module, 'SCRIPT_CONFIG', {}).get("DETAILED_LOGS", False)
-
-            # Получаем дату из аргументов или используем текущую
-            target_date = args.date
-            if target_date is None:
-                target_date = datetime.now().strftime(date_format)
-
-            # 2. Настройка логирования
-            logger = configure_logger(
-                user=getattr(config_module, 'SCRIPT_CONFIG', {}).get("USER", "system"),
-                task_name=getattr(config_module, 'SCRIPT_CONFIG', {}).get("TASK_NAME", "BaseParser"),
-                detailed=detailed_logs
-            )
-
-            # 3. Логирование начала процесса
-            logger.info(f"Запуск парсинга данных ERP-системы {self.MARKETPLACE_NAME} за дату: {target_date}")
-
-            # 4. Создание копии конфигурации с обновленным URL для указанной даты
-            # Формируем готовый URL, подставив дату в шаблон
-            erp_url_template = getattr(config_module, 'ERP_URL_TEMPLATE', '')
-            erp_url = erp_url_template.format(date=target_date)
-
-            # Создаем копию конфигурации и обновляем только URL
-            script_config = getattr(config_module, 'SCRIPT_CONFIG', {}).copy()
-            script_config["ERP_URL"] = erp_url
-
-            # 5. Обновляем конфигурацию в текущем экземпляре
-            # Проверяем, является ли self.config словарем, и если да, то обновляем его
-            if hasattr(self, 'config') and isinstance(self.config, dict):
-                self.config.update(script_config)
-            else:
-                # Если self.config не существует или не является словарем, создаем новый словарь
-                self.config = script_config
-            self.logger = logger
-
-            # 6. Настройка драйвера
-            try:
-                self.setup_driver()
-
-                # 7. Выполнение основных операций
-                self.login()
-                self.navigate_to_reports()
-
-                # Извлечение данных
-                data = self.extract_data()
-
-                self.logout()
-
-                # 8. Сохранение данных
-                output_dir = Path(script_config['OUTPUT_DIR'])
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                # Формируем имя файла с использованием шаблона из конфигурации
-                date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
-                pvz_id = data.get('pvz_info', script_config.get('PVZ_ID', ''))
-                # Транслитерируем ПВЗ для использования в имени файла
-                translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
-
-                # Используем шаблон из конфигурации для формирования имени файла
-                filename_template = file_pattern.replace('{pvz_id}', translit_pvz).replace('{date}', date_str).replace('{report_type}', self.get_report_type())
-                filename = output_dir / filename_template
-
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
-                logger.info(f"Отчет {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
-                logger.info(f"Извлеченные данные: {data}")
-            finally:
-                # 9. Завершение работы
-                self.close()
-
-        except Exception as e:
-            # 10. Обработка исключений
-            import traceback
-            if logger:
-                logger.error(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
-                logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-            else:
-                print(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
-                print(f"Полный стек трейса: {traceback.format_exc()}")
-            sys.exit(1)
+        # Вызовем универсальный метод из базового класса с указанием названия маркетплейса
+        super().run_parser_with_params(
+            config_module=config_module,
+            date_format=date_format,
+            file_pattern=file_pattern,
+            marketplace_name=self.MARKETPLACE_NAME
+        )
 
     def run_parser_with_params(self, ERP_URL_TEMPLATE, DATE_FORMAT, FILE_PATTERN, USER, TASK_NAME, OUTPUT_DIR, PVZ_ID, DETAILED_LOGS=False):
         """
@@ -630,120 +433,28 @@ class BaseOzonParser(BaseParser, ABC):
             PVZ_ID: ID пункта выдачи
             DETAILED_LOGS: Флаг детализированных логов
         """
-        import argparse
-        import sys
-        import time
-        import json
-        from pathlib import Path
-        from datetime import datetime
-        from scheduler_runner.utils.logging import configure_logger
-        from scheduler_runner.utils.system import SystemUtils
+        # Подготовим конфигурационный модуль с переданными параметрами
+        class ConfigModule:
+            pass
 
-        def parse_arguments():
-            parser = argparse.ArgumentParser(
-                description=f"Парсинг данных из ERP-системы {self.MARKETPLACE_NAME}",
-                epilog="Пример: python script.py --detailed_logs --date 2026-01-01"
-            )
-            parser.add_argument(
-                "--detailed_logs",
-                action="store_true",
-                default=False,
-                help="Включить детализированные логи"
-            )
-            parser.add_argument(
-                "--date",
-                type=str,
-                default=None,
-                help="Дата для парсинга в формате YYYY-MM-DD (по умолчанию - сегодня)"
-            )
-            return parser.parse_args()
+        config_module = ConfigModule()
+        config_module.SCRIPT_CONFIG = {
+            'USER': USER,
+            'TASK_NAME': TASK_NAME,
+            'OUTPUT_DIR': OUTPUT_DIR,
+            'PVZ_ID': PVZ_ID,
+            'DETAILED_LOGS': DETAILED_LOGS
+        }
+        config_module.ERP_URL_TEMPLATE = ERP_URL_TEMPLATE
 
-        # Инициализируем logger как None для избежания ошибок в блоке except
-        logger = None
-
-        try:
-            # 1. Парсинг аргументов командной строки
-            args = parse_arguments()
-            detailed_logs = args.detailed_logs or DETAILED_LOGS
-
-            # Получаем дату из аргументов или используем текущую
-            target_date = args.date
-            if target_date is None:
-                target_date = datetime.now().strftime(DATE_FORMAT)
-
-            # 2. Настройка логирования
-            logger = configure_logger(
-                user=USER,
-                task_name=TASK_NAME,
-                detailed=detailed_logs
-            )
-
-            # 3. Логирование начала процесса
-            logger.info(f"Запуск парсинга данных ERP-системы {self.MARKETPLACE_NAME} за дату: {target_date}")
-
-            # 4. Создание копии конфигурации с обновленным URL для указанной даты
-            # Формируем готовый URL, подставив дату в шаблон
-            erp_url = ERP_URL_TEMPLATE.format(date=target_date)
-
-            # Создаем копию конфигурации и обновляем только URL
-            script_config = self.config.copy() if isinstance(self.config, dict) else {}
-            script_config["ERP_URL"] = erp_url
-
-            # 5. Обновляем конфигурацию в текущем экземпляре
-            # Проверяем, является ли self.config словарем, и если да, то обновляем его
-            if hasattr(self, 'config') and isinstance(self.config, dict):
-                self.config.update(script_config)
-            else:
-                # Если self.config не существует или не является словарем, создаем новый словарь
-                self.config = script_config
-            self.logger = logger
-
-            # 6. Настройка драйвера
-            try:
-                self.setup_driver()
-
-                # 7. Выполнение основных операций
-                self.login()
-                self.navigate_to_reports()
-
-                # Извлечение данных
-                data = self.extract_data()
-
-                self.logout()
-
-                # 8. Сохранение данных
-                output_dir = Path(OUTPUT_DIR)
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                # Формируем имя файла с использованием шаблона из конфигурации
-                date_str = target_date.replace('-', '')  # Преобразуем формат даты для имени файла
-                pvz_id = data.get('pvz_info', PVZ_ID)
-                # Транслитерируем ПВЗ для использования в имени файла
-                translit_pvz = SystemUtils.cyrillic_to_translit(pvz_id) if pvz_id else 'unknown'
-
-                # Используем шаблон из конфигурации для формирования имени файла
-                filename_template = FILE_PATTERN.replace('{pvz_id}', translit_pvz).replace('{date}', date_str).replace('{report_type}', self.get_report_type())
-                filename = output_dir / filename_template
-
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
-                logger.info(f"Отчет {self.MARKETPLACE_NAME} успешно сохранен в {filename}")
-                logger.info(f"Извлеченные данные: {data}")
-            finally:
-                # 9. Завершение работы
-                self.close()
-
-        except Exception as e:
-            # 10. Обработка исключений
-            import traceback
-            if logger:
-                logger.error(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
-                logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-            else:
-                print(f"Ошибка при парсинге данных ERP-системы {self.MARKETPLACE_NAME}: {e}")
-                print(f"Полный стек трейса: {traceback.format_exc()}")
-            sys.exit(1)
+        # Вызовем универсальный метод из базового класса с указанием названия маркетплейса
+        super().run_parser_with_params(
+            config_module=config_module,
+            date_format=DATE_FORMAT,
+            file_pattern=FILE_PATTERN,
+            erp_url_template=ERP_URL_TEMPLATE,
+            marketplace_name=self.MARKETPLACE_NAME
+        )
 
     def run_carriage_parser_with_params(self, ERP_URL_TEMPLATE, DIRECT_FLOW_URL_TEMPLATE, RETURN_FLOW_URL_TEMPLATE,
                                        DATE_FORMAT, FILE_PATTERN, USER, TASK_NAME, OUTPUT_DIR, PVZ_ID, DETAILED_LOGS=False):
