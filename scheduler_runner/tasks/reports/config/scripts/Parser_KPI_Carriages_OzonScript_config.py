@@ -107,6 +107,9 @@ SCRIPT_CONFIG = {
     # Индикаторы страницы логина
     "LOGIN_INDICATORS": ['login', 'signin', 'auth'],
 
+    # Регулярное выражение для поиска чисел в формате "Найдено: N"
+    "FOUND_PATTERN": r'Найдено:\s*(\d+)',
+
     # Селекторы
     "SELECTORS": SELECTORS,
 

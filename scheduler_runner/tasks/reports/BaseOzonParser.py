@@ -25,7 +25,6 @@ class BaseOzonParser(BaseParser, ABC):
     FLOW_TYPE_DIRECT = 'Direct'
     FLOW_TYPE_RETURN = 'Return'
     FLOW_TYPE_UNKNOWN = 'Unknown'
-    FOUND_PATTERN = r'Найдено:\s*(\d+)'
 
     def __init__(self, config, logger=None):
         super().__init__(config)
