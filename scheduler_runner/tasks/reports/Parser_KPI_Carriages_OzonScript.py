@@ -354,7 +354,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
         if total_carriages_text:
             # Извлекаем число из текста "Найдено: N"
             import re
-            found_pattern = self.config.get('FOUND_PATTERN', r'Найдено:\s*(\d+)')
+            found_pattern = self.config['FOUND_PATTERN']
             found_count_match = re.search(found_pattern, total_carriages_text)
             if found_count_match:
                 total_carriages = int(found_count_match.group(1))
@@ -426,7 +426,7 @@ class OzonCarriagesReportParser(BaseOzonParser):
                 if total_items_text:
                     # Извлекаем число из текста "Найдено: N"
                     import re
-                    found_pattern = self.config.get('FOUND_PATTERN', r'Найдено:\s*(\d+)')
+                    found_pattern = self.config['FOUND_PATTERN']
                     found_count_match = re.search(found_pattern, total_items_text)
                     if found_count_match:
                         items_count = int(found_count_match.group(1))
