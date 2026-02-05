@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 
 from scheduler_runner.tasks.cameras.config.scripts.videomonitor_config import SCRIPT_CONFIG
 from scheduler_runner.utils.logging import configure_logger
-from scheduler_runner.utils.notify import send_telegram_message
+from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -133,7 +133,7 @@ def xiaomi_path_builder(root_dir: Path, uid: str, check_time: datetime) -> Path:
 
 def send_notification(message: str, logger: logging.Logger) -> bool:
     """
-    Отправляет уведомление через утилиту ядра scheduler_runner/utils/notify.py.
+    Отправляет уведомление через изолированный микросервис уведомлений.
 
     Аргументы:
         message: Текст уведомления.
@@ -141,17 +141,39 @@ def send_notification(message: str, logger: logging.Logger) -> bool:
     Возвращает:
         True, если отправлено успешно, False в противном случае.
     """
+    # Подготовим параметры подключения из конфигурации
     token = SCRIPT_CONFIG["TOKEN"]
     chat_id = SCRIPT_CONFIG["CHAT_ID"]
+
     if not token or not chat_id:
         logger.warning("Параметры Telegram не заданы, уведомление не отправлено")
         return False
-    success, result = send_telegram_message(token, chat_id, message, logger)
-    if success:
-        logger.info("Уведомление успешно отправлено через Telegram")
-    else:
-        logger.error("Ошибка отправки уведомления через Telegram: %s", result)
-    return success
+
+    # Подготовим параметры подключения
+    connection_params = {
+        "TELEGRAM_BOT_TOKEN": token,
+        "TELEGRAM_CHAT_ID": chat_id
+    }
+
+    # Проверим подключение к Telegram
+    logger.info("Проверка подключения к Telegram...")
+    connection_result = test_notification_connection(connection_params, logger=logger)
+    logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
+
+    if not connection_result.get("success", False):
+        logger.error("Подключение к Telegram не удалось")
+        return False
+
+    # Отправим уведомление
+    logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+    notification_result = send_notification(
+        message=message,
+        connection_params=connection_params,
+        logger=logger
+    )
+
+    logger.info(f"Результат отправки уведомления: {notification_result}")
+    return notification_result.get("success", False)
 
 def main() -> None:
     """

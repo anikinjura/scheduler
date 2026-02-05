@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scheduler_runner.tasks.cameras.config.scripts.openingmonitor_config import SCRIPT_CONFIG
 from scheduler_runner.utils.logging import configure_logger
-from scheduler_runner.utils.notify import send_telegram_message
+from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
 from scheduler_runner.utils.filesystem import FileSystemUtils
 
 def _parse_time_from_filename(filename: str) -> Optional[time]:
@@ -152,7 +152,30 @@ def main():
             message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
             logger.warning(message)
 
-        send_telegram_message(token, chat_id, message, logger)
+        # Подготовим параметры подключения
+        connection_params = {
+            "TELEGRAM_BOT_TOKEN": token,
+            "TELEGRAM_CHAT_ID": chat_id
+        }
+
+        # Проверим подключение к Telegram
+        logger.info("Проверка подключения к Telegram...")
+        connection_result = test_notification_connection(connection_params, logger=logger)
+        logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
+
+        if not connection_result.get("success", False):
+            logger.error("Подключение к Telegram не удалось")
+            return
+
+        # Отправим уведомление
+        logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+        notification_result = send_notification(
+            message=message,
+            connection_params=connection_params,
+            logger=logger
+        )
+
+        logger.info(f"Результат отправки уведомления: {notification_result}")
 
     except Exception as e:
         logger.critical(f"Критическая ошибка выполнения: {e}", exc_info=True)

@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
-Пример интеграции микросервисов парсера и изолированного загрузчика отчетов в центральный процессор домена reports
+reports_processor.py
 
-Этот пример показывает, как можно использовать микросервис парсера и изолированный микросервис загрузчика отчетов
-в центральном процессоре домена reports, создавая отдельные логгеры для каждого микросервиса
-для изоляции логов и лучшей диагностики.
+Процессор поддомена reports, реализующий полный цикл:
+1. Парсинг данных из системы Ozon
+2. Загрузка данных в Google Sheets
+3. Отправка уведомлений через Telegram
+
+Архитектура:
+- Использует изолированные микросервисы для каждой операции
+- Использует централизованную систему логирования
+
+Author: anikinjura
 """
+__version__ = '0.0.1'
+
 
 import sys
 import os
 from datetime import datetime
 import logging
-from logging.handlers import RotatingFileHandler
+import argparse
 
 # Добавляем корень проекта в путь Python
 project_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
-# Импортируем наши микросервисы и утилиту для логирования
+# Импортируем микросервисы и утилиту для логирования
 from scheduler_runner.tasks.reports.parser.implementations.multi_step_ozon_parser import MultiStepOzonParser
 from scheduler_runner.tasks.reports.parser.configs.implementations.multi_step_ozon_config import MULTI_STEP_OZON_CONFIG
 from scheduler_runner.utils.uploader import upload_data, upload_batch_data, test_connection as test_upload_connection
@@ -35,7 +44,7 @@ def create_parser_logger():
     """
     logger = configure_logger(
         user="reports_domain",
-        task_name="ParserIntegration",
+        task_name="Parser",
         log_levels=[TRACE_LEVEL, logging.DEBUG],
         single_file_for_levels=False
     )
@@ -52,7 +61,7 @@ def create_uploader_logger():
     """
     logger = configure_logger(
         user="reports_domain",
-        task_name="UploaderIntegration",
+        task_name="Uploader",
         log_levels=[TRACE_LEVEL, logging.DEBUG],
         single_file_for_levels=False
     )
@@ -60,9 +69,12 @@ def create_uploader_logger():
     return logger
 
 
-def run_parsing_microservice():
+def run_parsing_microservice(execution_date=None):
     """
     Запускает микросервис парсера с его собственным логгером
+
+    Args:
+        execution_date: Дата выполнения в формате 'YYYY-MM-DD' (если не указана, используется текущая дата)
 
     Returns:
         dict: Результат выполнения микросервиса парсера
@@ -78,7 +90,11 @@ def run_parsing_microservice():
         config = MULTI_STEP_OZON_CONFIG.copy()
 
         # Установим дату для отчета
-        config['execution_date'] = '2026-01-25'
+        if execution_date is None:
+            execution_date = datetime.now().strftime("%Y-%m-%d")
+        
+        config['execution_date'] = execution_date
+        logger.info(f"Установлена дата выполнения: {execution_date}")
 
         # Создаем экземпляр парсера, передав ему его собственный логгер
         parser = MultiStepOzonParser(config, logger=logger)
@@ -273,6 +289,9 @@ def prepare_upload_data(parsing_result=None):
             if key not in ['summary', 'location_info', 'execution_date', 'extraction_timestamp', 'source_url']:
                 formatted_record[key.title()] = value
 
+        # Добавляем timestamp с текущим временем
+        formatted_record['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         # Проверяем, что обязательные поля присутствуют
         if 'Дата' in formatted_record and 'ПВЗ' in formatted_record:
             upload_data_list.append(formatted_record)
@@ -282,20 +301,8 @@ def prepare_upload_data(parsing_result=None):
             if upload_record:
                 upload_data_list.append(upload_record)
 
-    # Если нет результатов парсинга, можно создать тестовые данные
-    if not upload_data_list:
-        # Подготовим тестовые данные в формате, соответствующем структуре таблицы KPI
-        # Используем формат даты DD.MM.YYYY
-        upload_data_list = [
-            {
-                "Дата": datetime.now().strftime("%d.%m.%Y"),
-                "ПВЗ": "TEST_PVZ_DEFAULT",
-                "Количество выдач": 0,
-                "Прямой поток": 0,
-                "Возвратный поток": 0
-            }
-        ]
-
+    # Если нет результатов парсинга, возвращаем пустой список
+    # (в продуктивной версии не используем тестовые данные)
     return upload_data_list
 
 
@@ -486,47 +493,47 @@ def send_notification_microservice(notification_message, logger=None):
 
 def main():
     """
-    Основная функция демонстрации интеграции микросервисов в центральный процессор домена
+    Основная функция продуктового процессора домена reports
     """
-    print("=== Демонстрация интеграции микросервисов в центральный процессор домена reports ===")
+    # Парсим аргументы командной строки
+    parser = argparse.ArgumentParser(description='Продуктовый процессор домена reports')
+    parser.add_argument('--execution_date', '-d', 
+                       help='Дата выполнения в формате YYYY-MM-DD (по умолчанию используется текущая дата)')
+    parser.add_argument('--detailed_logs', action='store_true', 
+                       help='Включить детализированное логирование')
+    
+    args = parser.parse_args()
+    
+    execution_date = args.execution_date
+    detailed_logs = args.detailed_logs
 
     try:
         # Запускаем микросервис парсинга с его собственным логгером
-        print("Запуск микросервиса парсера с собственным логгером...")
-        parsing_result = run_parsing_microservice()
-
-        print("Микросервис парсера завершен успешно!")
-        print(f"Результат парсинга: {parsing_result}")
+        parsing_result = run_parsing_microservice(execution_date=execution_date)
 
         # Проверяем, что парсинг прошел успешно (проверяем наличие ключевых полей)
         if parsing_result and isinstance(parsing_result, dict) and ('summary' in parsing_result or 'issued_packages' in parsing_result):
             # Запускаем микросервис загрузки данных в Google Sheets с его собственным логгером
-            print("Запуск микросервиса загрузчика данных в Google Sheets...")
             upload_result = run_upload_microservice(parsing_result)
-
-            print("Микросервис загрузчика завершен успешно!")
-            print(f"Результат загрузки: {upload_result}")
 
             # Если загрузка данных прошла успешно, отправляем уведомление
             if upload_result and upload_result.get("success", False):
-                print("Подготовка и отправка уведомления с отчетными данными...")
-
                 # Подготовим данные для уведомления
                 notification_data = prepare_notification_data(parsing_result)
 
                 # Форматируем сообщение для уведомления
                 notification_message = format_notification_message(notification_data)
 
-                print(f"Сообщение для уведомления: {notification_message}")
-
                 # Отправляем уведомление
                 notification_result = send_notification_microservice(notification_message)
-
-                print(f"Результат отправки уведомления: {notification_result}")
             else:
-                print("Микросервис загрузчика завершился с ошибкой, пропускаем отправку уведомления")
+                # Логгируем, что загрузчик завершился с ошибкой
+                logger = create_uploader_logger()
+                logger.warning("Микросервис загрузчика завершился с ошибкой, пропускаем отправку уведомления")
         else:
-            print("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
+            # Логгируем, что парсер не завершился успешно
+            logger = create_parser_logger()
+            logger.warning("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
 
         # Здесь может быть дополнительная логика центрального процессора:
         # - обработка результатов
@@ -535,10 +542,12 @@ def main():
         # - отчетность на вышестоящий уровень
 
     except Exception as e:
-        print(f"Произошла ошибка: {e}")
+        logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
+        logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)
         raise
 
-    print("=== Демонстрация завершена ===")
+    logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
+    logger.info("Продуктовый процессор домена reports завершен успешно")
 
 
 if __name__ == "__main__":
