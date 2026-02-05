@@ -40,17 +40,17 @@ BASE_REPORTS_DIR = PATH_CONFIG['REPORTS_ROOT']
 # Формируем пути в зависимости от режима среды
 if ENV_MODE == 'production':
     REPORTS_JSON = BASE_REPORTS_DIR / "json"
-    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "delta-pagoda-483016-n8-52088e23e06d.json"
+    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "scheduler-test-account-b62ccb681f06.json"
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_PROD")               # Токен для продакшен-бота
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_PROD")           # Чат-ID для продакшен-чата
 elif ENV_MODE == 'test':
     REPORTS_JSON = BASE_REPORTS_DIR / "json"  # Для тестовой среды используем ту же директорию, что и production
-    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "delta-pagoda-483016-n8-52088e23e06d.json"
+    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "scheduler-test-account-b62ccb681f06.json"
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_TEST")               # Токен для тест-бота
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_TEST")           # Чат-ID для тест-чата
 else:  # development
     REPORTS_JSON = BASE_REPORTS_DIR / "dev" / "json"
-    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "delta-pagoda-483016-n8-52088e23e06d.json"
+    GOOGLE_SHEETS_CREDENTIALS = BASE_DIR / ".env" / "gspread" / "scheduler-test-account-b62ccb681f06.json"
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_DEV")               # Токен для дев-бота
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_DEV")           # Чат-ID для дев-чата
 

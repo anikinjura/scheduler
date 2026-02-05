@@ -49,4 +49,4 @@ tests/TestEnvironment/O_cameras/*
 !tests/TestEnvironment/O_cameras/.gitkeep
 
 # Директория .qwen
-.qwen/ 
+
