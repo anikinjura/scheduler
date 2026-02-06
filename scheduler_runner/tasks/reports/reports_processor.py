@@ -69,6 +69,23 @@ def create_uploader_logger():
     return logger
 
 
+def create_notification_logger():
+    """
+    Создает и настраивает логгер для микросервиса уведомлений
+
+    Returns:
+        logging.Logger: Настроенный объект логгера для уведомлений
+    """
+    logger = configure_logger(
+        user="reports_domain",
+        task_name="Notification",
+        log_levels=[TRACE_LEVEL, logging.DEBUG],
+        single_file_for_levels=False
+    )
+
+    return logger
+
+
 def run_parsing_microservice(execution_date=None):
     """
     Запускает микросервис парсера с его собственным логгером
@@ -440,7 +457,7 @@ def send_notification_microservice(notification_message, logger=None):
         dict: Результат отправки уведомления
     """
     if logger is None:
-        logger = create_uploader_logger()  # Используем тот же логгер, что и для загрузчика
+        logger = create_notification_logger()  # Используем изолированный логгер для уведомлений
 
     logger.info("Подготовка к отправке уведомления в Telegram...")
 
@@ -524,8 +541,9 @@ def main():
                 # Форматируем сообщение для уведомления
                 notification_message = format_notification_message(notification_data)
 
-                # Отправляем уведомление
-                notification_result = send_notification_microservice(notification_message)
+                # Отправляем уведомление с использованием изолированного логгера уведомлений
+                notification_logger = create_notification_logger()
+                notification_result = send_notification_microservice(notification_message, logger=notification_logger)
             else:
                 # Логгируем, что загрузчик завершился с ошибкой
                 logger = create_uploader_logger()
@@ -542,12 +560,12 @@ def main():
         # - отчетность на вышестоящий уровень
 
     except Exception as e:
-        logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
-        logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)
+        processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
+        processor_logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)
         raise
 
-    logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
-    logger.info("Продуктовый процессор домена reports завершен успешно")
+    processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
+    processor_logger.info("Продуктовый процессор домена reports завершен успешно")
 
 
 if __name__ == "__main__":
