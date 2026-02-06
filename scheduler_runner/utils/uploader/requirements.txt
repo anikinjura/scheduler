@@ -1,0 +1,5 @@
+# Зависимости для микросервиса загрузчика (scheduler_runner/utils/uploader)
+
+# Основные библиотеки для работы с Google Sheets API
+gspread>=6.1.4
+google-auth>=2.48.0

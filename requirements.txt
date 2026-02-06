@@ -1,7 +1,15 @@
-requests==2.32.4
-selenium>=4.0.0
-gspread==6.1.4
-google-auth==2.48.0
+# Корневой файл зависимостей для проекта scheduler
+
+# Зависимости для микросервиса парсера
+-r scheduler_runner/tasks/reports/parser/requirements.txt
+
+# Зависимости для микросервиса уведомлений
+-r scheduler_runner/utils/notifications/requirements.txt
+
+# Зависимости для микросервиса загрузчика
+-r scheduler_runner/utils/uploader/requirements.txt
+
+# Дополнительные зависимости проекта
 google-auth-oauthlib==1.2.4
 google-api-python-client==2.189.0
 webdriver-manager==4.0.2

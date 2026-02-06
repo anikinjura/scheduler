@@ -1,0 +1,4 @@
+# Зависимости для микросервиса уведомлений (scheduler_runner/utils/notifications)
+
+# Основная библиотека для HTTP-запросов к API
+requests>=2.32.4
