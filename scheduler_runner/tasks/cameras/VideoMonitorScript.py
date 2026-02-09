@@ -139,7 +139,7 @@ def create_notification_logger():
         logging.Logger: Настроенный объект логгера для уведомлений
     """
     logger = configure_logger(
-        user="operator",
+        user="cameras_domain",
         task_name="Notification",
         log_levels=[TRACE_LEVEL, logging.DEBUG],
         single_file_for_levels=False
