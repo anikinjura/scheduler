@@ -30,7 +30,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from scheduler_runner.tasks.cameras.config.scripts.videomonitor_config import SCRIPT_CONFIG
-from scheduler_runner.utils.logging import configure_logger
+from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
 from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
 
 def parse_arguments() -> argparse.Namespace:
@@ -131,22 +131,41 @@ def xiaomi_path_builder(root_dir: Path, uid: str, check_time: datetime) -> Path:
     target_datetime = check_time.strftime("%Y%m%d%H")
     return root_dir / "xiaomi_camera_videos" / uid / target_datetime
 
-def send_notification(message: str, logger: logging.Logger) -> bool:
+def create_notification_logger():
+    """
+    Создает и настраивает логгер для микросервиса уведомлений
+
+    Returns:
+        logging.Logger: Настроенный объект логгера для уведомлений
+    """
+    logger = configure_logger(
+        user="operator",
+        task_name="Notification",
+        log_levels=[TRACE_LEVEL, logging.DEBUG],
+        single_file_for_levels=False
+    )
+
+    return logger
+
+def send_telegram_notification(message: str, main_logger=None) -> bool:
     """
     Отправляет уведомление через изолированный микросервис уведомлений.
 
     Аргументы:
         message: Текст уведомления.
-        logger: Логгер для записи информации.
+        main_logger: Основной логгер для записи информации о попытке отправки (не используется в микросервисе уведомлений).
     Возвращает:
         True, если отправлено успешно, False в противном случае.
     """
+    # Создаем изолированный логгер для работы с микросервисом уведомлений
+    notification_logger = create_notification_logger()
+
     # Подготовим параметры подключения из конфигурации
     token = SCRIPT_CONFIG["TOKEN"]
     chat_id = SCRIPT_CONFIG["CHAT_ID"]
 
     if not token or not chat_id:
-        logger.warning("Параметры Telegram не заданы, уведомление не отправлено")
+        notification_logger.warning("Параметры Telegram не заданы, уведомление не отправлено")
         return False
 
     # Подготовим параметры подключения
@@ -156,23 +175,31 @@ def send_notification(message: str, logger: logging.Logger) -> bool:
     }
 
     # Проверим подключение к Telegram
-    logger.info("Проверка подключения к Telegram...")
-    connection_result = test_notification_connection(connection_params, logger=logger)
-    logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
+    notification_logger.info("Проверка подключения к Telegram...")
+    connection_result = test_notification_connection(connection_params, logger=notification_logger)
+    notification_logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
 
     if not connection_result.get("success", False):
-        logger.error("Подключение к Telegram не удалось")
+        notification_logger.error("Подключение к Telegram не удалось")
         return False
 
     # Отправим уведомление
-    logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+    notification_logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
     notification_result = send_notification(
         message=message,
         connection_params=connection_params,
-        logger=logger
+        logger=notification_logger
     )
 
-    logger.info(f"Результат отправки уведомления: {notification_result}")
+    notification_logger.info(f"Результат отправки уведомления: {notification_result}")
+
+    # Если передан основной логгер, сообщим ему об итогах
+    if main_logger:
+        if notification_result.get("success", False):
+            main_logger.info("Уведомление успешно отправлено через микросервис уведомлений")
+        else:
+            main_logger.error(f"Ошибка при отправке уведомления: {notification_result.get('error', 'Неизвестная ошибка')}")
+
     return notification_result.get("success", False)
 
 def main() -> None:
@@ -237,7 +264,7 @@ def main() -> None:
     if missing_records:
         check_type_str = "на компьютере" if scenario == "local" else "в облаке"
         message = f"ПВЗ: {SCRIPT_CONFIG.get('PVZ_ID', '-')}, {check_type_str} отсутствуют записи для камер: {', '.join(missing_records)}"
-        send_notification(message, logger)
+        send_telegram_notification(message, logger)
         logger.warning(message)
     else:
         logger.info("Все камеры имеют записи за проверяемый период.")
