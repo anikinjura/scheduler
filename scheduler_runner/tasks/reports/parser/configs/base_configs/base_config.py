@@ -46,7 +46,7 @@ BASE_CONFIG = {
     # === ПАРАМЕТРЫ КОНФИГУРАЦИИ БРАУЗЕРА ===
     "browser_config": {
         "user_data_dir": "",  # Путь к пользовательским данным (если пусто, используется EDGE_USER_DATA_DIR)
-        "headless": False,  # Режим headless (переопределяет глобальный HEADLESS)
+        "headless": True,  # False, браузер Edge запускается в видимом режиме, True - в фоне
         "window_size": [1920, 1080],  # Размер окна браузера [ширина, высота]
         "timeout": 20,  # Таймаут ожидания элементов (переопределяет DEFAULT_TIMEOUT)
     },
