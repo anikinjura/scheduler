@@ -65,7 +65,23 @@ def get_local_commit(repo_dir: Path, branch: str) -> Optional[str]:
             capture_output=True, text=True, check=True
         )
         return result.stdout.strip()
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        if "detected dubious ownership" in e.stderr.lower():
+            # Обнаружена проблема с безопасностью Git, добавляем директорию в безопасные
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", str(repo_dir)],
+                capture_output=True, text=True
+            )
+            # Повторяем попытку
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", branch],
+                    cwd=repo_dir,
+                    capture_output=True, text=True, check=True
+                )
+                return result.stdout.strip()
+            except subprocess.CalledProcessError:
+                pass
         return None
 
 def get_remote_commit(repo_dir: Path, branch: str) -> Optional[str]:
@@ -81,7 +97,24 @@ def get_remote_commit(repo_dir: Path, branch: str) -> Optional[str]:
         )
         # stdout вида: "<hash>\trefs/heads/<branch>"
         return result.stdout.split()[0] if result.stdout else None
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        if "detected dubious ownership" in e.stderr.lower():
+            # Обнаружена проблема с безопасностью Git, добавляем директорию в безопасные
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", str(repo_dir)],
+                capture_output=True, text=True
+            )
+            # Повторяем попытку
+            try:
+                result = subprocess.run(
+                    ["git", "ls-remote", "origin", branch],
+                    cwd=repo_dir,
+                    capture_output=True, text=True, check=True
+                )
+                # stdout вида: "<hash>\trefs/heads/<branch>"
+                return result.stdout.split()[0] if result.stdout else None
+            except subprocess.CalledProcessError:
+                pass
         return None
 
 def pull_updates(repo_dir: Path, branch: str, logger) -> bool:
@@ -97,8 +130,26 @@ def pull_updates(repo_dir: Path, branch: str, logger) -> bool:
     )
     logger.debug(f"git pull stdout:\n{result.stdout}")
     if result.returncode != 0:
-        logger.error(f"git pull stderr:\n{result.stderr}")
-        return False
+        if "detected dubious ownership" in result.stderr.lower():
+            logger.info("Обнаружена проблема с безопасностью Git, добавляем директорию в безопасные")
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", str(repo_dir)],
+                capture_output=True, text=True
+            )
+            # Повторяем попытку
+            result = subprocess.run(
+                ["git", "pull", "origin", branch],
+                cwd=repo_dir,
+                capture_output=True, text=True
+            )
+            logger.debug(f"git pull stdout (повторная попытка):\n{result.stdout}")
+            if result.returncode != 0:
+                logger.error(f"git pull stderr (повторная попытка):\n{result.stderr}")
+                return False
+            return True
+        else:
+            logger.error(f"git pull stderr:\n{result.stderr}")
+            return False
     return True
 
 def ensure_origin(repo_dir: Path, repo_url: str, logger) -> None:
@@ -118,6 +169,15 @@ def ensure_origin(repo_dir: Path, repo_url: str, logger) -> None:
         if result.returncode != 0:
             # origin не настроен, добавляем
             logger.info(f"origin не найден, настраиваем на {repo_url}")
+
+            # Проверяем, не связана ли ошибка с безопасностью Git
+            if "detected dubious ownership" in result.stderr.lower():
+                logger.info("Обнаружена проблема с безопасностью Git, добавляем директорию в безопасные")
+                subprocess.run(
+                    ["git", "config", "--global", "--add", "safe.directory", str(repo_dir)],
+                    capture_output=True, text=True
+                )
+
             add_result = subprocess.run(
                 ["git", "remote", "add", "origin", repo_url],
                 cwd=repo_dir,
@@ -125,8 +185,25 @@ def ensure_origin(repo_dir: Path, repo_url: str, logger) -> None:
             )
             logger.debug(f"git remote add stdout:\n{add_result.stdout}")
             if add_result.returncode != 0:
-                logger.error(f"Не удалось добавить origin: {add_result.stderr.strip()}")
-                sys.exit(5)
+                # Проверяем, не связана ли ошибка с безопасностью Git
+                if "detected dubious ownership" in add_result.stderr.lower():
+                    logger.info("Обнаружена проблема с безопасностью Git, добавляем директорию в безопасные")
+                    subprocess.run(
+                        ["git", "config", "--global", "--add", "safe.directory", str(repo_dir)],
+                        capture_output=True, text=True
+                    )
+                    # Повторяем попытку
+                    add_result = subprocess.run(
+                        ["git", "remote", "add", "origin", repo_url],
+                        cwd=repo_dir,
+                        capture_output=True, text=True
+                    )
+                    if add_result.returncode != 0:
+                        logger.error(f"Не удалось добавить origin после настройки безопасности: {add_result.stderr.strip()}")
+                        sys.exit(5)
+                else:
+                    logger.error(f"Не удалось добавить origin: {add_result.stderr.strip()}")
+                    sys.exit(5)
         else:
             # origin уже настроен, сверяем url
             current_url = result.stdout.strip()
