@@ -3,7 +3,7 @@
 # that mimics the camera archive structure for a specific PVZ based on the camera configuration,
 # with configurable date ranges and hours.
 #
-# This script accepts all required parameters as command-line arguments, 
+# This script accepts all required parameters as command-line arguments,
 # with no configuration file reading.
 #
 # The structure follows these patterns:
@@ -22,26 +22,50 @@ from datetime import datetime, timedelta
 import argparse
 import random
 import json
+import logging
+
+# Add the project root directory to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
 
 
-def create_directory(dir_path):
+def create_notification_logger():
+    """
+    Создает и настраивает логгер для генерации структуры камер
+
+    Returns:
+        logging.Logger: Настроенный объект логгера
+    """
+    logger = configure_logger(
+        user="test_environment",
+        task_name="CameraStructureGenerator",
+        log_levels=[TRACE_LEVEL, logging.DEBUG],
+        single_file_for_levels=False
+    )
+
+    return logger
+
+
+def create_directory(dir_path, logger):
     """Create a directory at the specified path."""
     try:
         os.makedirs(dir_path, exist_ok=True)
-        # print(f"Created directory: {dir_path}")
+        logger.debug(f"Created directory: {dir_path}")
     except Exception as e:
-        print(f"Error creating directory {dir_path}: {e}")
+        logger.error(f"Error creating directory {dir_path}: {e}")
 
 
-def create_sample_file(file_path):
+def create_sample_file(file_path, logger):
     """Create a small sample file (just a placeholder)."""
     try:
         with open(file_path, 'wb') as f:
             # Create a small file with some content to simulate a file
             f.write(b"SIMULATED_FILE_CONTENT")
-        # print(f"Created sample file: {file_path}")
+        logger.debug(f"Created sample file: {file_path}")
     except Exception as e:
-        print(f"Error creating file {file_path}: {e}")
+        logger.error(f"Error creating file {file_path}: {e}")
 
 
 def parse_date(date_str):
@@ -59,53 +83,55 @@ def generate_date_range(start_date, end_date):
     return dates
 
 
-def create_sample_unv_files(hour_path, date, hour):
+def create_sample_unv_files(hour_path, date, hour, logger):
     """
     Create sample files for UNV cameras in the format HH-MM-SS.jpg
-    
+
     Args:
         hour_path (str): Path to the hour directory
         date (datetime): Date for the files
         hour (int): Hour for the files
+        logger: Logger object for logging
     """
     # Create 5-10 sample files per hour for UNV cameras
     num_files = random.randint(5, 10)
-    
+
     for i in range(num_files):
         # Generate random minutes and seconds
         minute = random.randint(0, 59)
         second = random.randint(0, 59)
-        
+
         # Create filename in format HH-MM-SS.jpg
         filename = f"{hour:02d}-{minute:02d}-{second:02d}.jpg"
         file_path = os.path.join(hour_path, filename)
-        create_sample_file(file_path)
+        create_sample_file(file_path, logger)
 
 
-def create_sample_xiaomi_files(datetime_path, date, hour):
+def create_sample_xiaomi_files(datetime_path, date, hour, logger):
     """
     Create sample files for Xiaomi cameras in the format 00M21S_1741672821.mp4
-    
+
     Args:
         datetime_path (str): Path to the datetime directory
         date (datetime): Date for the files
         hour (int): Hour for the files
+        logger: Logger object for logging
     """
     # Create 3-7 sample files per hour for Xiaomi cameras
     num_files = random.randint(3, 7)
-    
+
     for i in range(num_files):
         # Generate random minutes and seconds
         minute = random.randint(0, 59)
         second = random.randint(0, 59)
-        
+
         # Generate a random timestamp-like number
         timestamp = random.randint(1741672821, 1741679999)
-        
+
         # Create filename in format 00M21S_1741672821.mp4
         filename = f"{minute:02d}M{second:02d}S_{timestamp}.mp4"
         file_path = os.path.join(datetime_path, filename)
-        create_sample_file(file_path)
+        create_sample_file(file_path, logger)
 
 
 def create_detailed_camera_structure(
@@ -113,7 +139,8 @@ def create_detailed_camera_structure(
     start_date_str, end_date_str,
     start_hour, end_hour,
     cameras_config,  # Camera configuration passed as a dictionary
-    include_pvz_in_path=True  # Whether to include PVZ ID in the path (True for network, False for local)
+    include_pvz_in_path=True,  # Whether to include PVZ ID in the path (True for network, False for local)
+    logger=None  # Logger object for logging
 ):
     """
     Create a detailed directory structure with sample files for a specific PVZ.
@@ -127,11 +154,15 @@ def create_detailed_camera_structure(
         end_hour (int): End hour (0-23)
         cameras_config (dict): Camera configuration in format {zone_name: [{'id': str, 'uid': str, 'локация': str}, ...]}
         include_pvz_in_path (bool): Whether to include PVZ ID in the path (True for network, False for local)
+        logger: Logger object for logging
     """
-    print(f"Creating detailed camera structure for PVZ {pvz_id} at: {root_path}")
-    print(f"Date range: {start_date_str} to {end_date_str}")
-    print(f"Hour range: {start_hour:02d} to {end_hour:02d}")
-    print(f"Include PVZ in path: {include_pvz_in_path}")
+    if logger is None:
+        logger = create_notification_logger()
+
+    logger.info(f"Creating detailed camera structure for PVZ {pvz_id} at: {root_path}")
+    logger.info(f"Date range: {start_date_str} to {end_date_str}")
+    logger.info(f"Hour range: {start_hour:02d} to {end_hour:02d}")
+    logger.info(f"Include PVZ in path: {include_pvz_in_path}")
 
     # Parse dates
     start_date = parse_date(start_date_str)
@@ -147,18 +178,18 @@ def create_detailed_camera_structure(
         from scheduler_runner.utils.system import SystemUtils
         safe_pvz_name = SystemUtils.cyrillic_to_translit(pvz_id)
         pvz_path = os.path.join(root_path, safe_pvz_name)
-        print(f"Processing PVZ {pvz_id} with PVZ ID in path (transliterated as {safe_pvz_name})...")
+        logger.info(f"Processing PVZ {pvz_id} with PVZ ID in path (transliterated as {safe_pvz_name})...")
     else:
         # For local paths: [root_path] (PVZ ID not included)
         pvz_path = root_path
-        print(f"Processing local cameras for PVZ {pvz_id} without PVZ ID in path...")
-    
+        logger.info(f"Processing local cameras for PVZ {pvz_id} without PVZ ID in path...")
+
     # Create camera type directories
     unv_camera_path = os.path.join(pvz_path, "unv_camera")
     xiaomi_camera_path = os.path.join(pvz_path, "xiaomi_camera_videos")
-    create_directory(unv_camera_path)
-    create_directory(xiaomi_camera_path)
-    
+    create_directory(unv_camera_path, logger)
+    create_directory(xiaomi_camera_path, logger)
+
     # Process cameras by zones
     for zone_name, cameras in cameras_config.items():
         # Map Russian zone names to English for directory naming
@@ -169,50 +200,50 @@ def create_detailed_camera_structure(
         else:
             # For any other zone names, replace spaces with underscores
             english_zone = zone_name.replace(' ', '_')
-        
-        print(f"  Processing zone: {zone_name} ({english_zone})")
-        
+
+        logger.info(f"  Processing zone: {zone_name} ({english_zone})")
+
         # Process each camera in the zone
         for camera in cameras:
             camera_id = camera['id']
             camera_uid = camera['uid']
-            
-            print(f"    Processing camera: {camera_id} (type: {camera_id.split('_')[0]}) with UID: {camera_uid}")
-            
+
+            logger.info(f"    Processing camera: {camera_id} (type: {camera_id.split('_')[0]}) with UID: {camera_uid}")
+
             if camera_id.startswith('unv'):
                 # UNV camera structure: [unv_camera_path]\[location]\YYYYMMDD\HH
                 unv_zone_path = os.path.join(unv_camera_path, english_zone)
-                create_directory(unv_zone_path)
-                
+                create_directory(unv_zone_path, logger)
+
                 # Create date and hour structure with sample files
                 for date in dates:
                     date_str = date.strftime("%Y%m%d")
                     date_path = os.path.join(unv_zone_path, date_str)
-                    create_directory(date_path)
-                    
+                    create_directory(date_path, logger)
+
                     # Create hour directories with sample files
                     for hour in range(start_hour, end_hour + 1):
                         hour_path = os.path.join(date_path, f"{hour:02d}")
-                        create_directory(hour_path)
-                        
+                        create_directory(hour_path, logger)
+
                         # Create sample files for UNV cameras
-                        create_sample_unv_files(hour_path, date, hour)
-                        
+                        create_sample_unv_files(hour_path, date, hour, logger)
+
             elif camera_id.startswith('xiaomi'):
                 # Xiaomi camera structure: [xiaomi_camera_path]\[uid]\YYYYMMDDHH
                 camera_path = os.path.join(xiaomi_camera_path, camera_uid)
-                create_directory(camera_path)
-                
+                create_directory(camera_path, logger)
+
                 # Create datetime directories with sample files
                 for date in dates:
                     date_str = date.strftime("%Y%m%d")
                     for hour in range(start_hour, end_hour + 1):
                         hour_str = f"{hour:02d}"
                         datetime_path = os.path.join(camera_path, f"{date_str}{hour_str}")
-                        create_directory(datetime_path)
-                        
+                        create_directory(datetime_path, logger)
+
                         # Create sample files for Xiaomi cameras
-                        create_sample_xiaomi_files(datetime_path, date, hour)
+                        create_sample_xiaomi_files(datetime_path, date, hour, logger)
 
 
 def main():
@@ -225,58 +256,68 @@ def main():
     parser.add_argument("--output-dir", required=True, help="Output directory path (required)")
     parser.add_argument("--pvz-id", type=str, required=True, help="PVZ ID to process (required)")
     parser.add_argument("--include-pvz-id", action="store_true", help="Include PVZ ID in the directory structure (for network paths); omit for local paths")
-    
+    parser.add_argument("--detailed-logs", action="store_true", help="Enable detailed logging")
+
     # Argument for camera configurations JSON file
     parser.add_argument("--cameras-config-file", required=True, help="Path to JSON file containing camera configurations")
     parser.add_argument("--force", action="store_true", help="Force overwrite without confirmation")
-    
+
     args = parser.parse_args()
-    
+
+    # Create logger
+    logger = configure_logger(
+        user="test_environment",
+        task_name="CameraStructureGenerator",
+        detailed=args.detailed_logs
+    )
+
     # Validate hour ranges
     if not (0 <= args.start_hour <= 23) or not (0 <= args.end_hour <= 23):
-        print("Error: Hours must be between 0 and 23")
+        logger.error("Hours must be between 0 and 23")
         return
-    
+
     if args.start_hour > args.end_hour:
-        print("Error: Start hour must be less than or equal to end hour")
+        logger.error("Start hour must be less than or equal to end hour")
         return
-    
+
     # Load camera configurations from JSON file
     try:
         with open(args.cameras_config_file, 'r', encoding='utf-8') as f:
             cameras_config = json.load(f)
     except Exception as e:
-        print(f"Error reading camera configurations from JSON file: {e}")
+        logger.error(f"Error reading camera configurations from JSON file: {e}")
         return
-    
+
     # Define root directory for the structure
     root_path = args.output_dir
-    
+
     # Check if structure already exists
     if os.path.exists(root_path):
         if args.force:
             should_overwrite = True
+            logger.info(f"Overwriting existing camera structure directory '{root_path}' due to --force flag")
         else:
             response = input(f"Camera structure directory '{root_path}' already exists. Overwrite? (y/N): ")
             should_overwrite = response.lower() == 'y'
-        
+
         if not should_overwrite:
-            print("Operation cancelled.")
+            logger.info("Operation cancelled.")
             return
-    
+
     # Create the detailed camera structure with sample files for the specific PVZ
     create_detailed_camera_structure(
-        root_path, 
+        root_path,
         args.pvz_id,
-        args.start_date, 
-        args.end_date, 
-        args.start_hour, 
+        args.start_date,
+        args.end_date,
+        args.start_hour,
         args.end_hour,
         cameras_config,
-        include_pvz_in_path=args.include_pvz_id
+        include_pvz_in_path=args.include_pvz_id,
+        logger=logger
     )
-    
-    print(f"\nDetailed camera structure with sample files for PVZ {args.pvz_id} created successfully at: {root_path}")
+
+    logger.info(f"Detailed camera structure with sample files for PVZ {args.pvz_id} created successfully at: {root_path}")
 
 
 if __name__ == "__main__":
