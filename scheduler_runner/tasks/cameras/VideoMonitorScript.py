@@ -101,16 +101,31 @@ def has_recent_records(
         current_time = datetime.now()
     else:
         current_time = now
+
+    logger.debug(f"Проверка наличия записей для {camera_type} камеры {uid} в директории {root_dir}")
+    logger.debug(f"Параметры проверки: min_files={min_files}, max_lookback_hours={max_lookback_hours}")
+
     for delta in range(0, max_lookback_hours):
         check_time = current_time - timedelta(hours=delta)
         path = path_builder(root_dir, uid, check_time)
+
+        logger.debug(f"Проверяем путь для {camera_type} камеры {uid} за {delta}-й час назад ({check_time.strftime('%Y-%m-%d %H:%M:%S')}): {path}")
+
+        if not path.exists():
+            logger.debug(f"Путь не существует: {path}")
+            continue
+
+        files_count = sum(1 for _ in path.iterdir())
+        logger.debug(f"Найдено файлов в {path}: {files_count} (требуется минимум {min_files})")
+
         # Проверяем наличие папки и достаточного количества файлов
-        if path.exists() and sum(1 for _ in path.iterdir()) >= min_files:
+        if path.exists() and files_count >= min_files:
             if delta == 0:
                 logger.info(f"{camera_type} камера {uid}: найдены записи за текущий час ({check_time.strftime('%H')})")
             else:
                 logger.info(f"{camera_type} камера {uid}: найдены записи за {delta}-й час назад ({check_time.strftime('%H')})")
             return True
+
     logger.warning(f"{camera_type} камера {uid}: записи отсутствуют за последние {max_lookback_hours} часов")
     return False
 
@@ -234,11 +249,19 @@ def main() -> None:
     cameras = SCRIPT_CONFIG["CAMERAS"]
 
     # Настройка логгера с учётом сценария и детализированности
-    logger = configure_logger(
-        user=scenario_config["USER"],
-        task_name=scenario_config["TASK_NAME"],
-        detailed=args.detailed_logs if args.detailed_logs is not None else scenario_config["DETAILED_LOGS"]
-    )
+    if args.detailed_logs or scenario_config["DETAILED_LOGS"]:
+        logger = configure_logger(
+            user=scenario_config["USER"],
+            task_name=scenario_config["TASK_NAME"],
+            log_levels=[TRACE_LEVEL, logging.DEBUG],
+            single_file_for_levels=False
+        )
+    else:
+        logger = configure_logger(
+            user=scenario_config["USER"],
+            task_name=scenario_config["TASK_NAME"],
+            detailed=args.detailed_logs if args.detailed_logs is not None else scenario_config["DETAILED_LOGS"]
+        )
 
     if not cameras:
         logger.error("Конфигурация камер недоступна или PVZ_ID не найден.")
