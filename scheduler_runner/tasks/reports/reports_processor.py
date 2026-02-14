@@ -104,16 +104,18 @@ def run_parsing_microservice(execution_date=None):
 
     try:
         # Подготовим конфигурацию
+        logger.debug("Подготовка конфигурации для парсера")
         config = MULTI_STEP_OZON_CONFIG.copy()
 
         # Установим дату для отчета
         if execution_date is None:
             execution_date = datetime.now().strftime("%Y-%m-%d")
-        
+
         config['execution_date'] = execution_date
         logger.info(f"Установлена дата выполнения: {execution_date}")
 
         # Создаем экземпляр парсера, передав ему его собственный логгер
+        logger.debug("Создание экземпляра парсера")
         parser = MultiStepOzonParser(config, logger=logger)
 
         # Запускаем парсер
@@ -128,6 +130,11 @@ def run_parsing_microservice(execution_date=None):
     except Exception as e:
         # Логгируем ошибку
         logger.error(f"Ошибка при выполнении микросервиса парсера: {e}", exc_info=True)
+        # Дополнительно логгируем информацию о конфигурации для диагностики
+        try:
+            logger.error(f"Конфигурация парсера: {config}")
+        except:
+            logger.error("Не удалось получить конфигурацию для логирования")
         raise
 
 
@@ -149,9 +156,11 @@ def run_upload_microservice(parsing_result=None):
 
     try:
         # Подготовим параметры подключения для изолированного микросервиса
+        logger.debug("Подготовка параметров подключения")
         connection_params = prepare_connection_params()
 
         # Подготовим данные для загрузки из результата парсинга
+        logger.debug("Подготовка данных для загрузки")
         upload_data_list = prepare_upload_data(parsing_result)
 
         # Проверим подключение к Google Sheets
@@ -180,6 +189,12 @@ def run_upload_microservice(parsing_result=None):
     except Exception as e:
         # Логгируем ошибку
         logger.error(f"Ошибка при выполнении изолированного микросервиса загрузчика: {e}", exc_info=True)
+        # Дополнительно логгируем информацию о параметрах подключения и данных для диагностики
+        try:
+            logger.error(f"Параметры подключения: {connection_params}")
+            logger.error(f"Данные для загрузки: {upload_data_list}")
+        except:
+            logger.error("Не удалось получить параметры подключения или данные для логирования")
         raise
 
 
@@ -317,6 +332,14 @@ def prepare_upload_data(parsing_result=None):
             upload_record = transform_record_for_upload(parsing_result)
             if upload_record:
                 upload_data_list.append(upload_record)
+    else:
+        # Логгируем, что результат парсинга отсутствует или не является словарем
+        if parsing_result is None:
+            print("DEBUG: parsing_result is None")
+        elif not isinstance(parsing_result, dict):
+            print(f"DEBUG: parsing_result is not a dict, it's {type(parsing_result)}")
+        else:
+            print("DEBUG: parsing_result is a dict but empty or invalid")
 
     # Если нет результатов парсинга, возвращаем пустой список
     # (в продуктивной версии не используем тестовые данные)
@@ -334,6 +357,7 @@ def transform_record_for_upload(record):
         dict: Преобразованная запись для загрузки в Google Sheets
     """
     if not isinstance(record, dict):
+        print(f"DEBUG: record is not a dict, it's {type(record)}")
         return None
 
     # Преобразуем поля результата парсинга в поля таблицы Google Sheets
@@ -416,6 +440,14 @@ def prepare_notification_data(parsing_result=None):
             if 'return_flow_total' in summary and isinstance(summary['return_flow_total'], dict):
                 if 'total_carriages' in summary['return_flow_total']:
                     notification_data['return_flow'] = summary['return_flow_total']['total_carriages']
+    else:
+        # Логгируем, что результат парсинга отсутствует или не является словарем
+        if parsing_result is None:
+            print("DEBUG: parsing_result is None for notification")
+        elif not isinstance(parsing_result, dict):
+            print(f"DEBUG: parsing_result is not a dict for notification, it's {type(parsing_result)}")
+        else:
+            print("DEBUG: parsing_result is a dict but empty or invalid for notification")
 
     return notification_data
 

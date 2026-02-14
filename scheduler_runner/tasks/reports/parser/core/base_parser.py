@@ -168,6 +168,9 @@ class BaseParser(ABC):
         # Получаем конфигурацию браузера
         config = browser_config or self.config.get('browser_config', {})
 
+        if self.logger:
+            self.logger.debug(f"Конфигурация браузера: {config}")
+        
         # Завершаем все процессы браузера перед запуском
         self._terminate_browser_processes()
 
@@ -175,6 +178,15 @@ class BaseParser(ABC):
         user_data_dir = config.get('user_data_dir', self.config.get('EDGE_USER_DATA_DIR'))
         if not user_data_dir or user_data_dir == "":
             user_data_dir = self._get_default_browser_user_data_dir()
+            
+        if self.logger:
+            self.logger.debug(f"Путь к пользовательским данным браузера: {user_data_dir}")
+            
+        # Проверяем, существует ли директория с пользовательскими данными
+        if not os.path.exists(user_data_dir):
+            if self.logger:
+                self.logger.error(f"Директория пользовательских данных браузера не существует: {user_data_dir}")
+            return False
 
         # Создаем опции для Edge
         options = EdgeOptions()
@@ -187,25 +199,70 @@ class BaseParser(ABC):
         # Устанавливаем headless режим, если указано
         if config.get('headless', self.config.get('HEADLESS', False)):
             options.add_argument("--headless")
+            if self.logger:
+                self.logger.debug("Включен headless режим браузера")
 
         # Устанавливаем размер окна, если указано
         window_size = config.get('window_size', [1920, 1080])
         if window_size and len(window_size) >= 2:
             width, height = window_size[0], window_size[1]
             options.add_argument(f"--window-size={width},{height}")
+            if self.logger:
+                self.logger.debug(f"Установлен размер окна браузера: {width}x{height}")
 
         # Создаем экземпляр драйвера Edge
         try:
+            if self.logger:
+                self.logger.debug("Попытка создания экземпляра драйвера Edge...")
             self.driver = webdriver.Edge(options=options)
+            if self.logger:
+                self.logger.debug("Экземпляр драйвера Edge успешно создан")
 
             # Устанавливаем таймауты
             timeout = config.get('timeout', self.config.get('DEFAULT_TIMEOUT', 60))
             self.driver.implicitly_wait(timeout)
+            if self.logger:
+                self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
 
             return True
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при настройке браузера Edge: {e}")
+                self.logger.error(f"Тип ошибки: {type(e).__name__}")
+                self.logger.error(f"Параметры запуска браузера: --user-data-dir={user_data_dir}, headless={config.get('headless', self.config.get('HEADLESS', False))}")
+                
+                # Проверяем, есть ли доступ к директории пользовательских данных
+                try:
+                    if os.path.exists(user_data_dir):
+                        # Проверяем права доступа к директории
+                        if os.access(user_data_dir, os.R_OK):
+                            self.logger.debug(f"Директория {user_data_dir} доступна для чтения")
+                        else:
+                            self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
+                        
+                        # Проверяем, заблокирована ли директория другим процессом
+                        lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
+                        if os.path.exists(lock_file_path):
+                            self.logger.error(f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен.")
+                            
+                        # Также проверим файлы Local State и другие возможные индикаторы активности
+                        local_state_path = os.path.join(user_data_dir, "Local State")
+                        if os.path.exists(local_state_path):
+                            try:
+                                import json
+                                with open(local_state_path, 'r', encoding='utf-8') as f:
+                                    local_state = json.load(f)
+                                    # Проверим, есть ли информация о запущенных профилях
+                                    if 'profile' in local_state and 'info_cache' in local_state['profile']:
+                                        active_profiles = local_state['profile']['info_cache']
+                                        self.logger.debug(f"Найдено профилей в Local State: {len(active_profiles)}")
+                            except Exception as json_error:
+                                self.logger.debug(f"Не удалось прочитать Local State: {json_error}")
+                    else:
+                        self.logger.error(f"Директория пользовательских данных {user_data_dir} не существует")
+                except Exception as dir_check_error:
+                    self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
+                    
             return False
 
     def close_browser(self):
@@ -213,8 +270,25 @@ class BaseParser(ABC):
         if self.logger:
             self.logger.trace("Попали в метод BaseParser.close_browser")
         if self.driver:
+            if self.logger:
+                self.logger.debug("Закрытие браузера")
+                # Проверим, активна ли сессия перед закрытием
+                try:
+                    if self.driver.session_id:
+                        self.logger.debug(f"Сессия драйвера перед закрытием: {self.driver.session_id[:10]}...")
+                    else:
+                        self.logger.debug("Сессия драйвера неактивна перед закрытием")
+                except Exception as e:
+                    self.logger.debug(f"Не удалось проверить сессию драйвера: {e}")
+                    
             self.driver.quit()
             self.driver = None
+            
+            if self.logger:
+                self.logger.debug("Браузер успешно закрыт")
+        else:
+            if self.logger:
+                self.logger.debug("Драйвер не инициализирован, закрывать нечего")
 
     # === УНИВЕРСАЛЬНЫЕ МЕТОДЫ РАБОТЫ С ЭЛЕМЕНТАМИ ===
 
@@ -242,6 +316,8 @@ class BaseParser(ABC):
             import time
             search_delay = self.config.get('ELEMENT_SEARCH_DELAY', 1)
             if search_delay > 0:
+                if self.logger:
+                    self.logger.debug(f"Задержка перед поиском элемента: {search_delay} секунд")
                 time.sleep(search_delay)
 
             if self.logger:
@@ -299,6 +375,24 @@ class BaseParser(ABC):
                 self.logger.debug(f"Ошибка при получении значения элемента {selector}: {e}")
             if self.logger:
                 self.logger.warning(f"Не удалось получить значение элемента {selector}: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return ""
 
     def set_element_value(self,
@@ -328,7 +422,11 @@ class BaseParser(ABC):
         if self.logger:
             self.logger.trace(f"Попали в метод BaseParser.set_element_value с селектором: {selector} и значением: {value}")
         try:
+            if self.logger:
+                self.logger.debug(f"Поиск элемента по селектору: {selector}")
             element = self.driver.find_element(By.XPATH, selector)
+            if self.logger:
+                self.logger.debug(f"Элемент найден: {element.tag_name}, текущее значение: '{element.get_attribute('value') or element.text[:50]}...'")
 
             if element_type == 'dropdown':
                 # Для выпадающих списков делегируем работу вспомогательному методу
@@ -337,6 +435,8 @@ class BaseParser(ABC):
                     # Используем режим с селекторами, так как нужен специфичный option_selector
                     dropdown_selector = selector
                     option_selector = kwargs.pop('option_selector')
+                    if self.logger:
+                        self.logger.debug(f"Вызов _select_option_from_dropdown с селекторами: dropdown={dropdown_selector}, option={option_selector}, value={value}")
                     return self._select_option_from_dropdown(
                         dropdown_selector=dropdown_selector,
                         option_selector=option_selector,
@@ -345,24 +445,51 @@ class BaseParser(ABC):
                     )
                 else:
                     # Используем режим с элементом
+                    if self.logger:
+                        self.logger.debug(f"Вызов _select_option_from_dropdown с элементом и значением: {value}")
                     return self._select_option_from_dropdown(element=element, option_value=value, **kwargs)
             elif element_type in ['checkbox', 'radio']:
                 # Для чекбоксов и радио-кнопок делегируем работу вспомогательному методу
                 target_state = value.lower() == 'true'
+                if self.logger:
+                    self.logger.debug(f"Установка состояния чекбокса/радио в {target_state}")
                 return self._set_checkbox_state(element=element, target_state=target_state)
             else:
                 # Для обычных полей ввода
+                if self.logger:
+                    self.logger.debug(f"Установка значения для элемента типа {element_type}, очистка перед установкой: {clear_before_set}")
                 if clear_before_set:
                     element.clear()
                 element.send_keys(value)
 
                 # Проверяем, что значение действительно установлено
                 current_value = element.get_attribute('value') or element.text
-                return str(current_value).strip() == str(value).strip()
+                result = str(current_value).strip() == str(value).strip()
+                if self.logger:
+                    self.logger.debug(f"Проверка результата: ожидаемое='{value}', фактическое='{current_value}', результат={result}")
+                return result
 
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"Не удалось установить значение элемента {selector}: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return False
 
     def _click_element(self, selector: str, wait_for_clickable: bool = True, timeout: Optional[int] = None) -> bool:
@@ -382,19 +509,48 @@ class BaseParser(ABC):
         # Получаем таймаут из параметра, конфига или используем значение по умолчанию
         wait_timeout = timeout or self.config.get('ELEMENT_CLICK_TIMEOUT', 10)
 
+        if self.logger:
+            self.logger.debug(f"Попытка клика по элементу: {selector}, ожидание кликабельности: {wait_for_clickable}, таймаут: {wait_timeout}")
+
         try:
             if wait_for_clickable:
+                if self.logger:
+                    self.logger.debug(f"Ожидание кликабельности элемента в течение {wait_timeout} секунд")
                 element = WebDriverWait(self.driver, wait_timeout).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
             else:
+                if self.logger:
+                    self.logger.debug(f"Поиск элемента без ожидания кликабельности")
                 element = self.driver.find_element(By.XPATH, selector)
 
+            if self.logger:
+                self.logger.debug(f"Элемент найден, выполнение клика")
             element.click()
+            if self.logger:
+                self.logger.debug(f"Клик выполнен успешно")
             return True
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"Не удалось кликнуть по элементу {selector}: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return False
 
 
@@ -406,11 +562,44 @@ class BaseParser(ABC):
             self.logger.trace("Попали в метод BaseParser._terminate_browser_processes")
         try:
             browser_executable = self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')
-            subprocess.run(["taskkill", "/f", "/im", browser_executable],
-                          stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL)
+            if self.logger:
+                self.logger.debug(f"Попытка завершения процессов браузера: {browser_executable}")
+            
+            # Проверим, запущены ли процессы браузера
+            import psutil
+            edge_processes = []
+            for proc in psutil.process_iter(['pid', 'name']):
+                if browser_executable.lower() in proc.info['name'].lower():
+                    edge_processes.append(proc.info)
+            
+            if edge_processes:
+                if self.logger:
+                    self.logger.debug(f"Найдено запущенных процессов {browser_executable}: {len(edge_processes)}")
+                for proc_info in edge_processes:
+                    if self.logger:
+                        self.logger.debug(f"  PID: {proc_info['pid']}, Name: {proc_info['name']}")
+            else:
+                if self.logger:
+                    self.logger.debug(f"Не найдено запущенных процессов {browser_executable}")
+            
+            result = subprocess.run(["taskkill", "/f", "/im", browser_executable],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE,
+                          text=True)
+            
+            if result.returncode != 0:
+                if self.logger:
+                    self.logger.debug(f"Команда taskkill завершилась с кодом {result.returncode}")
+                    if result.stderr:
+                        self.logger.debug(f"Сообщение об ошибке: {result.stderr.strip()}")
+            else:
+                if self.logger:
+                    self.logger.debug(f"Процессы {browser_executable} успешно завершены")
+            
             # Ждем, чтобы процессы точно завершились
             sleep_time = self.config.get('PROCESS_TERMINATION_SLEEP', 2)
+            if self.logger:
+                self.logger.debug(f"Ожидание завершения процессов: {sleep_time} секунд")
             time.sleep(sleep_time)
         except Exception as e:
             if self.logger:
@@ -464,11 +653,15 @@ class BaseParser(ABC):
         try:
             # Получаем состояние элемента
             state = element.is_selected()
+            if self.logger:
+                self.logger.debug(f"Состояние чекбокса: {state}")
             return str(state)
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при получении состояния чекбокса: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return "False"
 
     def _set_checkbox_state(self, element, target_state: bool) -> bool:
@@ -487,18 +680,27 @@ class BaseParser(ABC):
         try:
             # Получаем текущее состояние элемента
             current_state = element.is_selected()
+            if self.logger:
+                self.logger.debug(f"Текущее состояние чекбокса: {current_state}, целевое состояние: {target_state}")
 
             # Если текущее состояние не соответствует целевому, кликаем по элементу
             if current_state != target_state:
+                if self.logger:
+                    self.logger.debug("Текущее состояние не соответствует целевому, кликаем по элементу")
                 element.click()
 
             # Проверяем, что состояние действительно стало целевым
             final_state = element.is_selected()
-            return final_state == target_state
+            result = final_state == target_state
+            if self.logger:
+                self.logger.debug(f"Конечное состояние: {final_state}, результат: {result}")
+            return result
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при установке состояния чекбокса: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return False
 
     def _select_option_from_dropdown(self,
@@ -539,8 +741,12 @@ class BaseParser(ABC):
         try:
             # Если передан готовый элемент, используем его, иначе находим по селектору
             if element is not None:
+                if self.logger:
+                    self.logger.debug(f"Работа с переданным элементом выпадающего списка, значение: {option_value}")
                 dropdown_element = element
             else:
+                if self.logger:
+                    self.logger.debug(f"Поиск выпадающего списка по селектору: {dropdown_selector}")
                 # Кликаем по выпадающему списку, чтобы открыть опции
                 click_timeout = self.config.get('ELEMENT_CLICK_TIMEOUT', 10)
                 self._click_element(dropdown_selector, timeout=click_timeout)
@@ -548,8 +754,13 @@ class BaseParser(ABC):
                 # Ждем появление опций
                 time.sleep(self.config.get('DROPDOWN_OPEN_DELAY', 2))
 
+                if self.logger:
+                    self.logger.debug(f"Поиск опций по селектору: {option_selector}")
                 # Пытаемся найти все доступные опции в выпадающем списке
                 all_option_elements = self.driver.find_elements(By.XPATH, option_selector)
+
+                if self.logger:
+                    self.logger.debug(f"Найдено опций: {len(all_option_elements)}")
 
                 # Ищем конкретно нужный пункт среди доступных опций
                 target_option = None
@@ -563,16 +774,25 @@ class BaseParser(ABC):
                     # Проверяем значение атрибута
                     option_attr_value = option_element.get_attribute(value_attribute) if value_attribute else None
 
+                    if self.logger:
+                        self.logger.debug(f"Проверка опции: текст='{option_text}', атрибут='{option_attr_value}', искомое='{option_value}'")
+
                     if exact_match:
                         if option_value == option_text or (option_attr_value and option_value == option_attr_value):
                             target_option = option_element
+                            if self.logger:
+                                self.logger.debug(f"Найдена точная опция: {option_text}")
                             break
                     else:
                         if option_value in option_text or (option_attr_value and option_value in option_attr_value):
                             target_option = option_element
+                            if self.logger:
+                                self.logger.debug(f"Найдена частичная опция: {option_text}")
                             break
 
                 if target_option:
+                    if self.logger:
+                        self.logger.debug(f"Выбрана опция: {target_option.text if target_option.text else 'без текста'}")
                     # Используем ActionChains для более надежного клика
                     actions = ActionChains(self.driver)
                     actions.move_to_element(target_option).click().perform()
@@ -585,8 +805,13 @@ class BaseParser(ABC):
                         # Проверяем, остались ли мы на нужной странице
                         current_url = self.driver.current_url
 
+                        if self.logger:
+                            self.logger.debug(f"Проверка URL: текущий={current_url}, ожидаемый паттерн={expected_url_pattern}, возврат={return_url}")
+
                         # Если мы не на целевой странице, возвращаемся туда
                         if expected_url_pattern not in current_url:
+                            if self.logger:
+                                self.logger.debug(f"URL не соответствует ожидаемому, возвращаемся к: {return_url}")
                             self.driver.get(return_url)
                             # Ждем загрузки страницы
                             time.sleep(self.config.get('PAGE_LOAD_DELAY', 3))
@@ -595,29 +820,65 @@ class BaseParser(ABC):
                 else:
                     if self.logger:
                         self.logger.warning(f"Не найдена опция для значения {option_value}")
+                        # Выведем все доступные опции для диагностики
+                        available_options = []
+                        for opt in all_option_elements:
+                            text = opt.text.strip()
+                            attr_val = opt.get_attribute(value_attribute) if value_attribute else None
+                            available_options.append(f"text='{text}', attr='{attr_val}'")
+                        if available_options:
+                            self.logger.debug(f"Доступные опции: {available_options}")
                     return False
 
             # Если был передан готовый элемент, используем стандартный способ выбора опции
             if element is not None:
+                if self.logger:
+                    self.logger.debug(f"Использование стандартного метода Select для элемента, значение: {option_value}")
                 from selenium.webdriver.support.ui import Select
                 select = Select(dropdown_element)
 
                 # Пытаемся выбрать по значению, тексту или индексу
                 try:
                     select.select_by_value(option_value)
+                    if self.logger:
+                        self.logger.debug(f"Выбрана опция по значению: {option_value}")
                 except:
                     try:
                         select.select_by_visible_text(option_value)
+                        if self.logger:
+                            self.logger.debug(f"Выбрана опция по видимому тексту: {option_value}")
                     except:
                         try:
                             select.select_by_index(int(option_value))
+                            if self.logger:
+                                self.logger.debug(f"Выбрана опция по индексу: {int(option_value)}")
                         except:
+                            if self.logger:
+                                self.logger.error(f"Не удалось выбрать опцию ни по значению, ни по тексту, ни по индексу: {option_value}")
                             return False
                 return True
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при установке значения в выпадающем списке: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return False
 
     def extract_table_data(self, table_config_key: str = None, table_config: dict = None) -> list:
@@ -655,10 +916,16 @@ class BaseParser(ABC):
                                   f"Проверьте table_config_key='{table_config_key}' или передайте table_config.")
             return []
 
+        if self.logger:
+            self.logger.debug(f"Используемая конфигурация таблицы: {config_to_use}")
+
         # Извлекаем параметры из конфигурации
         table_selector = config_to_use.get("table_selector", "")
         columns_config = config_to_use.get("table_columns", [])
         table_type = config_to_use.get("table_type", "standard") # По умолчанию стандартная таблица
+
+        if self.logger:
+            self.logger.debug(f"Селектор таблицы: {table_selector}, тип таблицы: {table_type}, количество колонок: {len(columns_config) if isinstance(columns_config, list) else 0}")
 
         if not table_selector or not isinstance(columns_config, list):
             if self.logger:
@@ -668,6 +935,8 @@ class BaseParser(ABC):
 
         try:
             # Находим таблицу
+            if self.logger:
+                self.logger.debug(f"Поиск таблицы по селектору: {table_selector}")
             table_element = self.driver.find_element(By.XPATH, table_selector)
             if not table_element:
                 if self.logger:
@@ -676,6 +945,8 @@ class BaseParser(ABC):
 
             # Определяем тип таблицы и применяем соответствующую логику
             if table_type == 'standard':
+                if self.logger:
+                    self.logger.debug(f"Обработка стандартной таблицы")
                 return self._extract_standard_table_data(table_element, columns_config)
             elif table_type == 'dynamic':
                 # Здесь может быть логика для динамических таблиц (прокрутка, ожидание загрузки)
@@ -693,6 +964,24 @@ class BaseParser(ABC):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении данных из таблицы (ключ: '{table_config_key}'): {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return [] # Возвращаем пустой список в случае ошибки
 
     def _extract_standard_table_data(self, table_element, columns_config: list) -> list:
@@ -711,25 +1000,44 @@ class BaseParser(ABC):
             self.logger.trace("Попали в метод BaseParser._extract_standard_table_data")
         rows_data = []
 
+        if self.logger:
+            self.logger.debug(f"Начало извлечения данных из таблицы, количество колонок в конфигурации: {len(columns_config)}")
+
         # Находим все строки tbody
         try:
+            if self.logger:
+                self.logger.debug("Поиск строк в tbody")
             rows = table_element.find_elements(By.XPATH, ".//tbody/tr")
+            if self.logger:
+                self.logger.debug(f"Найдено {len(rows)} строк в tbody")
         except Exception:
             # Если tbody нет, пробуем найти все tr внутри table
             try:
+                if self.logger:
+                    self.logger.debug("Поиск строк в table (без tbody)")
                 rows = table_element.find_elements(By.XPATH, ".//tr[not(./th)]") # Исключаем строки с th, если они есть
+                if self.logger:
+                    self.logger.debug(f"Найдено {len(rows)} строк в table")
             except Exception as e:
                 if self.logger:
-                    self.logger.warning(f"Не удалось найти строки таблицы (tbody/tr).")
+                    self.logger.warning(f"Не удалось найти строки таблицы (tbody/tr): {e}")
                 return [] # Возвращаем пустой список, если строки не найдены
 
+        if self.logger:
+            self.logger.debug(f"Обработка {len(rows)} строк таблицы")
+
         for i, row in enumerate(rows):
+            if self.logger:
+                self.logger.debug(f"Обработка строки {i+1}")
             row_data = {}
             # Проходим по каждой колонке в конфигурации
             for col_config in columns_config:
                 col_name = col_config.get('name', f'column_{len(row_data)}') # Генерируем имя, если не задано
                 cell_selector = col_config.get('selector')
                 regex_pattern = col_config.get('regex')
+
+                if self.logger:
+                    self.logger.debug(f"Обработка колонки '{col_name}', селектор: {cell_selector}")
 
                 if not cell_selector:
                     if self.logger:
@@ -739,6 +1047,8 @@ class BaseParser(ABC):
 
                 try:
                     # Находим ячейку в строке
+                    if self.logger:
+                        self.logger.debug(f"Поиск ячейки по селектору: {cell_selector}")
                     cell_element = row.find_element(By.XPATH, cell_selector)
 
                     # Извлекаем текст
@@ -753,20 +1063,32 @@ class BaseParser(ABC):
                     # Применяем регулярное выражение, если задано
                     if regex_pattern:
                         import re
+                        if self.logger:
+                            self.logger.debug(f"Применение регулярного выражения: {regex_pattern}")
                         matches = re.findall(regex_pattern, cell_text)
                         if matches:
                             cell_text = matches[0]  # Берем первое совпадение
+                            if self.logger:
+                                self.logger.debug(f"Результат после применения регулярного выражения: {cell_text}")
                         else:
                             cell_text = "" # Или оставить исходный текст, если совпадений нет
+                            if self.logger:
+                                self.logger.debug("Совпадений по регулярному выражению не найдено")
 
+                    if self.logger:
+                        self.logger.debug(f"Извлеченный текст для колонки '{col_name}': '{cell_text}'")
                     row_data[col_name] = cell_text
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Не удалось извлечь данные для колонки '{col_name}' в строке {i}: {e}")
+                        import traceback
+                        self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                     row_data[col_name] = "" # Устанавливаем пустую строку в случае ошибки
 
             rows_data.append(row_data)
 
+        if self.logger:
+            self.logger.debug(f"Извлечение данных завершено, всего строк: {len(rows_data)}")
         return rows_data
 
     # === МЕТОД ЗАПУСКА ПАРСЕРА ===

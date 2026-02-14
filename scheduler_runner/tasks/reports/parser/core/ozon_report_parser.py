@@ -86,6 +86,9 @@ class OzonReportParser(BaseReportParser):
             # Получаем селектор для ПВЗ из конфигурации
             pvz_selectors = self.config.get("selectors", {}).get("pvz_selectors", {})
 
+            if self.logger:
+                self.logger.debug(f"Селекторы ПВЗ: {pvz_selectors}")
+
             pvz_input_selector = pvz_selectors.get("input_class_readonly",
                                                  pvz_selectors.get("input_readonly",
                                                                  pvz_selectors.get("input")))
@@ -94,6 +97,9 @@ class OzonReportParser(BaseReportParser):
                 if self.logger:
                     self.logger.error("Не найден селектор для получения текущего ПВЗ")
                 return "Unknown"
+
+            if self.logger:
+                self.logger.debug(f"Используемый селектор для получения ПВЗ: {pvz_input_selector}")
 
             # Используем метод из базового класса для извлечения значения
             current_pvz = self.get_element_value(
@@ -108,6 +114,8 @@ class OzonReportParser(BaseReportParser):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении текущего ПВЗ: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return "Unknown"
 
     def set_pvz(self, target_pvz: str) -> bool:
@@ -126,6 +134,9 @@ class OzonReportParser(BaseReportParser):
             # Получаем селекторы для ПВЗ из конфигурации
             selectors = self.config.get("selectors", {}).get("pvz_selectors", {})
 
+            if self.logger:
+                self.logger.debug(f"Селекторы для установки ПВЗ: {selectors}")
+
             dropdown_selector = selectors.get("dropdown")
             option_selector = selectors.get("option")
 
@@ -133,6 +144,11 @@ class OzonReportParser(BaseReportParser):
                 if self.logger:
                     self.logger.error("Не найдены селекторы для установки ПВЗ")
                 return False
+
+            if self.logger:
+                self.logger.debug(f"Селектор выпадающего списка: {dropdown_selector}")
+                self.logger.debug(f"Селектор опции: {option_selector}")
+                self.logger.debug(f"Целевой ПВЗ для установки: {target_pvz}")
 
             # Используем метод из базового класса для установки значения в выпадающем списке
             success = self.set_element_value(
@@ -155,6 +171,8 @@ class OzonReportParser(BaseReportParser):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при установке ПВЗ: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return False
 
     def ensure_correct_pvz(self) -> bool:
@@ -175,8 +193,14 @@ class OzonReportParser(BaseReportParser):
                     self.logger.error("Не указан требуемый ПВЗ в конфигурации")
                 return False
 
+            if self.logger:
+                self.logger.debug(f"Требуемый ПВЗ: {required_pvz}")
+
             # Получаем текущий ПВЗ
             current_pvz = self.get_current_pvz()
+
+            if self.logger:
+                self.logger.debug(f"Текущий ПВЗ: {current_pvz}")
 
             if current_pvz == required_pvz:
                 if self.logger:
@@ -192,6 +216,9 @@ class OzonReportParser(BaseReportParser):
                 if success:
                     # Проверяем, что ПВЗ действительно изменился
                     new_pvz = self.get_current_pvz()
+
+                    if self.logger:
+                        self.logger.debug(f"ПВЗ после установки: {new_pvz}")
 
                     if new_pvz == required_pvz:
                         if self.logger:
@@ -211,6 +238,9 @@ class OzonReportParser(BaseReportParser):
                         if nav_success:
                             # Проверяем, что ПВЗ все еще правильный после навигации
                             final_pvz = self.get_current_pvz()
+                            if self.logger:
+                                self.logger.debug(f"ПВЗ после повторной навигации: {final_pvz}")
+                            
                             if final_pvz == required_pvz:
                                 if self.logger:
                                     self.logger.info(f"После повторной навигации ПВЗ по-прежнему правильный: {required_pvz}")
@@ -235,6 +265,8 @@ class OzonReportParser(BaseReportParser):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при проверке/установке ПВЗ: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return False
 
 
@@ -250,6 +282,8 @@ class OzonReportParser(BaseReportParser):
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser.navigate_to_target")
         # Сначала выполнить логику родительского метода (вычисление target_url и навигация)
+        if self.logger:
+            self.logger.debug("Выполнение базовой навигации к целевой странице")
         parent_result = super().navigate_to_target()
 
         if not parent_result:
@@ -258,6 +292,8 @@ class OzonReportParser(BaseReportParser):
             return False
 
         # После навигации проверяем и при необходимости устанавливаем правильный ПВЗ
+        if self.logger:
+            self.logger.debug("Проверка и установка правильного ПВЗ")
         pvz_success = self.ensure_correct_pvz()
 
         if not pvz_success:
@@ -269,8 +305,12 @@ class OzonReportParser(BaseReportParser):
         import time
         page_load_delay = self.config.get('PAGE_LOAD_DELAY', 3)
         if page_load_delay > 0:
+            if self.logger:
+                self.logger.debug(f"Ожидание загрузки страницы: {page_load_delay} секунд")
             time.sleep(page_load_delay)
 
+        if self.logger:
+            self.logger.debug("Навигация и проверка ПВЗ завершены успешно")
         return True
 
     def extract_report_data(self) -> Dict[str, Any]:
@@ -284,36 +324,52 @@ class OzonReportParser(BaseReportParser):
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser.extract_report_data")
         try:
+            if self.logger:
+                self.logger.debug("Начало извлечения данных отчета")
             # Получаем базовые данные отчета
             report_data = super().extract_report_data()
+            if self.logger:
+                self.logger.debug(f"Базовые данные отчета получены: {list(report_data.keys())}")
 
             # Добавляем информацию о ПВЗ
             current_pvz = self.get_current_pvz()
+            if self.logger:
+                self.logger.debug(f"Текущий ПВЗ: {current_pvz}")
             report_data["location_info"] = current_pvz
 
+            if self.logger:
+                self.logger.debug(f"Данные отчета с информацией о ПВЗ: {report_data}")
             return report_data
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении данных отчета: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             # Возвращаем минимально необходимые данные
             current_pvz = self.get_current_pvz()
             # Используем target_url из конфига, если он есть, иначе текущий URL
             source_url = self.config.get('target_url', self.driver.current_url if self.driver else "Unknown")
-            return {
+            result = {
                 "location_info": current_pvz,
                 "extraction_timestamp": self._get_current_timestamp(),
                 "source_url": source_url
             }
+            if self.logger:
+                self.logger.debug(f"Возвращаем минимальные данные отчета: {result}")
+            return result
 
     def _get_current_timestamp(self) -> str:
         """
         Вспомогательный метод для получения текущей даты и времени
 
         Returns:
-            str: Текущая дата и время в формате, заданном в конфигурации
+            str: Текущая даты и время в формате, заданном в конфигурации
         """
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser._get_current_timestamp")
         from datetime import datetime
         datetime_format = self.config.get('datetime_format', '%Y-%m-%d %H:%M:%S')
-        return datetime.now().strftime(datetime_format)
+        timestamp = datetime.now().strftime(datetime_format)
+        if self.logger:
+            self.logger.debug(f"Получена временная метка: {timestamp}")
+        return timestamp

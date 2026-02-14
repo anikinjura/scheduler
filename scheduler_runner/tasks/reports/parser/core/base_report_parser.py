@@ -199,35 +199,57 @@ class BaseReportParser(BaseParser, ABC):
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser.run_parser")
         try:
+            if self.logger:
+                self.logger.debug("Начало выполнения парсера отчетов")
+            
             # 1. Настройка браузера
+            if self.logger:
+                self.logger.debug("Шаг 1: Настройка браузера")
             if not self.setup_browser():
                 raise Exception("Не удалось настроить браузер")
 
             # 2. Вход в систему
+            if self.logger:
+                self.logger.debug("Шаг 2: Вход в систему")
             if not self.login():
                 raise Exception("Не удалось выполнить вход в систему")
 
             # 3. Выполнение мульти-шаговой обработки (теперь единственный способ обработки)
+            if self.logger:
+                self.logger.debug("Шаг 3: Выполнение мульти-шаговой обработки")
             multi_step_config = self.config.get("multi_step_config", {})
             if not multi_step_config or not multi_step_config.get("steps"):
                 raise Exception("Для обработки обязательно должен быть указан multi_step_config со списком шагов")
+
+            if self.logger:
+                self.logger.debug(f"Конфигурация мульти-шаговой обработки: {list(multi_step_config.keys())}")
+                self.logger.debug(f"Количество шагов: {len(multi_step_config.get('steps', []))}")
 
             data = self._execute_multi_step_processing(multi_step_config)
 
             # 4. Сохранение отчета в файл, если требуется
             if save_to_file:
+                if self.logger:
+                    self.logger.debug("Шаг 4: Сохранение отчета в файл")
                 self.save_report(data=data, output_format=output_format)
 
             # 5. Выход из системы
+            if self.logger:
+                self.logger.debug("Шаг 5: Выход из системы")
             if not self.logout():
                 if self.logger:
                     self.logger.warning("Не удалось корректно выйти из системы")
 
+            if self.logger:
+                self.logger.debug("Парсинг отчетов завершен успешно")
             return data
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при выполнении парсинга отчета: {e}")
+                self.logger.error(f"Тип ошибки: {type(e).__name__}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             raise
         finally:
             # 6. Закрытие браузера
@@ -238,6 +260,8 @@ class BaseReportParser(BaseParser, ABC):
                 if self.logger:
                     self.logger.info(f"Задержка перед закрытием браузера: {close_delay} секунд")
                 time.sleep(close_delay)
+            if self.logger:
+                self.logger.debug("Закрытие браузера")
             self.close_browser()
 
 
@@ -261,11 +285,21 @@ class BaseReportParser(BaseParser, ABC):
         report_data = data or self.config.get('last_collected_data', {})
         format_type = output_format or self.config.get('output_config', {}).get('format', 'json')
 
+        if self.logger:
+            self.logger.debug(f"Форматирование данных отчета: тип={format_type}, количество ключей={len(report_data) if isinstance(report_data, dict) else 'unknown'}")
+
         try:
             if format_type.lower() == 'json':
+                if self.logger:
+                    self.logger.debug("Форматирование в JSON")
                 import json
-                return json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+                result = json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+                if self.logger:
+                    self.logger.debug(f"JSON форматирование завершено, размер: {len(result) if result else 0} символов")
+                return result
             elif format_type.lower() == 'csv':
+                if self.logger:
+                    self.logger.debug("Форматирование в CSV")
                 import csv
                 import io
                 output = io.StringIO()
@@ -292,8 +326,13 @@ class BaseReportParser(BaseParser, ABC):
                         writer = csv.DictWriter(output, fieldnames=list(report_data.keys()))
                         writer.writeheader()
                         writer.writerow(report_data)
-                return output.getvalue()
+                result = output.getvalue()
+                if self.logger:
+                    self.logger.debug(f"CSV форматирование завершено, размер: {len(result) if result else 0} символов")
+                return result
             elif format_type.lower() == 'xml':
+                if self.logger:
+                    self.logger.debug("Форматирование в XML")
                 import xml.etree.ElementTree as ET
                 # Используем имя корневого элемента из конфига
                 root_element_name = self.config.get('xml_root_element', 'report')
@@ -314,18 +353,31 @@ class BaseReportParser(BaseParser, ABC):
                         parent.text = str(data)
 
                 add_data_to_xml(root, report_data)
-                return ET.tostring(root, encoding='unicode')
+                result = ET.tostring(root, encoding='unicode')
+                if self.logger:
+                    self.logger.debug(f"XML форматирование завершено, размер: {len(result) if result else 0} символов")
+                return result
             else:
                 # По умолчанию используем JSON
+                if self.logger:
+                    self.logger.debug("Форматирование в JSON по умолчанию")
                 import json
-                return json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+                result = json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+                if self.logger:
+                    self.logger.debug(f"JSON форматирование по умолчанию завершено, размер: {len(result) if result else 0} символов")
+                return result
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при форматировании данных отчета: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             # В случае ошибки возвращаем JSON по умолчанию
             import json
-            return json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+            result = json.dumps(report_data, ensure_ascii=False, indent=2, default=str)
+            if self.logger:
+                self.logger.debug(f"Возвращаем JSON по умолчанию, размер: {len(result) if result else 0} символов")
+            return result
 
     def save_report(self,
                    data: Optional[Dict[str, Any]] = None,
@@ -347,6 +399,8 @@ class BaseReportParser(BaseParser, ABC):
         try:
             # Получаем данные для сохранения
             report_data = data or self.config.get('last_collected_data', {})
+            if self.logger:
+                self.logger.debug(f"Данные для сохранения: {list(report_data.keys()) if isinstance(report_data, dict) else type(report_data)}")
 
             # Если путь не указан, используем путь из конфига
             if not output_path:
@@ -381,18 +435,27 @@ class BaseReportParser(BaseParser, ABC):
                     output_format=output_format
                 )
                 output_path = f"{output_dir}/{filename}"
+                
+            if self.logger:
+                self.logger.debug(f"Путь для сохранения: {output_path}")
 
             # Создаем директорию, если она не существует
             import os
             output_dir = os.path.dirname(output_path)
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
+                if self.logger:
+                    self.logger.debug(f"Директория создана или уже существует: {output_dir}")
 
             # Форматируем и сохраняем данные
             formatted_data = self.format_report_output(report_data, output_format)
+            if self.logger:
+                self.logger.debug(f"Данные отформатированы, размер: {len(formatted_data) if formatted_data else 0} символов")
 
             # Используем кодировку из конфига
             encoding = self.config.get('output_config', {}).get('encoding', 'utf-8')
+            if self.logger:
+                self.logger.debug(f"Кодировка файла: {encoding}")
             with open(output_path, 'w', encoding=encoding) as f:
                 f.write(formatted_data)
 
@@ -404,6 +467,8 @@ class BaseReportParser(BaseParser, ABC):
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при сохранении отчета: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return False
 
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ===
@@ -483,6 +548,8 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.debug(f"Ошибка при формировании фильтра URL: {e}")
             if self.logger:
                 self.logger.error(f"Ошибка при формировании фильтра URL: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return ""
 
     def _execute_multi_step_processing(self, multi_step_config):
@@ -522,10 +589,18 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.debug(f"Конфигурация шага {step_name}: {step_config}")
 
             # Выполняем обработку текущего шага
-            step_result = self._execute_single_step(step_config)
-            if self.logger:
-                self.logger.debug(f"Результат шага {step_name}: {step_result}")
-
+            try:
+                step_result = self._execute_single_step(step_config)
+                if self.logger:
+                    self.logger.debug(f"Результат шага {step_name}: {step_result}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Ошибка при выполнении шага {step_name}: {e}")
+                    import traceback
+                    self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                # Продолжаем выполнение других шагов, даже если один из них не удался
+                step_result = {"error": str(e)}
+                
             # Сохраняем результат шага
             result_key = step_config.get("result_key", step_name)
             all_step_results[result_key] = step_result
@@ -568,6 +643,8 @@ class BaseReportParser(BaseParser, ABC):
             self.logger.trace("Попали в метод BaseReportParser._execute_single_step")
 
         # Временно обновляем конфигурацию для текущего шага
+        if self.logger:
+            self.logger.debug(f"Обновление конфигурации для шага: {step_config.get('result_key', 'unknown')}")
         original_config = self._update_config_for_step(step_config)
         if self.logger:
             self.logger.debug("Конфигурация обновлена, оригинальная сохранена")
@@ -581,6 +658,8 @@ class BaseReportParser(BaseParser, ABC):
 
             # Сохраняем URL, с которого были извлечены данные для этого шага
             step_source_url = self.config.get('target_url', getattr(self.driver, 'current_url', 'Unknown') if getattr(self, 'driver', None) else 'Unknown')
+            if self.logger:
+                self.logger.debug(f"URL источника данных для шага: {step_source_url}")
 
             # Определяем тип обработки
             processing_type = step_config.get("processing_type", "simple")
@@ -614,6 +693,12 @@ class BaseReportParser(BaseParser, ABC):
             if self.logger:
                 self.logger.debug(f"Результат обработки шага: {result}")
             return result
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при выполнении одного шага: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            raise
         finally:
             # Восстанавливаем исходную конфигурацию
             if self.logger:
@@ -683,10 +768,17 @@ class BaseReportParser(BaseParser, ABC):
             self.logger.debug(f"Используемая конфигурация извлечения: {extraction_config}")
 
         # Извлекаем значение с помощью универсального метода
-        result = self._extract_value_by_config(extraction_config)
-        if self.logger:
-            self.logger.debug(f"Результат извлечения: {result}")
-
+        try:
+            result = self._extract_value_by_config(extraction_config)
+            if self.logger:
+                self.logger.debug(f"Результат извлечения: {result}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при простом извлечении данных: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            result = {"error": str(e)}
+            
         return result
 
     def _handle_table_extraction(self, step_config):
@@ -709,15 +801,29 @@ class BaseReportParser(BaseParser, ABC):
             self.logger.trace("Попали в метод BaseReportParser._handle_table_extraction")
 
         table_processing_config = step_config.get("table_processing", {})
+        if self.logger:
+            self.logger.debug(f"Конфигурация табличной обработки: {table_processing_config}")
 
         table_config_key = table_processing_config.get("table_config_key")
 
         if not table_config_key:
             raise Exception("Не указан table_config_key для табличной обработки")
 
-        # Извлекаем табличные данные
-        table_data = self.extract_table_data(table_config_key=table_config_key)
+        if self.logger:
+            self.logger.debug(f"Извлечение табличных данных по ключу: {table_config_key}")
 
+        # Извлекаем табличные данные
+        try:
+            table_data = self.extract_table_data(table_config_key=table_config_key)
+            if self.logger:
+                self.logger.debug(f"Извлечено {len(table_data) if isinstance(table_data, list) else 'unknown'} строк табличных данных")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при табличной обработке данных: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            table_data = [{"error": str(e)}]
+            
         return table_data
 
     def _handle_table_nested_extraction(self, step_config):
@@ -745,12 +851,18 @@ class BaseReportParser(BaseParser, ABC):
             self.logger.trace("Попали в метод BaseReportParser._handle_table_nested_extraction")
 
         # Сначала извлекаем табличные данные
+        if self.logger:
+            self.logger.debug("Начало извлечения табличных данных для вложенной обработки")
         table_data = self._handle_table_extraction(step_config)
 
         # Получаем конфигурацию вложенной обработки
         nested_config = step_config.get("nested_processing", {})
+        if self.logger:
+            self.logger.debug(f"Конфигурация вложенной обработки: {nested_config}")
 
         if not nested_config.get("enabled", False):
+            if self.logger:
+                self.logger.debug("Вложенная обработка отключена, возвращаем табличные данные")
             return table_data
 
         # Извлекаем идентификаторы из указанной колонки
@@ -760,10 +872,16 @@ class BaseReportParser(BaseParser, ABC):
         if not id_column:
             raise Exception("Не указана id_column для вложенной обработки")
 
+        if self.logger:
+            self.logger.debug(f"Извлечение идентификаторов из колонки: {id_column}")
+
         identifiers = []
         for row in table_data:
             if id_column in row:
                 identifiers.append(row[id_column])
+
+        if self.logger:
+            self.logger.debug(f"Найдено {len(identifiers)} идентификаторов для вложенной обработки")
 
         # Выполняем вложенную обработку для каждого идентификатора
         nested_results = self._handle_nested_processing(nested_config, identifiers)
@@ -771,6 +889,9 @@ class BaseReportParser(BaseParser, ABC):
         # Агрегируем результаты вложенной обработки
         aggregation_config = nested_config.get("aggregation", {})
         aggregated_result = self._aggregate_nested_results(nested_results, aggregation_config)
+
+        if self.logger:
+            self.logger.debug(f"Результаты вложенной обработки агрегированы: {aggregated_result}")
 
         return aggregated_result
 
@@ -799,12 +920,22 @@ class BaseReportParser(BaseParser, ABC):
             self.logger.trace("Попали в метод BaseReportParser._handle_nested_processing")
         results = []
 
-        for identifier in identifiers:
+        if self.logger:
+            self.logger.debug(f"Начало вложенной обработки для {len(identifiers)} идентификаторов")
+            self.logger.debug(f"Конфигурация вложенной обработки: {nested_config}")
+
+        for i, identifier in enumerate(identifiers):
+            if self.logger:
+                self.logger.debug(f"Обработка идентификатора {i+1}/{len(identifiers)}: {identifier}")
+            
             # Обновляем URL с использованием шаблона
             base_url_template = nested_config.get("base_url_template", "")
 
             # Заменяем плейсхолдеры в шаблоне URL
             target_url = base_url_template.replace("{carriage_id}", str(identifier))
+
+            if self.logger:
+                self.logger.debug(f"Целевой URL для идентификатора {identifier}: {target_url}")
 
             # Временно сохраняем оригинальную конфигурацию
             original_url = self.config.get("base_url", "")
@@ -819,14 +950,21 @@ class BaseReportParser(BaseParser, ABC):
 
                 # Выполняем навигацию к новому URL
                 if not self.navigate_to_target():
+                    if self.logger:
+                        self.logger.warning(f"Не удалось выполнить навигацию к URL для идентификатора {identifier}")
                     continue
 
                 # Извлекаем данные с использованием конфигурации извлечения
                 extraction_config = nested_config.get("data_extraction", {})
+                if self.logger:
+                    self.logger.debug(f"Конфигурация извлечения: {extraction_config}")
                 extracted_value = self._extract_value_by_config(extraction_config)
 
                 # Используем финальный URL, который был сформирован в navigate_to_target
                 final_url = self.config.get("target_url", target_url)
+
+                if self.logger:
+                    self.logger.debug(f"Извлеченное значение для {identifier}: {extracted_value}")
 
                 # Добавляем результат в список
                 results.append({
@@ -836,6 +974,10 @@ class BaseReportParser(BaseParser, ABC):
                 })
 
             except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Ошибка при обработке идентификатора {identifier}: {e}")
+                    import traceback
+                    self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                 continue
             finally:
                 # Восстанавливаем оригинальную конфигурацию
@@ -843,6 +985,8 @@ class BaseReportParser(BaseParser, ABC):
                 self.config["filter_template"] = original_filter
                 self.config["data_type_filter_template"] = original_data_filter
 
+        if self.logger:
+            self.logger.debug(f"Вложенная обработка завершена, получено {len(results)} результатов")
         return results
 
     def _aggregate_nested_results(self, nested_results, aggregation_config):
@@ -858,6 +1002,9 @@ class BaseReportParser(BaseParser, ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser._aggregate_nested_results")
+        if self.logger:
+            self.logger.debug(f"Агрегация вложенных результатов: количество={len(nested_results) if nested_results else 0}, конфигурация={aggregation_config}")
+            
         method = aggregation_config.get("method", "sum")
         target_field = aggregation_config.get("target_field", "aggregated_value")
 
@@ -866,12 +1013,20 @@ class BaseReportParser(BaseParser, ABC):
             if isinstance(result.get("value"), (int, float)):
                 values.append(result["value"])
 
+        if self.logger:
+            self.logger.debug(f"Найдено {len(values)} числовых значений для агрегации")
+            
         aggregated_value = self._aggregate_values(values, method, target_field)
 
-        return {
+        result = {
             target_field: aggregated_value,
             "details": nested_results
         }
+        
+        if self.logger:
+            self.logger.debug(f"Результат агрегации: {result}")
+            
+        return result
 
     def __filter_structure_by_available_keys(self, data, available_keys):
         """
@@ -887,56 +1042,93 @@ class BaseReportParser(BaseParser, ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser.__filter_structure_by_available_keys")
+        if self.logger:
+            self.logger.debug(f"Фильтрация структуры по доступным ключам: {list(available_keys)[:10]}{'...' if len(available_keys) > 10 else ''}")
+            
         if isinstance(data, str):
+            if self.logger:
+                self.logger.debug(f"Обработка строки: {data[:50]}{'...' if len(data) > 50 else ''}")
             # Для строки проверяем, содержит ли она хотя бы один доступный плейсхолдер
             has_available_placeholder = False
             for key in available_keys:
                 placeholder = '{' + key + '}'
                 if placeholder in data:
+                    if self.logger:
+                        self.logger.debug(f"Найден доступный плейсхолдер '{placeholder}' в строке")
                     has_available_placeholder = True
                     break
 
             # Если строка содержит хотя бы один доступный плейсхолдер, включая специальные (__LOCATION_INFO__, и т.д.), возвращаем её
             # Иначе возвращаем None, чтобы пометить для удаления
             if has_available_placeholder:
+                if self.logger:
+                    self.logger.debug("Строка содержит доступные плейсхолдеры, возвращаем как есть")
                 return data
             else:
                 # Проверяем, содержит ли строка специальные плейсхолдеры (__LOCATION_INFO__, __EXTRACTION_TIMESTAMP__, и т.д.)
                 special_placeholders = ['__LOCATION_INFO__', '__EXTRACTION_TIMESTAMP__', '__SOURCE_URL__', '__EXECUTION_DATE__']
                 for special_placeholder in special_placeholders:
                     if f'{{{special_placeholder}}}' in data:
+                        if self.logger:
+                            self.logger.debug(f"Найден специальный плейсхолдер '{special_placeholder}', возвращаем строку")
                         return data  # Возвращаем строку, если она содержит специальный плейсхолдер
+                if self.logger:
+                    self.logger.debug("Строка не содержит доступных плейсхолдеров, возвращаем None")
                 return None
         elif isinstance(data, dict):
+            if self.logger:
+                self.logger.debug(f"Обработка словаря с {len(data)} элементами")
             # Обработка словаря - рекурсивно фильтруем значения
             result = {}
             for key, value in data.items():
+                if self.logger:
+                    self.logger.debug(f"Обработка ключа '{key}' в словаре")
                 filtered_value = self.__filter_structure_by_available_keys(value, available_keys)
                 # Добавляем в результат только если значение не None
                 if filtered_value is not None:
                     result[key] = filtered_value
+                else:
+                    if self.logger:
+                        self.logger.debug(f"Значение для ключа '{key}' отфильтровано (None)")
 
             # Если словарь пустой после фильтрации, возвращаем None
             if result:
+                if self.logger:
+                    self.logger.debug(f"Словарь после фильтрации содержит {len(result)} элементов")
                 return result
             else:
+                if self.logger:
+                    self.logger.debug("Словарь после фильтрации пуст, возвращаем None")
                 return None
         elif isinstance(data, list):
+            if self.logger:
+                self.logger.debug(f"Обработка списка с {len(data)} элементами")
             # Обработка списка - рекурсивно фильтруем элементы
             result = []
-            for item in data:
+            for i, item in enumerate(data):
+                if self.logger:
+                    self.logger.debug(f"Обработка элемента {i} в списке")
                 filtered_item = self.__filter_structure_by_available_keys(item, available_keys)
                 # Добавляем в результат только если элемент не None
                 if filtered_item is not None:
                     result.append(filtered_item)
+                else:
+                    if self.logger:
+                        self.logger.debug(f"Элемент {i} отфильтрован (None)")
 
             # Если список пустой после фильтрации, возвращаем None
             if result:
+                if self.logger:
+                    self.logger.debug(f"Список после фильтрации содержит {len(result)} элементов")
                 return result
             else:
+                if self.logger:
+                    self.logger.debug("Список после фильтрации пуст, возвращаем None")
                 return None
         else:
             # Для остальных типов данных возвращаем как есть
+            if self.logger:
+                self.logger.debug(f"Возвращаем данные без изменений (тип: {type(data)}): {data}")
             return data
 
     def _replace_placeholders_recursive(self, data, replacements):
@@ -952,6 +1144,9 @@ class BaseReportParser(BaseParser, ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser._replace_placeholders_recursive")
+        if self.logger:
+            self.logger.debug(f"Замена плейсхолдеров в данных: {type(data)}, replacements: {list(replacements.keys())}")
+            
         if isinstance(data, str):
             # Обработка строки - заменяем плейсхолдеры
             result = data
@@ -961,25 +1156,41 @@ class BaseReportParser(BaseParser, ABC):
                 placeholder = '{' + key + '}'
                 if result.strip() == placeholder:
                     # This is a single placeholder, return the value directly
+                    if self.logger:
+                        self.logger.debug(f"Найден одиночный плейсхолдер '{placeholder}', возвращаем значение: {value}")
                     return value
                 elif placeholder in result:
                     # This is a string with embedded placeholders, convert value to string
+                    if self.logger:
+                        self.logger.debug(f"Заменяем плейсхолдер '{placeholder}' на значение: {value}")
                     result = result.replace(placeholder, str(value))
+            if self.logger:
+                self.logger.debug(f"Результат обработки строки: {result}")
             return result
         elif isinstance(data, dict):
             # Обработка словаря - рекурсивно обрабатываем значения
+            if self.logger:
+                self.logger.debug(f"Обработка словаря с {len(data)} элементами")
             result = {}
             for key, value in data.items():
+                if self.logger:
+                    self.logger.debug(f"Обработка ключа '{key}' в словаре")
                 result[key] = self._replace_placeholders_recursive(value, replacements)
             return result
         elif isinstance(data, list):
             # Обработка списка - рекурсивно обрабатываем элементы
+            if self.logger:
+                self.logger.debug(f"Обработка списка с {len(data)} элементами")
             result = []
-            for item in data:
+            for i, item in enumerate(data):
+                if self.logger:
+                    self.logger.debug(f"Обработка элемента {i} в списке")
                 result.append(self._replace_placeholders_recursive(item, replacements))
             return result
         else:
             # Для остальных типов данных возвращаем как есть
+            if self.logger:
+                self.logger.debug(f"Возвращаем данные без изменений (тип: {type(data)}): {data}")
             return data
 
     def _combine_step_results(self, all_step_results, aggregation_config):
@@ -1081,9 +1292,18 @@ class BaseReportParser(BaseParser, ABC):
             all_replacements = {**all_step_results, **common_info}
 
             # Используем рекурсивный метод для замены всех плейсхолдеров в отфильтрованной структуре
-            final_result = self._replace_placeholders_recursive(filtered_structure, all_replacements)
-            if self.logger:
-                self.logger.debug(f"Финальный результат после подстановки: {final_result}")
+            try:
+                final_result = self._replace_placeholders_recursive(filtered_structure, all_replacements)
+                if self.logger:
+                    self.logger.debug(f"Финальный результат после подстановки: {final_result}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Ошибка при замене плейсхолдеров: {e}")
+                    import traceback
+                    self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                # В случае ошибки возвращаем результаты шагов как есть
+                return all_step_results
+                
             return final_result
         else:
             if self.logger:
@@ -1120,24 +1340,39 @@ class BaseReportParser(BaseParser, ABC):
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser._apply_post_processing")
         if not post_processing_config:
+            if self.logger:
+                self.logger.debug("Конфигурация постобработки пуста, возвращаем исходное значение")
             return value
+
+        if self.logger:
+            self.logger.debug(f"Применение постобработки: значение='{value}', конфигурация={post_processing_config}")
 
         # Применяем преобразование типа
         convert_to = post_processing_config.get("convert_to")
         if convert_to == "int":
             try:
                 value = int(float(str(value)))  # Сначала в float, затем в int, чтобы обработать строки с дробями
+                if self.logger:
+                    self.logger.debug(f"Значение преобразовано в int: {value}")
             except (ValueError, TypeError):
                 default_value = post_processing_config.get("default_value", 0)
                 value = default_value
+                if self.logger:
+                    self.logger.debug(f"Ошибка преобразования в int, установлено значение по умолчанию: {value}")
         elif convert_to == "float":
             try:
                 value = float(value)
+                if self.logger:
+                    self.logger.debug(f"Значение преобразовано в float: {value}")
             except (ValueError, TypeError):
                 default_value = post_processing_config.get("default_value", 0.0)
                 value = default_value
+                if self.logger:
+                    self.logger.debug(f"Ошибка преобразования в float, установлено значение по умолчанию: {value}")
         elif convert_to == "str":
             value = str(value) if value is not None else ""
+            if self.logger:
+                self.logger.debug(f"Значение преобразовано в str: {value}")
 
         return value
 
@@ -1179,19 +1414,26 @@ class BaseReportParser(BaseParser, ABC):
             return None
 
         # Извлекаем значение с помощью улучшенного get_element_value, который теперь поддерживает pattern
-        raw_value = self.get_element_value(selector=selector, element_type=element_type, pattern=pattern)
-        if self.logger:
-            self.logger.debug(f"Извлеченное значение (с примененным паттерном): '{raw_value}'")
+        try:
+            raw_value = self.get_element_value(selector=selector, element_type=element_type, pattern=pattern)
+            if self.logger:
+                self.logger.debug(f"Извлеченное значение (с примененным паттерном): '{raw_value}'")
 
-        # Применяем постобработку
-        post_processing_config = extraction_config.get("post_processing", {})
-        if self.logger:
-            self.logger.debug(f"Применяем постобработку: {post_processing_config}")
-        processed_value = self._apply_post_processing(raw_value, post_processing_config)
-        if self.logger:
-            self.logger.debug(f"Значение после постобработки: '{processed_value}'")
+            # Применяем постобработку
+            post_processing_config = extraction_config.get("post_processing", {})
+            if self.logger:
+                self.logger.debug(f"Применяем постобработку: {post_processing_config}")
+            processed_value = self._apply_post_processing(raw_value, post_processing_config)
+            if self.logger:
+                self.logger.debug(f"Значение после постобработки: '{processed_value}'")
 
-        return processed_value
+            return processed_value
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при извлечении значения по конфигурации: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            return None
 
     def get_common_report_info(self, all_step_results=None):
         """
@@ -1212,10 +1454,24 @@ class BaseReportParser(BaseParser, ABC):
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser.get_common_report_info")
         # Получаем информацию о местоположении (переопределяется в дочерних классах)
-        location_info = getattr(self, 'get_current_pvz', lambda: 'Unknown')()
+        try:
+            location_info = getattr(self, 'get_current_pvz', lambda: 'Unknown')()
+            if self.logger:
+                self.logger.debug(f"Информация о местоположении: {location_info}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при получении информации о местоположении: {e}")
+                location_info = 'Unknown'
 
         # Получаем время извлечения данных
-        extraction_timestamp = self._get_current_timestamp()
+        try:
+            extraction_timestamp = self._get_current_timestamp()
+            if self.logger:
+                self.logger.debug(f"Время извлечения данных: {extraction_timestamp}")
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при получении времени извлечения данных: {e}")
+                extraction_timestamp = 'Unknown'
 
         # Получаем URL источника
         # Если переданы результаты всех шагов, формируем общий префикс из __STEP_SOURCE_URL__
@@ -1273,13 +1529,20 @@ class BaseReportParser(BaseParser, ABC):
 
         # Получаем дату выполнения
         execution_date = self.config.get('execution_date', '')
+        if self.logger:
+            self.logger.debug(f"Дата выполнения: {execution_date}")
 
-        return {
+        result = {
             '__LOCATION_INFO__': location_info,
             '__EXTRACTION_TIMESTAMP__': extraction_timestamp,
             '__SOURCE_URL__': source_url,
             '__EXECUTION_DATE__': execution_date
         }
+        
+        if self.logger:
+            self.logger.debug(f"Общая информация отчета: {result}")
+            
+        return result
 
     def _get_common_url_prefix(self, urls):
         """
@@ -1313,7 +1576,14 @@ class BaseReportParser(BaseParser, ABC):
 
         # Используем первый URL как основу для сравнения
         from urllib.parse import urlparse
-        parsed_urls = [urlparse(url) for url in valid_urls]
+        try:
+            parsed_urls = [urlparse(url) for url in valid_urls]
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при парсинге URL: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+            return ""
 
         # Найдем общий префикс для scheme, netloc и path
         base_parsed = parsed_urls[0]
@@ -1430,25 +1700,51 @@ class BaseReportParser(BaseParser, ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser._aggregate_values")
+        if self.logger:
+            self.logger.debug(f"Агрегация значений: количество={len(values) if values else 0}, метод={aggregation_method}, поле={target_field}")
+            
         if not values:
+            if self.logger:
+                self.logger.debug("Список значений пуст, возвращаем 0")
             return 0
 
+        if self.logger:
+            self.logger.debug(f"Входные значения: {values}")
+
         if aggregation_method == "sum":
-            return sum(v for v in values if isinstance(v, (int, float)))
+            result = sum(v for v in values if isinstance(v, (int, float)))
+            if self.logger:
+                self.logger.debug(f"Результат суммирования: {result}")
+            return result
         elif aggregation_method == "average":
             numeric_values = [v for v in values if isinstance(v, (int, float))]
-            return sum(numeric_values) / len(numeric_values) if numeric_values else 0
+            result = sum(numeric_values) / len(numeric_values) if numeric_values else 0
+            if self.logger:
+                self.logger.debug(f"Результат усреднения: {result} (из {len(numeric_values)} числовых значений)")
+            return result
         elif aggregation_method == "count":
-            return len([v for v in values if v is not None])
+            result = len([v for v in values if v is not None])
+            if self.logger:
+                self.logger.debug(f"Результат подсчета: {result}")
+            return result
         elif aggregation_method == "max":
             numeric_values = [v for v in values if isinstance(v, (int, float))]
-            return max(numeric_values) if numeric_values else 0
+            result = max(numeric_values) if numeric_values else 0
+            if self.logger:
+                self.logger.debug(f"Результат поиска максимума: {result}")
+            return result
         elif aggregation_method == "min":
             numeric_values = [v for v in values if isinstance(v, (int, float))]
-            return min(numeric_values) if numeric_values else 0
+            result = min(numeric_values) if numeric_values else 0
+            if self.logger:
+                self.logger.debug(f"Результат поиска минимума: {result}")
+            return result
         else:
             # По умолчанию суммируем
-            return sum(v for v in values if isinstance(v, (int, float)))
+            result = sum(v for v in values if isinstance(v, (int, float)))
+            if self.logger:
+                self.logger.debug(f"Результат суммирования по умолчанию: {result}")
+            return result
 
     def navigate_to_target(self) -> bool:
         """
@@ -1519,4 +1815,22 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.debug(f"Ошибка при навигации: {e}")
             if self.logger:
                 self.logger.error(f"Ошибка при навигации: {e}")
+                import traceback
+                self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                
+                # Дополнительно проверим, доступен ли драйвер и сессия
+                if hasattr(self, 'driver') and self.driver:
+                    try:
+                        if self.driver.session_id:
+                            self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
+                        else:
+                            self.logger.error("Сессия драйвера неактивна")
+                            
+                        self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                        self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                    except Exception as driver_check_error:
+                        self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
+                else:
+                    self.logger.error("Драйвер не инициализирован или недоступен")
+                    
             return False

@@ -42,7 +42,10 @@ class MultiStepOzonParser(OzonReportParser):
         """
         if self.logger:
             self.logger.trace("Попали в метод MultiStepOzonParser.get_report_type")
-        return self.config.get("report_type", "multi_step_ozon_report")
+        report_type = self.config.get("report_type", "multi_step_ozon_report")
+        if self.logger:
+            self.logger.debug(f"Тип отчета: {report_type}")
+        return report_type
 
 
     def extract_report_data(self) -> Dict[str, Any]:
@@ -58,6 +61,8 @@ class MultiStepOzonParser(OzonReportParser):
             self.logger.trace("Попали в метод MultiStepOzonParser.extract_report_data")
         # Получаем результаты мульти-шаговой обработки
         multi_step_results = self.config.get('last_collected_data', {})
+        if self.logger:
+            self.logger.debug(f"Результаты мульти-шаговой обработки: {list(multi_step_results.keys())}")
 
         # Удаляем служебные поля из результата, чтобы не попали в финальный отчет
         cleaned_results = {}
@@ -65,23 +70,38 @@ class MultiStepOzonParser(OzonReportParser):
             if isinstance(value, dict):
                 # Удаляем служебные поля из вложенных словарей
                 if '__STEP_SOURCE_URL__' in value:
+                    if self.logger:
+                        self.logger.debug(f"Удаление служебного поля __STEP_SOURCE_URL__ из результата для ключа {key}")
                     del value['__STEP_SOURCE_URL__']
                 cleaned_results[key] = value
             else:
                 cleaned_results[key] = value
 
+        if self.logger:
+            self.logger.debug(f"Результаты после очистки: {list(cleaned_results.keys())}")
+
         # Для совместимости с существующим кодом, извлекаем специфичные значения
         # из вложенной структуры summary, если она есть
         if 'summary' in cleaned_results:
             summary_data = cleaned_results['summary']
+            if self.logger:
+                self.logger.debug(f"Обработка данных summary: {list(summary_data.keys())}")
             # Извлекаем конкретные значения из summary и добавляем их на верхний уровень для совместимости
             if 'giveout' in summary_data:
                 cleaned_results['giveout_count'] = summary_data['giveout']
+                if self.logger:
+                    self.logger.debug(f"Добавлено значение giveout_count: {summary_data['giveout']}")
             if 'direct_flow_total' in summary_data:
                 cleaned_results['direct_flow_total'] = summary_data['direct_flow_total']
+                if self.logger:
+                    self.logger.debug(f"Добавлено значение direct_flow_total: {summary_data['direct_flow_total']}")
             if 'return_flow_total' in summary_data:
                 cleaned_results['return_flow_total'] = summary_data['return_flow_total']
+                if self.logger:
+                    self.logger.debug(f"Добавлено значение return_flow_total: {summary_data['return_flow_total']}")
 
+        if self.logger:
+            self.logger.debug(f"Финальные результаты извлечения данных: {list(cleaned_results.keys())}")
         return cleaned_results
 
     def login(self) -> bool:
@@ -95,6 +115,26 @@ class MultiStepOzonParser(OzonReportParser):
         """
         if self.logger:
             self.logger.trace("Попали в метод MultiStepOzonParser.login")
+            # Проверим, действительно ли у нас есть активная сессия браузера
+            if hasattr(self, 'driver') and self.driver:
+                try:
+                    # Проверим, можно ли получить URL текущей страницы
+                    current_url = self.driver.current_url
+                    self.logger.info(f"Текущий URL сессии: {current_url}")
+                    
+                    # Проверим, можно ли получить заголовок страницы
+                    title = self.driver.title
+                    self.logger.info(f"Заголовок страницы: {title}")
+                    
+                    # Проверим, активна ли сессия
+                    if self.driver.session_id:
+                        self.logger.info("Сессия браузера активна, ID сессии: {}".format(self.driver.session_id[:10] + "..."))
+                    else:
+                        self.logger.warning("ID сессии отсутствует")
+                        
+                except Exception as e:
+                    self.logger.error(f"Ошибка при проверке активности сессии: {e}")
+            
             self.logger.info("Пропускаем авторизацию - используется сохраненная сессия")
         return True
 
