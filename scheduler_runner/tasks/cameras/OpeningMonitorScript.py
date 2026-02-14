@@ -1,24 +1,27 @@
 """
 OpeningMonitorScript.py
 
-Скрипт для определения времени начала работы объекта по первому видеофайлу.
+Скрипт для определения времени начала работы объекта по первому видеофайлу и времени включения компьютера.
 
 - Сканирует директорию с видеозаписями.
 - Ищет файлы, созданные сегодня в заданном временном интервале (например, с 8 до 10 утра).
 - Определяет время создания файла по его имени, поддерживая форматы:
   - `ЧЧ-ММ-СС.jpg` (камеры UNV)
   - `..._unix-timestamp.mp4` (камеры Xiaomi)
-- Отправляет в Telegram сообщение о времени первого найденного файла или об их отсутствии.
+- Получает время включения компьютера из системных журналов
+- Анализирует оба источника данных для определения времени начала работы
+- Отправляет в Telegram сообщение о времени начала работы на основе комбинированного анализа.
 
 Author: anikinjura
 """
-__version__ = '1.0.0'
+__version__ = '2.0.0'
 
 import argparse
 import sys
 import os
 import re
-from datetime import datetime, time, date
+import subprocess
+from datetime import datetime, time, date, timedelta
 from pathlib import Path
 from typing import Optional, List, Tuple
 from logging import Logger
@@ -111,6 +114,159 @@ def find_earliest_file_time(
 
     return earliest_time
 
+def get_system_boot_time() -> Optional[datetime]:
+    """
+    Получает время последнего включения системы через PowerShell
+    
+    Returns:
+        datetime: Время последнего включения системы или None в случае ошибки
+    """
+    try:
+        # Команда для получения времени последнего включения системы
+        ps_command = "[DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')"
+        result = subprocess.run(['powershell', '-Command', f'(Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime.ToString("yyyy-MM-dd HH:mm:ss")'], 
+                               capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            boot_time_str = result.stdout.strip()
+            if boot_time_str and boot_time_str != '':
+                # Преобразуем строку в datetime объект
+                boot_time = datetime.strptime(boot_time_str, '%Y-%m-%d %H:%M:%S')
+                return boot_time
+    except subprocess.TimeoutExpired:
+        print("Время ожидания выполнения команды истекло")
+    except Exception as e:
+        print(f"Ошибка при получении времени включения системы: {e}")
+    return None
+
+
+def get_wake_time() -> Optional[datetime]:
+    """
+    Получает время последнего выхода из спящего режима/гибернации из системного журнала событий
+
+    Returns:
+        datetime: Время последнего выхода из спящего режима или None в случае ошибки или отсутствия события
+    """
+    try:
+        # Команда для получения последнего события ID 1 (Power Action - выход из гибернации/спящего режима)
+        ps_command = "(Get-WinEvent -FilterHashtable @{LogName='System'; ID=1; StartTime=(Get-Date).AddDays(-1)} | Select-Object -First 1).TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')"
+        result = subprocess.run(['powershell', '-Command', ps_command],
+                               capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            wake_time_str = result.stdout.strip()
+            if wake_time_str and wake_time_str != '':
+                # Преобразуем строку в datetime объект
+                wake_time = datetime.strptime(wake_time_str, '%Y-%m-%d %H:%M:%S')
+                return wake_time
+    except subprocess.TimeoutExpired:
+        print("Время ожидания выполнения команды истекло")
+    except Exception as e:
+        print(f"Ошибка при получении времени выхода из спящего режима: {e}")
+    return None
+
+
+def determine_start_time(camera_time: Optional[time], boot_time: Optional[datetime], wake_time: Optional[datetime], logger: Logger) -> tuple[Optional[time], str]:
+    """
+    Анализирует все источники данных и определяет итоговое время начала работы и источник данных
+    
+    Args:
+        camera_time: Время первого кадра с камер
+        boot_time: Время включения компьютера
+        wake_time: Время выхода из спящего режима/гибернации
+        logger: Логгер для записи информации
+        
+    Returns:
+        tuple: (итоговое время начала работы, источник данных)
+    """
+    today = date.today()
+    
+    # Если есть время включения компьютера, извлекаем время суток
+    boot_time_of_day = None
+    if boot_time:
+        if boot_time.date() == today:
+            boot_time_of_day = boot_time.time()
+        else:
+            logger.info(f"Время включения компьютера ({boot_time}) не относится к сегодняшней дате")
+    
+    # Если есть время выхода из спящего режима, извлекаем время суток
+    wake_time_of_day = None
+    if wake_time:
+        if wake_time.date() == today:
+            wake_time_of_day = wake_time.time()
+        else:
+            logger.info(f"Время выхода из спящего режима ({wake_time}) не относится к сегодняшней дате")
+    
+    # Получаем параметры из конфигурации
+    priority_source = SCRIPT_CONFIG.get("PRIORITY_SOURCE", "both")
+    tolerance_minutes = SCRIPT_CONFIG.get("BOOT_TIME_TOLERANCE_MINUTES", 30)
+    
+    # Определяем доступные источники данных на сегодня
+    available_sources = []
+    if camera_time:
+        available_sources.append(("камеры", camera_time))
+    if boot_time_of_day:
+        available_sources.append(("включение компьютера", boot_time_of_day))
+    if wake_time_of_day:
+        available_sources.append(("выход из сна", wake_time_of_day))
+    
+    # Если нет доступных источников
+    if not available_sources:
+        logger.info("Ни один из источников данных недоступен")
+        return None, "отсутствие данных"
+    
+    # Если только один источник доступен
+    if len(available_sources) == 1:
+        source_name, source_time = available_sources[0]
+        logger.info(f"Используется только один доступный источник: {source_name} ({source_time})")
+        return source_time, source_name
+    
+    # Если несколько источников доступны
+    if priority_source == "both" or priority_source == "all":
+        # Сортируем источники по времени (берем самый ранний)
+        sorted_sources = sorted(available_sources, key=lambda x: x[1])
+        earliest_source, earliest_time = sorted_sources[0]
+        logger.info(f"Выбрано самое раннее время: {earliest_time} из источника '{earliest_source}'")
+        return earliest_time, earliest_source
+    elif priority_source == "camera":
+        # Приоритет у камер
+        if camera_time:
+            logger.info(f"Приоритет у камер: {camera_time}")
+            return camera_time, "камеры"
+        elif wake_time_of_day:
+            logger.info(f"Вторичный выбор - время выхода из сна: {wake_time_of_day}")
+            return wake_time_of_day, "выход из сна"
+        elif boot_time_of_day:
+            logger.info(f"Вторичный выбор - время включения компьютера: {boot_time_of_day}")
+            return boot_time_of_day, "включение компьютера"
+    elif priority_source == "wake_time":
+        # Приоритет у времени выхода из сна
+        if wake_time_of_day:
+            logger.info(f"Приоритет у времени выхода из сна: {wake_time_of_day}")
+            return wake_time_of_day, "выход из сна"
+        elif camera_time:
+            logger.info(f"Вторичный выбор - время с камер: {camera_time}")
+            return camera_time, "камеры"
+        elif boot_time_of_day:
+            logger.info(f"Вторичный выбор - время включения компьютера: {boot_time_of_day}")
+            return boot_time_of_day, "включение компьютера"
+    elif priority_source == "boot_time":
+        # Приоритет у времени включения компьютера
+        if boot_time_of_day:
+            logger.info(f"Приоритет у времени включения компьютера: {boot_time_of_day}")
+            return boot_time_of_day, "включение компьютера"
+        elif wake_time_of_day:
+            logger.info(f"Вторичный выбор - время выхода из сна: {wake_time_of_day}")
+            return wake_time_of_day, "выход из сна"
+        elif camera_time:
+            logger.info(f"Вторичный выбор - время с камер: {camera_time}")
+            return camera_time, "камеры"
+    
+    # Если приоритетный источник недоступен, возвращаем самый ранний из доступных
+    sorted_sources = sorted(available_sources, key=lambda x: x[1])
+    earliest_source, earliest_time = sorted_sources[0]
+    logger.info(f"Выбрано самое раннее время из доступных: {earliest_time} из источника '{earliest_source}'")
+    return earliest_time, earliest_source
+
+
 def create_notification_logger():
     """
     Создает и настраивает логгер для микросервиса уведомлений
@@ -118,6 +274,7 @@ def create_notification_logger():
     Returns:
         logging.Logger: Настроенный объект логгера для уведомлений
     """
+    import logging
     logger = configure_logger(
         user="cameras_domain",
         task_name="Notification",
@@ -214,13 +371,57 @@ def main():
 
         logger.info(f"Запуск мониторинга. Временной интервал: {start_time} - {end_time}")
 
+        # Получаем параметры из конфигурации
+        combined_analysis_enabled = SCRIPT_CONFIG.get("COMBINED_ANALYSIS_ENABLED", True)
+
+        # Получаем время включения компьютера и время выхода из сна, если комбинированный анализ включен
+        boot_time = None
+        wake_time = None
+        if combined_analysis_enabled:
+            logger.info("Получение времени включения компьютера...")
+            boot_time = get_system_boot_time()
+            if boot_time:
+                logger.info(f"Время включения компьютера: {boot_time}")
+            else:
+                logger.warning("Не удалось получить время включения компьютера")
+            
+            logger.info("Получение времени выхода из спящего режима...")
+            wake_time = get_wake_time()
+            if wake_time:
+                logger.info(f"Время выхода из спящего режима: {wake_time}")
+            else:
+                logger.warning("Не удалось получить время выхода из спящего режима")
+
+        # Получаем время первого кадра с камер
         earliest_time = find_earliest_file_time(search_dir, start_time, end_time, logger)
 
-        if earliest_time:
-            message = f"✅ ПВЗ: {pvz_id}. Объект начал работу в {earliest_time.strftime('%H:%M:%S')}."
+        # Определяем итоговое время начала работы
+        if combined_analysis_enabled:
+            # Используем комбинированный анализ
+            final_time, source = determine_start_time(earliest_time, boot_time, wake_time, logger)
+        else:
+            # Используем только данные с камер
+            final_time = earliest_time
+            source = "камеры" if earliest_time else "отсутствие данных"
+
+        if final_time:
+            message = f"✅ ПВЗ: {pvz_id}. Объект начал работу в {final_time.strftime('%H:%M:%S')} (источник: {source})."
+            if combined_analysis_enabled:
+                if earliest_time:
+                    message += f" Время первого кадра с камер: {earliest_time.strftime('%H:%M:%S')}."
+                if boot_time and boot_time.date() == date.today():
+                    message += f" Время включения компьютера: {boot_time.time().strftime('%H:%M:%S')}."
+                if wake_time and wake_time.date() == date.today():
+                    message += f" Время выхода из спящего режима: {wake_time.time().strftime('%H:%M:%S')}."
+            else:
+                if earliest_time:
+                    message += f" Время первого кадра с камер: {earliest_time.strftime('%H:%M:%S')}."
             logger.info(message)
         else:
-            message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
+            if combined_analysis_enabled:
+                message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Ни один из источников данных не дал результата."
+            else:
+                message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
             logger.warning(message)
 
         # Подготовим параметры подключения

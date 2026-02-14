@@ -4,11 +4,12 @@ openingmonitor_config.py
 Параметры и расписание для OpeningMonitorScript задачи cameras.
 
 Скрипт ищет самый ранний видеофайл за текущий день в заданном
-промежутке времени и сообщает о времени его создания в Telegram.
+промежутке времени и время включения компьютера, 
+и сообщает о времени начала работы на основе комбинированного анализа в Telegram.
 
 Author: anikinjura
 """
-__version__ = '1.0.0'
+__version__ = '2.0.0'
 
 from scheduler_runner.tasks.cameras.config.cameras_paths import CAMERAS_PATHS
 from config.base_config import PVZ_ID
@@ -26,6 +27,10 @@ SCRIPT_CONFIG = {
     # Параметры для уведомлений
     "TELEGRAM_TOKEN": CAMERAS_PATHS.get("TELEGRAM_TOKEN"),
     "TELEGRAM_CHAT_ID": CAMERAS_PATHS.get("TELEGRAM_CHAT_ID"),
+    # Параметры для комбинированного анализа
+    "COMBINED_ANALYSIS_ENABLED": True,  # Включить комбинированный анализ
+    "PRIORITY_SOURCE": "all",  # "camera", "boot_time", "wake_time", "both", "all" - приоритетный источник данных
+    "BOOT_TIME_TOLERANCE_MINUTES": 30,  # Допустимое отклонение во времени (в минутах) при сравнении источников
 }
 
 SCHEDULE = [{
