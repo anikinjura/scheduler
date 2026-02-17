@@ -114,5 +114,16 @@ OZON_BASE_CONFIG = {
     # === ДОПОЛНИТЕЛЬНЫЕ ПАРАМЕТРЫ ===
     "additional_params": {
         "location_id": PVZ_ID,    # ID локации (ПВЗ), извлекается из общей конфигурации
+    },
+
+    # === КОНФИГУРАЦИЯ ОВЕРЛЕЯ (МОДАЛЬНЫХ ОКОН) ===
+    # Параметры для проверки и закрытия информационных оверлеев Ozon
+    "overlay_config": {
+        "enabled": True,  # Флаг включения проверки оверлея
+        "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея (модального окна)
+        "close_button_selector": "//button[contains(@class, 'ozi__window__closeIcon__-pkPv')]",  # Селектор кнопки закрытия (крестик)
+        "wait_timeout": 5,  # Таймаут ожидания появления оверлея (секунды)
+        "retry_count": 3,  # Количество попыток закрытия
+        "retry_delay": 1   # Задержка между попытками (секунды)
     }
 }

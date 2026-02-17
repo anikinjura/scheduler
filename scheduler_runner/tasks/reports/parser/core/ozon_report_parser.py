@@ -184,6 +184,14 @@ class OzonReportParser(BaseReportParser):
         """
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser.ensure_correct_pvz")
+        
+        # ПРОВЕРКА И ЗАКРЫТИЕ ОВЕРЛЕЯ ПЕРЕД РАБОТОЙ СО СТРАНИЦЕЙ
+        if self.logger:
+            self.logger.debug("Проверка наличия оверлея перед получением ПВЗ")
+        if not self._check_and_close_overlay():
+            if self.logger:
+                self.logger.warning("Не удалось закрыть оверлей, продолжаем работу")
+        
         try:
             # Получаем требуемый ПВЗ из конфигурации
             required_pvz = self.config.get("additional_params", {}).get("location_id", "")
@@ -373,3 +381,178 @@ class OzonReportParser(BaseReportParser):
         if self.logger:
             self.logger.debug(f"Получена временная метка: {timestamp}")
         return timestamp
+
+    def _check_and_close_overlay(self) -> bool:
+        """
+        Проверка наличия оверлея (модального окна) на странице и его закрытие
+
+        Метод проверяет наличие оверлея по селектору из конфигурации и пытается
+        закрыть его, кликнув по кнопке закрытия (крестику).
+
+        Returns:
+            bool: True, если оверлея нет или он успешно закрыт, False в случае ошибки
+        """
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser._check_and_close_overlay")
+
+        # Получаем конфигурацию оверлея
+        overlay_config = self.config.get("overlay_config", {})
+
+        # Проверяем, включена ли проверка оверлея
+        if not overlay_config.get("enabled", False):
+            if self.logger:
+                self.logger.debug("Проверка оверлея отключена в конфигурации")
+            return True
+
+        # Получаем селекторы и параметры из конфигурации
+        overlay_selector = overlay_config.get("overlay_selector")
+        close_button_selector = overlay_config.get("close_button_selector")
+        wait_timeout = overlay_config.get("wait_timeout", 5)
+        retry_count = overlay_config.get("retry_count", 3)
+        retry_delay = overlay_config.get("retry_delay", 1)
+
+        if not overlay_selector or not close_button_selector:
+            if self.logger:
+                self.logger.warning("Не указаны селекторы для проверки оверлея в конфигурации")
+            return True
+
+        if self.logger:
+            self.logger.debug(f"Проверка оверлея: selector={overlay_selector}, timeout={wait_timeout}s")
+
+        # Проверяем наличие оверлея на странице
+        if self._is_overlay_present(overlay_selector, wait_timeout):
+            if self.logger:
+                self.logger.info("Обнаружен оверлей на странице, пытаемся закрыть...")
+
+            # Пытаемся закрыть оверлей с retry_count попытками
+            for attempt in range(1, retry_count + 1):
+                if self.logger:
+                    self.logger.debug(f"Попытка {attempt}/{retry_count}: клик по кнопке закрытия оверлея")
+
+                if self._click_close_button(close_button_selector):
+                    if self.logger:
+                        self.logger.info(f"Оверлей успешно закрыт с попытки {attempt}")
+
+                    # Проверяем, что оверлей действительно исчез
+                    if not self._is_overlay_present(overlay_selector, timeout=2):
+                        if self.logger:
+                            self.logger.debug("Оверлей успешно закрыт и не обнаружен после проверки")
+                        return True
+                    else:
+                        if self.logger:
+                            self.logger.warning("Оверлей всё ещё присутствует после клика, повторяем попытку")
+                else:
+                    if self.logger:
+                        self.logger.warning(f"Не удалось кликнуть по кнопке закрытия (попытка {attempt})")
+
+                # Задержка перед следующей попыткой
+                if attempt < retry_count:
+                    if self.logger:
+                        self.logger.debug(f"Задержка перед следующей попыткой: {retry_delay}s")
+                    time.sleep(retry_delay)
+
+            # Если все попытки исчерпаны
+            if self.logger:
+                self.logger.error(f"Не удалось закрыть оверлей после {retry_count} попыток")
+            return False
+        else:
+            if self.logger:
+                self.logger.debug("Оверлей не обнаружен на странице")
+            return True
+
+    def _is_overlay_present(self, selector: str, timeout: int = 5) -> bool:
+        """
+        Проверка наличия оверлея на странице
+
+        Метод ищет элемент по заданному селектору и определяет, виден ли он.
+
+        Args:
+            selector: XPath или CSS селектор для поиска оверлея
+            timeout: Время ожидания появления элемента (секунды)
+
+        Returns:
+            bool: True, если оверлей найден и виден, False otherwise
+        """
+        if self.logger:
+            self.logger.trace(f"Попали в метод OzonReportParser._is_overlay_present с селектором: {selector}")
+
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            if self.logger:
+                self.logger.debug(f"Ожидание появления оверлея в течение {timeout} секунд")
+
+            # Ждём появления элемента (но не обязательно видимости)
+            elements = WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_all_elements_located((By.XPATH, selector))
+            )
+
+            if not elements or len(elements) == 0:
+                if self.logger:
+                    self.logger.debug("Оверлей не найден на странице")
+                return False
+
+            # Проверяем, виден ли хотя бы один элемент
+            for element in elements:
+                if element.is_displayed():
+                    if self.logger:
+                        self.logger.info(f"Оверлей найден и виден (количество: {len(elements)})")
+                    return True
+
+            if self.logger:
+                self.logger.debug("Оверлей найден, но не виден (скрыт)")
+            return False
+
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Оверлей не обнаружен: {e}")
+            return False
+
+    def _click_close_button(self, selector: str) -> bool:
+        """
+        Клик по кнопке закрытия оверлея
+
+        Метод находит кнопку закрытия по селектору и выполняет клик по ней.
+
+        Args:
+            selector: XPath или CSS селектор для поиска кнопки закрытия
+
+        Returns:
+            bool: True, если клик успешно выполнен, False в случае ошибки
+        """
+        if self.logger:
+            self.logger.trace(f"Попали в метод OzonReportParser._click_close_button с селектором: {selector}")
+
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            if self.logger:
+                self.logger.debug(f"Поиск кнопки закрытия по селектору: {selector}")
+
+            # Ждём кликабельности элемента
+            close_button = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, selector))
+            )
+
+            if self.logger:
+                self.logger.debug("Кнопка закрытия найдена и кликабельна, выполняем клик")
+
+            # Выполняем клик
+            close_button.click()
+
+            if self.logger:
+                self.logger.info("Клик по кнопке закрытия успешно выполнен")
+
+            # Небольшая задержка после клика
+            time.sleep(0.5)
+
+            return True
+
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Не удалось кликнуть по кнопке закрытия: {e}")
+            return False
