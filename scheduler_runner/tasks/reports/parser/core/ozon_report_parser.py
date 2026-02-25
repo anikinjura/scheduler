@@ -150,6 +150,13 @@ class OzonReportParser(BaseReportParser):
                 self.logger.debug(f"Селектор опции: {option_selector}")
                 self.logger.debug(f"Целевой ПВЗ для установки: {target_pvz}")
 
+            # === ПРОВЕРКА И ЗАКРЫТИЕ ОВЕРЛЕЯ ПЕРЕД ОТКРЫТИЕМ DROPDOWN ===
+            if self.logger:
+                self.logger.debug("Проверка оверлея перед открытием dropdown")
+            if not self._check_and_close_overlay():
+                if self.logger:
+                    self.logger.warning("Не удалось закрыть оверлей перед открытием dropdown")
+
             # Используем метод из базового класса для установки значения в выпадающем списке
             success = self.set_element_value(
                 selector=dropdown_selector,
@@ -163,6 +170,13 @@ class OzonReportParser(BaseReportParser):
                     self.logger.info(f"ПВЗ успешно установлен: {target_pvz}")
                 # Ждем немного, чтобы изменения вступили в силу
                 time.sleep(2)
+                
+                # === ПРОВЕРКА И ЗАКРЫТИЕ ОВЕРЛЕЯ ПОСЛЕ ВЫБОРА ПВЗ ===
+                if self.logger:
+                    self.logger.debug("Проверка оверлея после выбора ПВЗ")
+                if not self._check_and_close_overlay():
+                    if self.logger:
+                        self.logger.warning("Не удалось закрыть оверлей после выбора ПВЗ")
             else:
                 if self.logger:
                     self.logger.error(f"Не удалось установить ПВЗ: {target_pvz}")
