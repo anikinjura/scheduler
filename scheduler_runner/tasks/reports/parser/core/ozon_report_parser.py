@@ -205,7 +205,26 @@ class OzonReportParser(BaseReportParser):
         if not self._check_and_close_overlay():
             if self.logger:
                 self.logger.warning("Не удалось закрыть оверлей, продолжаем работу")
-        
+
+        # === ДИАГНОСТИКА СТРАНИЦЫ ПЕРЕД ПРОВЕРКОЙ ПВЗ ===
+        if self.logger:
+            try:
+                self.logger.debug("=== ДИАГНОСТИКА СТРАНИЦЫ ===")
+                self.logger.debug(f"Текущий URL: {self.driver.current_url}")
+                self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+                
+                # Проверка на страницу логина
+                if 'login' in self.driver.current_url.lower():
+                    self.logger.error("❌ СТРАНИЦА ЛОГИНА ОБНАРУЖЕНА при проверке ПВЗ!")
+                    self.logger.error("Сессия невалидна — возможна причина: выход пользователя или истек таймаут")
+                
+                # Краткая информация о DOM
+                page_source_len = len(self.driver.page_source)
+                self.logger.debug(f"Размер HTML страницы: {page_source_len} байт")
+                
+            except Exception as diag_err:
+                self.logger.error(f"Ошибка диагностики страницы: {diag_err}")
+
         try:
             # Получаем требуемый ПВЗ из конфигурации
             required_pvz = self.config.get("additional_params", {}).get("location_id", "")
@@ -231,6 +250,11 @@ class OzonReportParser(BaseReportParser):
             else:
                 if self.logger:
                     self.logger.info(f"Текущий ПВЗ '{current_pvz}' отличается от требуемого '{required_pvz}'. Устанавливаем нужный...")
+                
+                # Проверка: если current_pvz = 'Unknown', это может означать проблему с сессией
+                if current_pvz == 'Unknown':
+                    self.logger.warning("⚠️ ПВЗ не определен (Unknown) — возможна проблема с сессией или структурой страницы")
+                    self.logger.warning("Проверьте, что браузер находится на правильной странице, а не на странице логина")
 
                 # Устанавливаем нужный ПВЗ
                 success = self.set_pvz(required_pvz)
@@ -507,6 +531,22 @@ class OzonReportParser(BaseReportParser):
                 if self.logger:
                     self.logger.debug("Оверлей не найден на странице")
                 return False
+
+            # === ДЕТАЛЬНАЯ ДИАГНОСТИКА НАЙДЕННЫХ ЭЛЕМЕНТОВ ===
+            if self.logger:
+                self.logger.debug(f"=== ДИАГНОСТИКА ОВЕРЛЕЯ ===")
+                self.logger.debug(f"Найдено элементов по селектору '{selector}': {len(elements)}")
+                for i, elem in enumerate(elements):
+                    try:
+                        elem_id = elem.get_attribute('id')
+                        elem_class = elem.get_attribute('class')
+                        elem_style = elem.get_attribute('style')
+                        is_displayed = elem.is_displayed()
+                        self.logger.debug(f"  Элемент #{i+1}: id='{elem_id}', class='{elem_class[:50] if elem_class else None}...', displayed={is_displayed}")
+                        if elem_style:
+                            self.logger.debug(f"    style='{elem_style[:100]}...'")
+                    except Exception as elem_err:
+                        self.logger.debug(f"  Элемент #{i+1}: ошибка диагностики - {elem_err}")
 
             # Проверяем, виден ли хотя бы один элемент
             for element in elements:

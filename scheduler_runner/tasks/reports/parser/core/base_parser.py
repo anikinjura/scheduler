@@ -756,11 +756,56 @@ class BaseParser(ABC):
 
                 if self.logger:
                     self.logger.debug(f"Поиск опций по селектору: {option_selector}")
+                
+                # === ДЕТАЛЬНАЯ ДИАГНОСТИКА DROPDOWN ===
+                if self.logger:
+                    self.logger.debug("=== ДИАГНОСТИКА DROPDOWN ===")
+                    # Проверка: открыт ли dropdown
+                    try:
+                        # Проверка состояния dropdown элемента
+                        dropdown_elem = self.driver.find_element(By.XPATH, dropdown_selector)
+                        dropdown_aria = dropdown_elem.get_attribute('aria-expanded')
+                        dropdown_class = dropdown_elem.get_attribute('class')
+                        self.logger.debug(f"Dropdown элемент: aria-expanded='{dropdown_aria}', class='{dropdown_class[:80] if dropdown_class else None}...'")
+                    except Exception as check_err:
+                        self.logger.debug(f"Не удалось проверить dropdown: {check_err}")
+                
                 # Пытаемся найти все доступные опции в выпадающем списке
                 all_option_elements = self.driver.find_elements(By.XPATH, option_selector)
 
                 if self.logger:
                     self.logger.debug(f"Найдено опций: {len(all_option_elements)}")
+                    
+                    # === ДИАГНОСТИКА ВСЕХ НАЙДЕННЫХ ОПЦИЙ ===
+                    self.logger.debug("=== СПИСОК ВСЕХ ДОСТУПНЫХ ОПЦИЙ ===")
+                    for i, opt in enumerate(all_option_elements[:20]):  # Ограничим 20 для читаемости
+                        try:
+                            opt_text = opt.text.strip() if opt.text else '(нет текста)'
+                            opt_id = opt.get_attribute('id')
+                            opt_class = opt.get_attribute('class')
+                            opt_aria = opt.get_attribute('aria-selected')
+                            self.logger.debug(f"  Опция #{i+1}: текст='{opt_text[:60]}...', id='{opt_id}', aria-selected='{opt_aria}'")
+                            if opt_class:
+                                self.logger.debug(f"    class='{opt_class[:80]}...'")
+                        except Exception as opt_err:
+                            self.logger.debug(f"  Опция #{i+1}: ошибка диагностики - {opt_err}")
+                    
+                    if len(all_option_elements) == 0:
+                        # Попытка найти опции альтернативными селекторами
+                        self.logger.debug("Попытка найти опции альтернативными селекторами...")
+                        alt_selectors = [
+                            "//div[contains(@class, 'ozi__dropdown-item')]",
+                            "//div[contains(@class, 'dropdown-item')]",
+                            "//div[contains(@class, 'option')]",
+                            "//li[contains(@class, 'option')]",
+                        ]
+                        for alt_sel in alt_selectors:
+                            try:
+                                alt_opts = self.driver.find_elements(By.XPATH, alt_sel)
+                                if alt_opts:
+                                    self.logger.debug(f"  Альтернативный селектор '{alt_sel}' нашел {len(alt_opts)} опций")
+                            except Exception as alt_err:
+                                pass
 
                 # Ищем конкретно нужный пункт среди доступных опций
                 target_option = None
@@ -819,7 +864,19 @@ class BaseParser(ABC):
                     return True
                 else:
                     if self.logger:
-                        self.logger.warning(f"Не найдена опция для значения {option_value}")
+                        self.logger.warning(f"❌ НЕ НАЙДЕНА опция для значения '{option_value}'")
+                        self.logger.warning(f"Всего найдено опций: {len(all_option_elements)}")
+                        
+                        # Сохранение скриншота при проблеме с dropdown
+                        try:
+                            from datetime import datetime
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            screenshot_path = f"./logs/reports_domain/Parser/error_dropdown_{timestamp}.png"
+                            self.driver.save_screenshot(screenshot_path)
+                            self.logger.error(f"📸 Скриншот dropdown сохранен: {screenshot_path}")
+                        except Exception as screenshot_err:
+                            self.logger.error(f"Не удалось сохранить скриншот dropdown: {screenshot_err}")
+                        
                         # Выведем все доступные опции для диагностики
                         available_options = []
                         for opt in all_option_elements:

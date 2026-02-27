@@ -31,6 +31,7 @@
 __version__ = '0.0.1'
 
 import argparse
+import time
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from .base_parser import BaseParser
@@ -1799,15 +1800,73 @@ class BaseReportParser(BaseParser, ABC):
             return False
 
         try:
+            # === ДИАГНОСТИКА ПЕРЕД НАВИГАЦИЕЙ ===
             if self.logger:
                 self.logger.debug(f"Переходим на URL: {target_url}")
-            # Переходим на целевую страницу, используя готовый URL
+                self.logger.debug("=== ДИАГНОСТИКА ПЕРЕД НАВИГАЦИЕЙ ===")
+                self.logger.debug(f"Сессия драйвера: {self.driver.session_id[:10] if self.driver and self.driver.session_id else 'None'}...")
+                self.logger.debug(f"Текущий URL перед переходом: {self.driver.current_url if self.driver else 'N/A'}")
+                self.logger.debug(f"Заголовок страницы перед переходом: {self.driver.title if self.driver else 'N/A'}")
+                
+                # Проверка: не находимся ли уже на странице логина
+                if self.driver and 'login' in self.driver.current_url.lower():
+                    self.logger.warning("⚠️ ВНИМАНИЕ: браузер уже находится на странице ЛОГИНА!")
+                    self.logger.warning("Возможная причина: сессия истекла или выполнен выход из системы")
+            
+            # Переходим на целевую страницу
             self.driver.get(target_url)
+            
+            # Небольшая пауза для загрузки страницы
+            time.sleep(2)
+
+            # === ДИАГНОСТИКА ПОСЛЕ НАВИГАЦИИ ===
+            if self.logger:
+                actual_url = self.driver.current_url
+                actual_title = self.driver.title
+                self.logger.debug("=== ДИАГНОСТИКА ПОСЛЕ НАВИГАЦИИ ===")
+                self.logger.debug(f"Фактический URL после перехода: {actual_url}")
+                self.logger.debug(f"Заголовок страницы: {actual_title}")
+                
+                # Критическая проверка: произошло ли перенаправление на login
+                if 'login' in actual_url.lower():
+                    self.logger.error("❌ ПРОИЗОШЛО ПЕРЕНАПРАВЛЕНИЕ НА СТРАНИЦУ ЛОГИНА!")
+                    self.logger.error(f"URL логина: {actual_url}")
+                    
+                    # Парсинг redirectUri если есть
+                    if 'redirectUri' in actual_url:
+                        try:
+                            import urllib.parse
+                            parsed = urllib.parse.urlparse(actual_url)
+                            params = urllib.parse.parse_qs(parsed.query)
+                            if 'redirectUri' in params:
+                                self.logger.error(f"Перенаправление с целевой страницы: {params['redirectUri'][0]}")
+                        except Exception as parse_err:
+                            self.logger.error(f"Не удалось распарсить redirectUri: {parse_err}")
+                    
+                    # Сохранение скриншота для отладки
+                    try:
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        screenshot_path = f"./logs/reports_domain/Parser/error_login_{timestamp}.png"
+                        self.driver.save_screenshot(screenshot_path)
+                        self.logger.error(f"📸 Скриншот страницы логина сохранен: {screenshot_path}")
+                    except Exception as screenshot_err:
+                        self.logger.error(f"Не удалось сохранить скриншот: {screenshot_err}")
+                    
+                    # Сохранение HTML страницы для анализа
+                    try:
+                        html_path = f"./logs/reports_domain/Parser/error_login_{timestamp}.html"
+                        with open(html_path, 'w', encoding='utf-8') as f:
+                            f.write(self.driver.page_source)
+                        self.logger.error(f"📄 HTML страницы сохранен: {html_path}")
+                    except Exception as html_err:
+                        self.logger.error(f"Не удалось сохранить HTML: {html_err}")
+                    
+                    return False
+                
+                self.logger.debug("Навигация выполнена успешно, URL сохранен в конфиг")
 
             # Сохраняем правильный URL в конфиг для дальнейшего использования
-            self.config['target_url'] = target_url
-            if self.logger:
-                self.logger.debug("Навигация выполнена успешно, URL сохранен в конфиг")
+            self.config['target_url'] = self.driver.current_url
 
             return True
         except Exception as e:
@@ -1817,7 +1876,7 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.error(f"Ошибка при навигации: {e}")
                 import traceback
                 self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-                
+
                 # Дополнительно проверим, доступен ли драйвер и сессия
                 if hasattr(self, 'driver') and self.driver:
                     try:
@@ -1825,12 +1884,21 @@ class BaseReportParser(BaseParser, ABC):
                             self.logger.debug(f"Сессия драйвера активна: {self.driver.session_id[:10]}...")
                         else:
                             self.logger.error("Сессия драйвера неактивна")
-                            
+
                         self.logger.debug(f"Текущий URL: {self.driver.current_url}")
                         self.logger.debug(f"Заголовок страницы: {self.driver.title}")
+
+                        # Сохранение скриншота при ошибке
+                        try:
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            screenshot_path = f"./logs/reports_domain/Parser/error_navigation_{timestamp}.png"
+                            self.driver.save_screenshot(screenshot_path)
+                            self.logger.error(f"📸 Скриншот ошибки сохранен: {screenshot_path}")
+                        except Exception as screenshot_err:
+                            self.logger.error(f"Не удалось сохранить скриншот: {screenshot_err}")
                     except Exception as driver_check_error:
                         self.logger.error(f"Ошибка при проверке состояния драйвера: {driver_check_error}")
                 else:
                     self.logger.error("Драйвер не инициализирован или недоступен")
-                    
+
             return False
