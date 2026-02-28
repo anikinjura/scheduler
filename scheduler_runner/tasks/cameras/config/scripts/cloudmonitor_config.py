@@ -30,6 +30,7 @@ SCHEDULE = [
         "module": MODULE_PATH,
         "args": [],
         "schedule": "hourly",
+        "time_window": "09:00-21:00",
         "user": SCRIPT_CONFIG["USER"]
     }
 ]

@@ -44,6 +44,7 @@ SCHEDULE = [
         "module": MODULE_PATH,
         "args": ["--check_type", "local"],
         "schedule": "hourly",
+        "time_window": "09:00-21:00",
         "user": SCRIPT_CONFIG["local"]["USER"]
     },
     {
