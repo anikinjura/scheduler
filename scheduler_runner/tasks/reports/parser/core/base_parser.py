@@ -210,60 +210,96 @@ class BaseParser(ABC):
             if self.logger:
                 self.logger.debug(f"Установлен размер окна браузера: {width}x{height}")
 
-        # Создаем экземпляр драйвера Edge
-        try:
-            if self.logger:
-                self.logger.debug("Попытка создания экземпляра драйвера Edge...")
-            self.driver = webdriver.Edge(options=options)
-            if self.logger:
-                self.logger.debug("Экземпляр драйвера Edge успешно создан")
-
-            # Устанавливаем таймауты
-            timeout = config.get('timeout', self.config.get('DEFAULT_TIMEOUT', 60))
-            self.driver.implicitly_wait(timeout)
-            if self.logger:
-                self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
-
-            return True
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Ошибка при настройке браузера Edge: {e}")
-                self.logger.error(f"Тип ошибки: {type(e).__name__}")
-                self.logger.error(f"Параметры запуска браузера: --user-data-dir={user_data_dir}, headless={config.get('headless', self.config.get('HEADLESS', False))}")
-                
-                # Проверяем, есть ли доступ к директории пользовательских данных
-                try:
-                    if os.path.exists(user_data_dir):
-                        # Проверяем права доступа к директории
-                        if os.access(user_data_dir, os.R_OK):
-                            self.logger.debug(f"Директория {user_data_dir} доступна для чтения")
-                        else:
-                            self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
-                        
-                        # Проверяем, заблокирована ли директория другим процессом
-                        lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
-                        if os.path.exists(lock_file_path):
-                            self.logger.error(f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен.")
-                            
-                        # Также проверим файлы Local State и другие возможные индикаторы активности
-                        local_state_path = os.path.join(user_data_dir, "Local State")
-                        if os.path.exists(local_state_path):
-                            try:
-                                import json
-                                with open(local_state_path, 'r', encoding='utf-8') as f:
-                                    local_state = json.load(f)
-                                    # Проверим, есть ли информация о запущенных профилях
-                                    if 'profile' in local_state and 'info_cache' in local_state['profile']:
-                                        active_profiles = local_state['profile']['info_cache']
-                                        self.logger.debug(f"Найдено профилей в Local State: {len(active_profiles)}")
-                            except Exception as json_error:
-                                self.logger.debug(f"Не удалось прочитать Local State: {json_error}")
+        # Создаем экземпляр драйвера Edge с повторными попытками
+        max_retries = 3
+        retry_delay = 3  # секунды между попытками
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                if self.logger:
+                    if attempt == 1:
+                        self.logger.debug("Попытка создания экземпляра драйвера Edge...")
                     else:
-                        self.logger.error(f"Директория пользовательских данных {user_data_dir} не существует")
-                except Exception as dir_check_error:
-                    self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
+                        self.logger.debug(f"Повторная попытка #{attempt} создания экземпляра драйвера Edge...")
+                
+                self.driver = webdriver.Edge(options=options)
+                
+                if self.logger:
+                    self.logger.debug("Экземпляр драйвера Edge успешно создан")
+                    if self.driver.session_id:
+                        self.logger.debug(f"ID сессии драйвера: {self.driver.session_id[:10]}...")
+
+                # Устанавливаем таймауты
+                timeout = config.get('timeout', self.config.get('DEFAULT_TIMEOUT', 60))
+                self.driver.implicitly_wait(timeout)
+                if self.logger:
+                    self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
+
+                return True
+                
+            except Exception as e:
+                error_message = f"Ошибка при настройке браузера Edge (попытка {attempt}/{max_retries}): {e}"
+                if self.logger:
+                    self.logger.error(error_message)
+                    self.logger.error(f"Тип ошибки: {type(e).__name__}")
+                
+                # Если это последняя попытка, логируем детали и возвращаем False
+                if attempt == max_retries:
+                    if self.logger:
+                        self.logger.error(f"Параметры запуска браузера: --user-data-dir={user_data_dir}, headless={config.get('headless', self.config.get('HEADLESS', False))}")
+                        
+                        # Проверяем, есть ли доступ к директории пользовательских данных
+                        try:
+                            if os.path.exists(user_data_dir):
+                                # Проверяем права доступа к директории
+                                if os.access(user_data_dir, os.R_OK):
+                                    self.logger.debug(f"Директория {user_data_dir} доступна для чтения")
+                                else:
+                                    self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
+
+                                # Проверяем, заблокирована ли директория другим процессом
+                                lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
+                                if os.path.exists(lock_file_path):
+                                    self.logger.error(f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен.")
+                                    # Пробуем удалить Lock-файл перед последней попыткой
+                                    try:
+                                        os.remove(lock_file_path)
+                                        self.logger.info(f"Lock-файл удален: {lock_file_path}")
+                                    except Exception as lock_error:
+                                        self.logger.warning(f"Не удалось удалить Lock-файл: {lock_error}")
+
+                                # Также проверим файлы Local State и другие возможные индикаторы активности
+                                local_state_path = os.path.join(user_data_dir, "Local State")
+                                if os.path.exists(local_state_path):
+                                    try:
+                                        import json
+                                        with open(local_state_path, 'r', encoding='utf-8') as f:
+                                            local_state = json.load(f)
+                                            # Проверим, есть ли информация о запущенных профилях
+                                            if 'profile' in local_state and 'info_cache' in local_state['profile']:
+                                                active_profiles = local_state['profile']['info_cache']
+                                                self.logger.debug(f"Найдено профилей в Local State: {len(active_profiles)}")
+                                    except Exception as json_error:
+                                        self.logger.debug(f"Не удалось прочитать Local State: {json_error}")
+                            else:
+                                self.logger.error(f"Директория пользовательских данных {user_data_dir} не существует")
+                        except Exception as dir_check_error:
+                            self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
                     
-            return False
+                    return False
+                
+                # Если не последняя попытка, ждем и пробуем снова
+                if self.logger:
+                    self.logger.info(f"Ожидание {retry_delay} секунд перед повторной попыткой...")
+                
+                # Дополнительная очистка Lock-файлов перед повторной попыткой
+                try:
+                    self._cleanup_lock_files(user_data_dir)
+                except Exception as cleanup_error:
+                    if self.logger:
+                        self.logger.debug(f"Очистка Lock-файлов не удалась: {cleanup_error}")
+                
+                time.sleep(retry_delay)
 
     def close_browser(self):
         """Закрытие браузера и освобождение ресурсов"""
@@ -556,22 +592,74 @@ class BaseParser(ABC):
 
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ===
 
+    def _cleanup_lock_files(self, user_data_dir: str) -> None:
+        """
+        Удаляет Lock-файлы браузера после завершения процессов.
+        
+        Lock-файлы создаются браузером при запуске и должны удаляться при корректном закрытии.
+        Если процесс завершен принудительно, Lock-файлы могут остаться и блокировать новый запуск.
+        
+        Args:
+            user_data_dir: Путь к директории пользовательских данных браузера
+        
+        Note:
+            Удаление Lock-файлов безопасно и не влияет на сохраненные данные сессии (cookies, логины).
+            Lock-файл — это временный индикатор активности процесса.
+        """
+        if self.logger:
+            self.logger.trace("Попали в метод BaseParser._cleanup_lock_files")
+        
+        try:
+            # Основные Lock-файлы, которые могут блокировать запуск
+            lock_files = [
+                os.path.join(user_data_dir, "Default", "Lock"),
+                os.path.join(user_data_dir, "Default", "LOCK"),
+                os.path.join(user_data_dir, "Default", "SingletonLock"),
+                os.path.join(user_data_dir, "SingletonLock"),
+            ]
+            
+            removed_count = 0
+            for lock_file in lock_files:
+                if os.path.exists(lock_file):
+                    try:
+                        os.remove(lock_file)
+                        if self.logger:
+                            self.logger.debug(f"Удален Lock-файл: {lock_file}")
+                        removed_count += 1
+                    except PermissionError:
+                        # Файл заблокирован другим процессом - это нормально, значит браузер еще работает
+                        if self.logger:
+                            self.logger.debug(f"Не удалось удалить Lock-файл (заблокирован): {lock_file}")
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"Ошибка при удалении Lock-файла {lock_file}: {e}")
+            
+            if self.logger:
+                if removed_count > 0:
+                    self.logger.debug(f"Очищено Lock-файлов: {removed_count}")
+                else:
+                    self.logger.debug("Lock-файлы не обнаружены")
+                    
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Ошибка при очистке Lock-файлов: {e}")
+
     def _terminate_browser_processes(self):
-        """Завершает все процессы Microsoft Edge"""
+        """Завершает все процессы Microsoft Edge и очищает Lock-файлы"""
         if self.logger:
             self.logger.trace("Попали в метод BaseParser._terminate_browser_processes")
         try:
             browser_executable = self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')
             if self.logger:
                 self.logger.debug(f"Попытка завершения процессов браузера: {browser_executable}")
-            
+
             # Проверим, запущены ли процессы браузера
             import psutil
             edge_processes = []
             for proc in psutil.process_iter(['pid', 'name']):
                 if browser_executable.lower() in proc.info['name'].lower():
                     edge_processes.append(proc.info)
-            
+
             if edge_processes:
                 if self.logger:
                     self.logger.debug(f"Найдено запущенных процессов {browser_executable}: {len(edge_processes)}")
@@ -581,12 +669,12 @@ class BaseParser(ABC):
             else:
                 if self.logger:
                     self.logger.debug(f"Не найдено запущенных процессов {browser_executable}")
-            
+
             result = subprocess.run(["taskkill", "/f", "/im", browser_executable],
                           stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE,
                           text=True)
-            
+
             if result.returncode != 0:
                 if self.logger:
                     self.logger.debug(f"Команда taskkill завершилась с кодом {result.returncode}")
@@ -595,12 +683,19 @@ class BaseParser(ABC):
             else:
                 if self.logger:
                     self.logger.debug(f"Процессы {browser_executable} успешно завершены")
-            
+
             # Ждем, чтобы процессы точно завершились
             sleep_time = self.config.get('PROCESS_TERMINATION_SLEEP', 2)
             if self.logger:
                 self.logger.debug(f"Ожидание завершения процессов: {sleep_time} секунд")
             time.sleep(sleep_time)
+            
+            # Очищаем Lock-файлы после завершения процессов
+            user_data_dir = self.config.get('EDGE_USER_DATA_DIR', '')
+            if not user_data_dir:
+                user_data_dir = self._get_default_browser_user_data_dir()
+            self._cleanup_lock_files(user_data_dir)
+            
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"Ошибка при завершении процессов {self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')}: {e}")
