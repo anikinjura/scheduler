@@ -503,13 +503,14 @@ class OzonReportParser(BaseReportParser):
         Проверка наличия оверлея на странице
 
         Метод ищет элемент по заданному селектору и определяет, виден ли он.
+        Также проверяет наличие активного backdrop (полупрозрачного фона).
 
         Args:
             selector: XPath или CSS селектор для поиска оверлея
             timeout: Время ожидания появления элемента (секунды)
 
         Returns:
-            bool: True, если оверлей найден и виден, False otherwise
+            bool: True, если оверлей найден и виден, или backdrop активен; False otherwise
         """
         if self.logger:
             self.logger.trace(f"Попали в метод OzonReportParser._is_overlay_present с селектором: {selector}")
@@ -530,7 +531,8 @@ class OzonReportParser(BaseReportParser):
             if not elements or len(elements) == 0:
                 if self.logger:
                     self.logger.debug("Оверлей не найден на странице")
-                return False
+                # Проверяем наличие активного backdrop
+                return self._is_backdrop_active()
 
             # === ДЕТАЛЬНАЯ ДИАГНОСТИКА НАЙДЕННЫХ ЭЛЕМЕНТОВ ===
             if self.logger:
@@ -555,13 +557,70 @@ class OzonReportParser(BaseReportParser):
                         self.logger.info(f"Оверлей найден и виден (количество: {len(elements)})")
                     return True
 
+            # Оверлей найден, но скрыт (displayed=False)
+            # Это может означать, что идет анимация закрытия
             if self.logger:
-                self.logger.debug("Оверлей найден, но не виден (скрыт)")
+                self.logger.debug("Оверлей найден, но не виден (скрыт) - возможна анимация закрытия")
+            
+            # Проверяем наличие активного backdrop
+            if self._is_backdrop_active():
+                if self.logger:
+                    self.logger.info("Backdrop активен, ожидаем завершения анимации")
+                return True
+            
             return False
 
         except Exception as e:
             if self.logger:
                 self.logger.debug(f"Оверлей не обнаружен: {e}")
+            # Даже если оверлей не найден, проверяем backdrop
+            return self._is_backdrop_active()
+
+    def _is_backdrop_active(self) -> bool:
+        """
+        Проверка наличия активного backdrop (полупрозрачного фона оверлея)
+        
+        Backdrop может оставаться активным даже после того, как оверлей скрыт,
+        что блокирует клики по элементам страницы.
+        
+        Returns:
+            bool: True, если backdrop активен
+        """
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser._is_backdrop_active")
+        
+        try:
+            from selenium.webdriver.common.by import By
+            
+            # Селекторы для backdrop (полупрозрачного фона)
+            backdrop_selectors = [
+                "//div[contains(@class, 'ozi__backdrop__backdrop__')]",
+                "//div[contains(@class, 'backdrop')]",
+                "//div[contains(@class, 'modal-backdrop')]",
+            ]
+            
+            for selector in backdrop_selectors:
+                try:
+                    backdrop_elements = self.driver.find_elements(By.XPATH, selector)
+                    for elem in backdrop_elements:
+                        if elem.is_displayed():
+                            elem_class = elem.get_attribute('class')
+                            elem_style = elem.get_attribute('style')
+                            if self.logger:
+                                self.logger.debug(f"Backdrop найден: class='{elem_class[:80] if elem_class else None}...'")
+                                if elem_style:
+                                    self.logger.debug(f"  style='{elem_style[:100]}...'")
+                            return True
+                except Exception:
+                    pass
+            
+            if self.logger:
+                self.logger.debug("Backdrop не активен")
+            return False
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Ошибка при проверке backdrop: {e}")
             return False
 
     def _click_close_button(self, selector: str) -> bool:
