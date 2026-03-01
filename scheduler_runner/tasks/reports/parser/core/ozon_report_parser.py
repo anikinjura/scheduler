@@ -579,26 +579,33 @@ class OzonReportParser(BaseReportParser):
     def _is_backdrop_active(self) -> bool:
         """
         Проверка наличия активного backdrop (полупрозрачного фона оверлея)
-        
+
         Backdrop может оставаться активным даже после того, как оверлей скрыт,
         что блокирует клики по элементам страницы.
-        
+
+        Селекторы backdrop извлекаются из конфигурации overlay_config.backdrop_selectors.
+
         Returns:
             bool: True, если backdrop активен
         """
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser._is_backdrop_active")
-        
+
         try:
             from selenium.webdriver.common.by import By
+
+            # Получаем селекторы backdrop из конфигурации
+            overlay_config = self.config.get("overlay_config", {})
+            backdrop_selectors = overlay_config.get("backdrop_selectors", [])
             
-            # Селекторы для backdrop (полупрозрачного фона)
-            backdrop_selectors = [
-                "//div[contains(@class, 'ozi__backdrop__backdrop__')]",
-                "//div[contains(@class, 'backdrop')]",
-                "//div[contains(@class, 'modal-backdrop')]",
-            ]
-            
+            if not backdrop_selectors:
+                if self.logger:
+                    self.logger.warning("Не указаны селекторы backdrop в конфигурации overlay_config.backdrop_selectors")
+                return False
+
+            if self.logger:
+                self.logger.debug(f"Проверка backdrop: {len(backdrop_selectors)} селекторов из конфигурации")
+
             for selector in backdrop_selectors:
                 try:
                     backdrop_elements = self.driver.find_elements(By.XPATH, selector)
@@ -607,17 +614,17 @@ class OzonReportParser(BaseReportParser):
                             elem_class = elem.get_attribute('class')
                             elem_style = elem.get_attribute('style')
                             if self.logger:
-                                self.logger.debug(f"Backdrop найден: class='{elem_class[:80] if elem_class else None}...'")
+                                self.logger.debug(f"Backdrop найден: selector='{selector[:60]}...', class='{elem_class[:80] if elem_class else None}...'")
                                 if elem_style:
                                     self.logger.debug(f"  style='{elem_style[:100]}...'")
                             return True
                 except Exception:
                     pass
-            
+
             if self.logger:
                 self.logger.debug("Backdrop не активен")
             return False
-            
+
         except Exception as e:
             if self.logger:
                 self.logger.debug(f"Ошибка при проверке backdrop: {e}")

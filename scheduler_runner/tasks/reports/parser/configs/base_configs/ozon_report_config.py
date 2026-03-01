@@ -124,6 +124,12 @@ OZON_BASE_CONFIG = {
         "close_button_selector": "//button[contains(@class, 'ozi__window__closeIcon__-pkPv')]",  # Селектор кнопки закрытия (крестик)
         "wait_timeout": 5,  # Таймаут ожидания появления оверлея (секунды)
         "retry_count": 3,  # Количество попыток закрытия
-        "retry_delay": 1   # Задержка между попытками (секунды)
+        "retry_delay": 1,   # Задержка между попытками (секунды)
+        "backdrop_selectors": [  # Селекторы для проверки активного backdrop (полупрозрачного фона)
+            "//div[contains(@class, 'ozi__backdrop__backdrop__')]",
+            "//div[contains(@class, 'ozi__backdrop')]",
+            "//div[contains(@class, 'backdrop')]",
+            "//div[contains(@class, 'modal-backdrop')]"
+        ]
     }
 }
