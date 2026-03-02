@@ -593,11 +593,13 @@ class OzonReportParser(BaseReportParser):
 
         try:
             from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
 
             # Получаем селекторы backdrop из конфигурации
             overlay_config = self.config.get("overlay_config", {})
             backdrop_selectors = overlay_config.get("backdrop_selectors", [])
-            
+
             if not backdrop_selectors:
                 if self.logger:
                     self.logger.warning("Не указаны селекторы backdrop в конфигурации overlay_config.backdrop_selectors")
@@ -606,9 +608,18 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Проверка backdrop: {len(backdrop_selectors)} селекторов из конфигурации")
 
+            # Используем короткий таймаут для проверки backdrop (1 сек вместо implicit_wait)
+            # Это критично для производительности в headless режиме
+            backdrop_timeout = 1  # секунды на каждый селектор
+
             for selector in backdrop_selectors:
                 try:
-                    backdrop_elements = self.driver.find_elements(By.XPATH, selector)
+                    # Быстрая проверка наличия элементов с коротким таймаутом
+                    backdrop_elements = WebDriverWait(self.driver, backdrop_timeout).until(
+                        EC.presence_of_all_elements_located((By.XPATH, selector)),
+                        message=f"Backdrop check timeout for selector: {selector[:50]}..."
+                    )
+                    
                     for elem in backdrop_elements:
                         if elem.is_displayed():
                             elem_class = elem.get_attribute('class')
@@ -619,6 +630,7 @@ class OzonReportParser(BaseReportParser):
                                     self.logger.debug(f"  style='{elem_style[:100]}...'")
                             return True
                 except Exception:
+                    # Элементы не найдены или таймаут - переходим к следующему селектору
                     pass
 
             if self.logger:
