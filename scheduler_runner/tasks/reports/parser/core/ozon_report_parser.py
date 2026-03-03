@@ -523,10 +523,25 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Ожидание появления оверлея в течение {timeout} секунд")
 
-            # Ждём появления элемента (но не обязательно видимости)
-            elements = WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_all_elements_located((By.XPATH, selector))
-            )
+            # === ОПТИМИЗАЦИЯ ПРОИЗВОДИТЕЛЬНОСТИ ===
+            # Сохраняем текущий implicit_wait для последующего восстановления
+            old_implicit_wait = self.driver.timeouts.implicit_wait
+            
+            try:
+                # Устанавливаем короткий implicit_wait для быстрой проверки
+                # Это критично для производительности: без этого WebDriverWait ждёт до implicit_wait
+                # timeout по умолчанию = 5 сек, но implicit_wait(20) заставляет ждать дольше
+                self.driver.implicitly_wait(min(timeout, 1))  # 1 секунда для быстрой проверки
+                
+                # Ждём появления элемента (но не обязательно видимости)
+                elements = WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_all_elements_located((By.XPATH, selector))
+                )
+            finally:
+                # Восстанавливаем исходный implicit_wait
+                self.driver.implicitly_wait(old_implicit_wait)
+                if self.logger:
+                    self.logger.debug(f"Восстановлен implicit_wait: {old_implicit_wait} сек")
 
             if not elements or len(elements) == 0:
                 if self.logger:
@@ -561,13 +576,13 @@ class OzonReportParser(BaseReportParser):
             # Это может означать, что идет анимация закрытия
             if self.logger:
                 self.logger.debug("Оверлей найден, но не виден (скрыт) - возможна анимация закрытия")
-            
+
             # Проверяем наличие активного backdrop
             if self._is_backdrop_active():
                 if self.logger:
                     self.logger.info("Backdrop активен, ожидаем завершения анимации")
                 return True
-            
+
             return False
 
         except Exception as e:
@@ -608,30 +623,44 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Проверка backdrop: {len(backdrop_selectors)} селекторов из конфигурации")
 
-            # Используем короткий таймаут для проверки backdrop (1 сек вместо implicit_wait)
-            # Это критично для производительности в headless режиме
-            backdrop_timeout = 1  # секунды на каждый селектор
+            # === ОПТИМИЗАЦИЯ ПРОИЗВОДИТЕЛЬНОСТИ ===
+            # Сохраняем текущий implicit_wait для последующего восстановления
+            old_implicit_wait = self.driver.timeouts.implicit_wait
+            
+            try:
+                # Устанавливаем короткий implicit_wait для быстрой проверки
+                # Это критично для производительности: без этого WebDriverWait ждёт до implicit_wait
+                self.driver.implicitly_wait(0.5)  # 0.5 секунды вместо 20
+                
+                # Используем короткий таймаут для проверки backdrop (1 сек)
+                # 4 селектора × 1 сек = 4 секунды на проверку (вместо 80 сек с implicit_wait(20))
+                backdrop_timeout = 1  # секунды на каждый селектор
 
-            for selector in backdrop_selectors:
-                try:
-                    # Быстрая проверка наличия элементов с коротким таймаутом
-                    backdrop_elements = WebDriverWait(self.driver, backdrop_timeout).until(
-                        EC.presence_of_all_elements_located((By.XPATH, selector)),
-                        message=f"Backdrop check timeout for selector: {selector[:50]}..."
-                    )
-                    
-                    for elem in backdrop_elements:
-                        if elem.is_displayed():
-                            elem_class = elem.get_attribute('class')
-                            elem_style = elem.get_attribute('style')
-                            if self.logger:
-                                self.logger.debug(f"Backdrop найден: selector='{selector[:60]}...', class='{elem_class[:80] if elem_class else None}...'")
-                                if elem_style:
-                                    self.logger.debug(f"  style='{elem_style[:100]}...'")
-                            return True
-                except Exception:
-                    # Элементы не найдены или таймаут - переходим к следующему селектору
-                    pass
+                for selector in backdrop_selectors:
+                    try:
+                        # Быстрая проверка наличия элементов с коротким таймаутом
+                        backdrop_elements = WebDriverWait(self.driver, backdrop_timeout).until(
+                            EC.presence_of_all_elements_located((By.XPATH, selector)),
+                            message=f"Backdrop check timeout for selector: {selector[:50]}..."
+                        )
+
+                        for elem in backdrop_elements:
+                            if elem.is_displayed():
+                                elem_class = elem.get_attribute('class')
+                                elem_style = elem.get_attribute('style')
+                                if self.logger:
+                                    self.logger.debug(f"Backdrop найден: selector='{selector[:60]}...', class='{elem_class[:80] if elem_class else None}...'")
+                                    if elem_style:
+                                        self.logger.debug(f"  style='{elem_style[:100]}...'")
+                                return True
+                    except Exception:
+                        # Элементы не найдены или таймаут - переходим к следующему селектору
+                        pass
+            finally:
+                # Восстанавливаем исходный implicit_wait
+                self.driver.implicitly_wait(old_implicit_wait)
+                if self.logger:
+                    self.logger.debug(f"Восстановлен implicit_wait: {old_implicit_wait} сек")
 
             if self.logger:
                 self.logger.debug("Backdrop не активен")
