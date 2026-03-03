@@ -121,7 +121,7 @@ OZON_BASE_CONFIG = {
     "overlay_config": {
         "enabled": True,  # Флаг включения проверки оверлея
         "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея (модального окна)
-        "close_button_selector": "//button[contains(@class, 'ozi__window__closeIcon__-pkPv')]",  # Селектор кнопки закрытия (крестик)
+        "close_button_selector": "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",  # Селектор кнопки "Отложить"
         "wait_timeout": 5,  # Таймаут ожидания появления оверлея (секунды)
         "retry_count": 3,  # Количество попыток закрытия
         "retry_delay": 1,   # Задержка между попытками (секунды)

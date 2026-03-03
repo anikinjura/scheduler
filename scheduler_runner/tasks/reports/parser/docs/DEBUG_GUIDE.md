@@ -2,13 +2,253 @@
 
 ## 📋 Обзор изменений
 
-В рамках локализации проблемы периодических сбоев парсера добавлена расширенная система логирования и диагностики.
+В этом документе описаны проблемы и решения, выявленные в процессе разработки и отладки парсера отчетов Ozon.
+
+---
+
+## 🔴 Актуальная проблема (март 2026)
+
+### Проблема: Зависание парсера и сбой цикла выполнения (28.02.2026 — 01.03.2026)
+
+**Симптомы:**
+- **28.02**: Парсер не запускается — ошибка `SessionNotCreatedException`
+- **01.03**: Парсер зависает и не завершается за отведенные 360 секунд
+- Последний успешный запуск: **27.02.2026** (данные записаны в Google Sheets, уведомление отправлено)
+
+**Причины:**
+
+1. **Headless режим** (включён 09.02 в коммите `389cd17`)
+   - Вызывал `SessionNotCreatedException: Chrome instance exited` при наличии Lock-файла
+   - Lock-файл остаётся от предыдущих сессий браузера в профиле пользователя
+   - В headless режиме Selenium менее стабилен при работе с существующей сессией
+
+2. **Проверка backdrop без таймаута** (добавлена 01.03 в коммите `cafb38b`)
+   - Метод `_is_backdrop_active()` использовал `find_elements()` без явного таймаута
+   - Полагался на `implicit_wait` (20 секунд по умолчанию)
+   - 4 селектора × 20 сек = **80 секунд на одну проверку backdrop**
+   - 5+ проверок за цикл = **400+ секунд** (таймаут задачи 360 сек)
+
+**Логи проблемы:**
+
+```
+# 28.02 — Ошибка запуска
+21:30:24 ERROR Ошибка при настройке браузера Edge: Message: session not created: 
+Chrome instance exited. Examine ChromeDriver verbose log to determine the cause.
+21:30:24 ERROR Тип ошибки: SessionNotCreatedException
+21:30:24 ERROR Параметры запуска браузера: --user-data-dir=..., headless=True
+21:30:24 ERROR Файл блокировки существует: ...\Default\Lock
+
+# 01.03 — Зависание на проверке backdrop
+21:34:04 DEBUG Проверка оверлея: selector=//div[contains(@class, 'ozi__dialog__dialog__C2BB8')], timeout=5s
+21:34:24 DEBUG Оверлей не обнаружен: Message: timeout
+21:34:24 DEBUG Проверка backdrop: 4 селекторов из конфигурации
+21:35:44 DEBUG Backdrop не активен  ← 120 секунд на проверку!
+21:35:52 DEBUG Проверка оверлея: selector=...  ← следующая проверка начинается
+...  ← лог обрывается, парсер не завершается
+```
+
+**Решение (коммит `04ace48` от 02.03.2026):**
+
+1. **Отключен headless режим** (`headless: False`)
+   - Файл: `configs/base_configs/base_config.py`
+   - Стабильная работа с существующей сессией пользователя
+   - Запуск в Windows Task Scheduler работает в фоне
+
+2. **Добавлен таймаут 1 сек для проверки backdrop**
+   - Файл: `core/ozon_report_parser.py` — метод `_is_backdrop_active()`
+   - Использован `WebDriverWait` вместо `find_elements`
+   - 4 селектора × 1 сек = **4 секунды на проверку**
+   - Экономия: **~380 секунд за цикл парсинга**
+
+**Результат:**
+- Парсер укладывается в таймаут 360 секунд
+- Данные записываются в Google Sheets
+- Уведомления отправляются в Telegram
+
+---
+
+## 🟠 Проблема 2: Оверлей не закрывается (03.03.2026)
+
+**Симптомы:**
+- Парсер запускается, но не может закрыть оверлей
+- Клик по крестику не проходит — элемент перекрыт другим оверлеем
+- Ошибка: `element click intercepted: Element <button class="ozi__window__closeIcon__-pkPv"> is not clickable at point (1166, 80). Other element would receive the click: <div>...</div>`
+
+**Причина:**
+- На странице **два оверлея одновременно**:
+  1. Большой оверлей "Новости Турбо ПВЗ" с кнопкой "Отложить" и крестиком
+  2. Маленький оверлей уведомлений "У вас 9 непрочитанных сообщений" с кнопкой "Перейти"
+- Маленький оверлей перекрывает крестик большого оверлея
+- Клик по крестику перехватывается верхним оверлеем
+
+**Структура оверлеев (HTML):**
+```html
+<!-- Большой оверлей -->
+<div class="ozi__dialog__dialog__C2BB8">
+  <div>Новости Турбо ПВЗ</div>
+  <button class="ozi__button__secondary__5UTJi">Отложить</button>
+  <button class="ozi__window__closeIcon__-pkPv">✕</button>  <!-- ПЕРЕКРЫТ! -->
+</div>
+
+<!-- Маленький оверлей уведомлений (перекрывает крестик) -->
+<div id="ozi-notifications-container">
+  <div>У вас 9 непрочитанных сообщений</div>
+  <button>Перейти</button>
+</div>
+```
+
+**Решение (тестирование 03.03.2026):**
+- Создан тестовый скрипт `overlay_closer.py` для подбора селектора
+- Протестировано 6 вариантов селекторов для кнопки "Отложить"
+- **Рабочий селектор найден**: `//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']`
+- Изменена конфигурация в `configs/base_configs/ozon_report_config.py`
+
+**Логи тестирования:**
+```
+--- Тест: postpone_text ---
+[10:42:33] ❌ Ошибка: Message: timeout (не найден)
+
+--- Тест: postpone_button ---
+[10:42:40] ❌ Ошибка: Message: timeout (не найден)
+
+--- Тест: postpone_button_class ---
+[10:42:48] ❌ Ошибка: Message: timeout (не найден)
+
+--- Тест: postpone_content ---
+[10:42:55] ❌ Ошибка: Message: timeout (не найден)
+
+--- Тест: postpone_parent ---
+[10:43:03] ❌ Ошибка: Message: timeout (не найден)
+
+--- Тест: postpone_exact ---
+[10:43:05] ✓ Элемент найден и кликабелен
+[10:43:05]   visible=True
+[10:43:06] ✓ Клик выполнен
+```
+
+**Результат:**
+- Оверлей закрывается нажатием на кнопку "Отложить"
+- Парсер продолжает работу
+- ПВЗ устанавливается корректно
+
+---
+
+## 🟡 Проблема 1: Перенаправление на страницу логина (февраль 2026)
 
 **Основная проблема:** Периодически парсер перенаправляется на страницу логина вместо целевых страниц отчетов.
 
 **Причина:** Сессия браузера аннулируется (пользователь вышел вручную, истек таймаут сессии).
 
 **Решение:** Добавлено детальное логирование для быстрой диагностики + скриншоты/HTML дампы при ошибках.
+
+**Статус:** ✅ Решено, логирование добавлено в код
+
+---
+
+## 🔍 Диагностика проблемы с backdrop (март 2026)
+
+### Симптом: Парсер зависает и не завершается за 360 секунд
+
+**Логи:**
+
+```
+21:34:04 DEBUG Проверка оверлея: selector=//div[contains(@class, 'ozi__dialog__dialog__C2BB8')], timeout=5s
+21:34:24 DEBUG Оверлей не обнаружен: Message: timeout
+21:34:24 DEBUG Проверка backdrop: 4 селекторов из конфигурации
+21:35:44 DEBUG Backdrop не активен  ← 120 секунд на проверку!
+```
+
+**Причина:**
+
+Метод `_is_backdrop_active()` использовал `find_elements()` без таймаута,
+полагаясь на `implicit_wait` (20 секунд):
+
+- 4 селектора × 20 сек = **80 секунд на одну проверку**
+- 5+ проверок за цикл = **400+ секунд** (таймаут задачи 360 сек)
+
+**Конфигурация backdrop_selectors:**
+
+```python
+"overlay_config": {
+    "backdrop_selectors": [
+        "//div[contains(@class, 'ozi__backdrop__backdrop__')]",
+        "//div[contains(@class, 'ozi__backdrop')]",
+        "//div[contains(@class, 'backdrop')]",
+        "//div[contains(@class, 'modal-backdrop')]"
+    ]
+}
+```
+
+**Решение:**
+
+Использован `WebDriverWait` с явным таймаутом 1 секунда:
+
+```python
+# Было (медленно):
+backdrop_elements = self.driver.find_elements(By.XPATH, selector)
+
+# Стало (быстро):
+backdrop_timeout = 1  # секунды на каждый селектор
+backdrop_elements = WebDriverWait(self.driver, backdrop_timeout).until(
+    EC.presence_of_all_elements_located((By.XPATH, selector))
+)
+```
+
+**Файл для исправления:**
+`core/ozon_report_parser.py` — метод `_is_backdrop_active()`
+
+**Поиск в логах:**
+
+```bash
+# Поиск длительных проверок backdrop
+grep -r "Проверка backdrop:" .\logs\reports_domain\Parser\
+
+# Поиск таймаутов backdrop (если используется WebDriverWait)
+grep -r "Backdrop check timeout" .\logs\reports_domain\Parser\
+```
+
+---
+
+## 🔍 Диагностика SessionNotCreatedException (март 2026)
+
+### Симптом: Парсер не запускается — ошибка сессии
+
+**Логи:**
+
+```
+21:30:24 ERROR Ошибка при настройке браузера Edge: Message: session not created: 
+Chrome instance exited. Examine ChromeDriver verbose log to determine the cause.
+21:30:24 ERROR Тип ошибки: SessionNotCreatedException
+21:30:24 ERROR Параметры запуска браузера: --user-data-dir=C:/Users/Оператор/AppData/Local/Microsoft/Edge/User Data, headless=True
+21:30:24 ERROR Файл блокировки существует: C:/Users/Оператор/AppData/Local/Microsoft/Edge/User Data\Default\Lock
+```
+
+**Причина:**
+
+- Headless режим + Lock-файл профиля Edge = конфликт сессий
+- Lock-файл остаётся от предыдущего незавершённого сеанса браузера
+- В headless режиме браузер не может корректно обработать Lock-файл
+
+**Решение:**
+
+Отключить headless режим в конфигурации:
+
+```python
+# configs/base_configs/base_config.py
+"browser_config": {
+    "headless": False,  # Было: True
+}
+```
+
+**Поиск в логах:**
+
+```bash
+# Поиск ошибок сессии
+grep -r "SessionNotCreatedException" .\logs\reports_domain\Parser\
+
+# Поиск Lock-файлов
+grep -r "Файл блокировки" .\logs\reports_domain\Parser\
+```
 
 ---
 
@@ -337,13 +577,28 @@ python scheduler_runner/tasks/reports/reports_processor.py --detailed_logs
 
 ---
 
-**Версия документа:** 1.1  
-**Дата:** 2026-02-27  
-**Дата обновления:** 2026-02-27 (v1.1)
+**Версия документа:** 1.3
+**Дата:** 2026-02-27
+**Дата обновления:** 2026-03-03 (v1.3)
 
 ---
 
 ## 📝 История изменений
+
+### v1.3 (2026-03-03)
+- Добавлена проблема с оверлеем (кнопка "Отложить" вместо крестика)
+- Описано тестирование 6 селекторов кнопки "Отложить"
+- Добавлена структура HTML оверлеев
+- Документирован скрипт overlay_closer.py для тестирования селекторов
+- Указан рабочий селектор: `//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']`
+
+### v1.2 (2026-03-02)
+- Добавлена диагностика проблемы с зависанием на проверке backdrop
+- Добавлено описание SessionNotCreatedException в headless режиме
+- Обновлены рекомендации по конфигурации (headless: False)
+- Добавлен таймаут 1 сек для проверки backdrop (WebDriverWait)
+- Описаны коммиты: `389cd17` (headless), `cafb38b` (backdrop), `04ace48` (fix)
+- Добавлены примеры логов с реальными таймингами (120 сек на backdrop)
 
 ### v1.1 (2026-02-27)
 - Добавлена детальная диагностика dropdown (список всех опций, альтернативные селекторы)
