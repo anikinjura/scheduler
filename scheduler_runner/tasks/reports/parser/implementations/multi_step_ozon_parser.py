@@ -8,8 +8,10 @@
 """
 __version__ = '0.0.1'
 
+import time
 from datetime import datetime
 from typing import Dict, Any
+from urllib.parse import urlparse
 
 from ..core.ozon_report_parser import OzonReportParser
 
@@ -147,7 +149,6 @@ class MultiStepOzonParser(OzonReportParser):
                         
                         # Извлекаем базовый домен из URL (https://turbo-pvz.ozon.ru)
                         # и формируем URL для страницы заказов (/orders)
-                        from urllib.parse import urlparse
                         parsed_url = urlparse(giveout_base_url)
                         base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
                         starting_url = f"{base_domain}/orders"

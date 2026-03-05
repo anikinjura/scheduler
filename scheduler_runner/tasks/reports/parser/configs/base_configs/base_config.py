@@ -39,22 +39,22 @@ __version__ = '0.0.1'
 BASE_CONFIG = {
     # === ПАРАМЕТРЫ БРАУЗЕРА ===
     "EDGE_USER_DATA_DIR": "",  # Путь к пользовательским данным Edge (если пусто, используется шаблон)
-    "HEADLESS": False,  # Режим headless для браузера
+    "HEADLESS": True,  # Режим headless для браузера (включён 05.03.2026 для тестирования)
     "BROWSER_EXECUTABLE": "msedge.exe",  # Имя исполняемого файла браузера
     "BROWSER_USER_DATA_PATH_TEMPLATE": "C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data",  # Шаблон пути к данным браузера
 
     # === ПАРАМЕТРЫ КОНФИГУРАЦИИ БРАУЗЕРА ===
     "browser_config": {
         "user_data_dir": "",  # Путь к пользовательским данным (если пусто, используется EDGE_USER_DATA_DIR)
-        "headless": False,  # False - браузер Edge запускается в видимом режиме, True - в фоне
+        "headless": True,  # True - браузер Edge запускается в фоне (тестирование 05.03.2026)
         "window_size": [1920, 1080],  # Размер окна браузера [ширина, высота]
-        "timeout": 20,  # Таймаут ожидания элементов (переопределяет DEFAULT_TIMEOUT)
+        "timeout": 5,  # Таймаут ожидания элементов (переопределяет DEFAULT_TIMEOUT)
     },
 
     # === ТАЙМАУТЫ ===
-    "DEFAULT_TIMEOUT": 20,  # Таймаут ожидания элементов (секунды)
-    "ELEMENT_CLICK_TIMEOUT": 10,  # Таймаут ожидания кликабельности элемента (секунды)
-    "ELEMENT_WAIT_TIMEOUT": 10,  # Таймаут ожидания появления элемента (секунды)
+    "DEFAULT_TIMEOUT": 5,  # Таймаут ожидания элементов (секунды)
+    "ELEMENT_CLICK_TIMEOUT": 2,  # Таймаут ожидания кликабельности элемента (секунды)
+    "ELEMENT_WAIT_TIMEOUT": 2,  # Таймаут ожидания появления элемента (секунды)
 
     # === ПАУЗЫ ===
     "PROCESS_TERMINATION_SLEEP": 4,  # Время ожидания после завершения процессов браузера (секунды)
