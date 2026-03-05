@@ -53,7 +53,7 @@ MULTI_STEP_OZON_CONFIG = {
                 "data_extraction": {
                     "type": "simple",
                     "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R')]",
-                    "pattern": r'Всего:\s*(\d+)',                                                       # Паттерн для "Всего: N"
+                    "pattern": r'Найдено:\s*(\d+)',                                                       # Паттерн для "Найдено: N"
                     "element_type": "div",
                     "post_processing": {
                         "convert_to": "int",
