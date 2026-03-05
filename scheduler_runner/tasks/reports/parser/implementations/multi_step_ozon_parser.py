@@ -121,20 +121,52 @@ class MultiStepOzonParser(OzonReportParser):
                     # Проверим, можно ли получить URL текущей страницы
                     current_url = self.driver.current_url
                     self.logger.info(f"Текущий URL сессии: {current_url}")
-                    
+
                     # Проверим, можно ли получить заголовок страницы
                     title = self.driver.title
                     self.logger.info(f"Заголовок страницы: {title}")
-                    
+
                     # Проверим, активна ли сессия
                     if self.driver.session_id:
                         self.logger.info("Сессия браузера активна, ID сессии: {}".format(self.driver.session_id[:10] + "..."))
                     else:
                         self.logger.warning("ID сессии отсутствует")
+                    
+                    # === ПРОВЕРКА ВАЛИДНОСТИ СЕССИИ ===
+                    # Если браузер открылся на внутренней странице Edge (edge://...),
+                    # это означает, что профиль не загрузился корректно.
+                    # Принудительно переходим на целевую страницу для восстановления сессии.
+                    if current_url.startswith('edge://'):
+                        self.logger.warning(f"Обнаружена внутренняя страница Edge: {current_url}")
                         
+                        # Получаем base_url из конфигурации первого шага (giveout)
+                        multi_step_config = self.config.get('multi_step_config', {})
+                        step_configurations = multi_step_config.get('step_configurations', {})
+                        giveout_config = step_configurations.get('giveout', {})
+                        giveout_base_url = giveout_config.get('base_url', 'https://turbo-pvz.ozon.ru/reports/giveout')
+                        
+                        # Извлекаем базовый домен из URL (https://turbo-pvz.ozon.ru)
+                        # и формируем URL для страницы заказов (/orders)
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(giveout_base_url)
+                        base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                        starting_url = f"{base_domain}/orders"
+                        
+                        self.logger.info(f"Принудительная навигация на {starting_url}...")
+                        self.driver.get(starting_url)
+                        time.sleep(3)  # Ожидание загрузки страницы
+                        
+                        # Проверяем новый URL после навигации
+                        new_url = self.driver.current_url
+                        self.logger.info(f"Новый URL сессии: {new_url}")
+                        
+                        # Проверяем заголовок после навигации
+                        new_title = self.driver.title
+                        self.logger.info(f"Заголовок страницы после навигации: {new_title}")
+
                 except Exception as e:
                     self.logger.error(f"Ошибка при проверке активности сессии: {e}")
-            
+
             self.logger.info("Пропускаем авторизацию - используется сохраненная сессия")
         return True
 
