@@ -122,7 +122,7 @@ OZON_BASE_CONFIG = {
         "enabled": True,  # Флаг включения проверки оверлея
         "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея (модального окна)
         "close_button_selector": "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",  # Селектор кнопки "Отложить"
-        "wait_timeout": 5,  # Таймаут ожидания появления оверлея (секунды)
+        "wait_timeout": 2,  # Таймаут ожидания появления оверлея (секунды) (уменьшено с 5 до 2 сек для оптимизации)
         "retry_count": 3,  # Количество попыток закрытия
         "retry_delay": 1,   # Задержка между попытками (секунды)
         "backdrop_selectors": [  # Селекторы для проверки активного backdrop (полупрозрачного фона)
