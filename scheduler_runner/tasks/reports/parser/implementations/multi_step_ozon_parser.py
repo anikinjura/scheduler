@@ -167,6 +167,7 @@ class MultiStepOzonParser(OzonReportParser):
 
                 except Exception as e:
                     self.logger.error(f"Ошибка при проверке активности сессии: {e}")
+                    return False
 
             self.logger.info("Пропускаем авторизацию - используется сохраненная сессия")
         return True

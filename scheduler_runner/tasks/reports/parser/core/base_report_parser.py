@@ -227,6 +227,11 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.debug(f"Количество шагов: {len(multi_step_config.get('steps', []))}")
 
             data = self._execute_multi_step_processing(multi_step_config)
+            run_status = data.get('__RUN_STATUS__', 'success') if isinstance(data, dict) else 'success'
+            if run_status == 'failed':
+                raise Exception("Парсинг завершился неуспешно: все шаги завершились ошибкой")
+            if run_status == 'partial' and self.logger:
+                self.logger.warning("Парсинг завершен частично: часть шагов завершилась ошибкой")
 
             # 4. Сохранение отчета в файл, если требуется
             if save_to_file:
@@ -600,7 +605,10 @@ class BaseReportParser(BaseParser, ABC):
                     import traceback
                     self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
                 # Продолжаем выполнение других шагов, даже если один из них не удался
-                step_result = {"error": str(e)}
+                error_text = str(e)
+                step_result = {"error": error_text}
+                if error_text.startswith("AUTH_REQUIRED:"):
+                    raise Exception("Авторизация недействительна: требуется повторный вход в Ozon")
                 
             # Сохраняем результат шага
             result_key = step_config.get("result_key", step_name)
@@ -616,11 +624,35 @@ class BaseReportParser(BaseParser, ABC):
         if self.logger:
             self.logger.debug(f"Конфигурация агрегации: {aggregation_config}")
         combined_results = self._combine_step_results(all_step_results, aggregation_config)
+        if isinstance(combined_results, dict):
+            combined_results['__RUN_STATUS__'] = self._calculate_run_status(all_step_results)
         if self.logger:
             self.logger.debug(f"Объединенные результаты: {combined_results}")
 
         return combined_results
 
+
+    def _calculate_run_status(self, all_step_results) -> str:
+        """
+        Classify run health by step results.
+
+        Returns:
+            str: success | partial | failed
+        """
+        if not isinstance(all_step_results, dict) or not all_step_results:
+            return 'failed'
+
+        total_steps = len(all_step_results)
+        error_steps = 0
+        for value in all_step_results.values():
+            if isinstance(value, dict) and value.get('error'):
+                error_steps += 1
+
+        if error_steps == 0:
+            return 'success'
+        if error_steps == total_steps:
+            return 'failed'
+        return 'partial'
 
     def _execute_single_step(self, step_config):
         """
@@ -655,6 +687,9 @@ class BaseReportParser(BaseParser, ABC):
             if self.logger:
                 self.logger.debug("Выполняем навигацию к целевой странице")
             if not self.navigate_to_target():
+                nav_reason = self.config.get('_last_navigation_failure_reason')
+                if nav_reason == 'login_redirect':
+                    raise Exception("AUTH_REQUIRED: redirected_to_login")
                 raise Exception("Не удалось выполнить навигацию к целевой странице для шага")
 
             # Сохраняем URL, с которого были извлечены данные для этого шага
@@ -1757,6 +1792,7 @@ class BaseReportParser(BaseParser, ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseReportParser.navigate_to_target")
+        self.config.pop('_last_navigation_failure_reason', None)
 
         # Получаем базовый URL из конфигурации
         base_url = self.config.get("base_url", "")
@@ -1861,12 +1897,14 @@ class BaseReportParser(BaseParser, ABC):
                     except Exception as html_err:
                         self.logger.error(f"Не удалось сохранить HTML: {html_err}")
                     
+                    self.config['_last_navigation_failure_reason'] = 'login_redirect'
                     return False
                 
                 self.logger.debug("Навигация выполнена успешно, URL сохранен в конфиг")
 
             # Сохраняем правильный URL в конфиг для дальнейшего использования
             self.config['target_url'] = self.driver.current_url
+            self.config.pop('_last_navigation_failure_reason', None)
 
             return True
         except Exception as e:
@@ -1901,4 +1939,6 @@ class BaseReportParser(BaseParser, ABC):
                 else:
                     self.logger.error("Драйвер не инициализирован или недоступен")
 
+            if '_last_navigation_failure_reason' not in self.config:
+                self.config['_last_navigation_failure_reason'] = 'navigation_error'
             return False
