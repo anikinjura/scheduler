@@ -43,3 +43,13 @@ step_source_url = self.config.get('target_url', ...)
 - **execution_date** (`str`): Дата выполнения для формирования фильтров
 - **filter_template**, **date_filter_template**, **data_type_filter_template**: Шаблоны для формирования фильтров
 - **target_url** (`str`): Целевой URL, формируется в логике парсера и используется для создания `__STEP_SOURCE_URL__`
+## Update 2026-03-07
+
+### Новое поведение трекинга ошибок
+- Перед началом навигации сбрасывается `_last_navigation_failure_reason`.
+- При редиректе на login устанавливается `_last_navigation_failure_reason = "login_redirect"` и метод возвращает `False`.
+- При успешной навигации причина очищается.
+- При исключении (если причина еще не проставлена) фиксируется `_last_navigation_failure_reason = "navigation_error"`.
+
+### Назначение
+- Дать `_execute_single_step()` точный сигнал о причине провала навигации и корректно эскалировать потерю сессии.

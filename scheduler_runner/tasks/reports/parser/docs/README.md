@@ -503,3 +503,19 @@ python overlay_closer/overlay_closer.py --strategy postpone
 2. Изучите [DEBUG_GUIDE.md](DEBUG_GUIDE.md) на предмет известных проблем
 3. При необходимости запустите `overlay_closer.py` для тестирования селекторов
 4. Обратитесь к разработчику
+---
+
+## Update 2026-03-07: anti-fail flow and status model
+
+В коде парсера добавлена fail-fast логика для корректного завершения при проблемах с авторизацией и навигацией.
+
+Ключевые изменения поведения:
+- `BaseReportParser._execute_multi_step_processing()` теперь рассчитывает и добавляет служебный флаг `__RUN_STATUS__` (`success`/`partial`/`failed`).
+- `BaseReportParser.run_parser()` теперь проверяет `__RUN_STATUS__` и аварийно завершает запуск, если статус `failed`.
+- `BaseReportParser._execute_single_step()` при провале навигации с причиной `login_redirect` поднимает `AUTH_REQUIRED: redirected_to_login`.
+- `BaseReportParser.navigate_to_target()` сохраняет причину провала в `_last_navigation_failure_reason` и очищает ее при успешной навигации.
+- `MultiStepOzonParser.login()` теперь возвращает `False`, если проверка текущей сессии завершилась исключением (раньше такой сценарий мог проходить как успешный).
+
+Важно для анализа логов:
+- Если в логе есть `AUTH_REQUIRED:*`, это считается признаком потери валидной сессии и обработка шагов должна завершаться без попытки «дожать» оставшиеся шаги.
+- При наличии `__RUN_STATUS__ = failed` результат парсинга не должен считаться успешным даже при частично заполненных данных.

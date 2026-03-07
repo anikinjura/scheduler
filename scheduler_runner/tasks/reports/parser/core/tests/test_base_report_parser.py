@@ -776,6 +776,7 @@ class TestBaseReportParser(unittest.TestCase):
         # Проверяем, что были вызваны нужные методы
         self.assertEqual(parser._execute_single_step.call_count, 2)
         parser._combine_step_results.assert_called_once()
+        self.assertEqual(result.get('__RUN_STATUS__'), 'success')
 
     def test_handle_table_extraction(self):
         """Тест обработки табличного извлечения данных"""
@@ -947,6 +948,69 @@ class TestBaseReportParser(unittest.TestCase):
         # Проверяем, что результат содержит объединенные данные
         self.assertIsNotNone(result)
 
+
+    def test_calculate_run_status(self):
+        """Run status is derived from per-step error presence."""
+        parser = TestConcreteReportParser(self.config)
+
+        self.assertEqual(
+            parser._calculate_run_status({"s1": {"value": 1}, "s2": {"value": 2}}),
+            "success"
+        )
+        self.assertEqual(
+            parser._calculate_run_status({"s1": {"error": "x"}, "s2": {"value": 2}}),
+            "partial"
+        )
+        self.assertEqual(
+            parser._calculate_run_status({"s1": {"error": "x"}, "s2": {"error": "y"}}),
+            "failed"
+        )
+
+    def test_execute_single_step_auth_required_when_login_redirect(self):
+        """Login redirect reason must be escalated to AUTH_REQUIRED."""
+        parser = TestConcreteReportParser(self.config)
+        parser.navigate_to_target = Mock(return_value=False)
+        parser.config['_last_navigation_failure_reason'] = 'login_redirect'
+
+        with self.assertRaises(Exception) as exc_info:
+            parser._execute_single_step({"result_key": "test_step"})
+
+        self.assertIn("AUTH_REQUIRED", str(exc_info.exception))
+
+    def test_execute_multi_step_processing_stops_on_auth_required(self):
+        """Multi-step processing should stop immediately on AUTH_REQUIRED."""
+        parser = TestConcreteReportParser(self.config)
+        parser._execute_single_step = Mock(side_effect=Exception("AUTH_REQUIRED: redirected_to_login"))
+
+        multi_step_config = {
+            "steps": ["step1", "step2"],
+            "step_configurations": {
+                "step1": {"result_key": "result1"},
+                "step2": {"result_key": "result2"}
+            },
+            "aggregation_logic": {}
+        }
+
+        with self.assertRaises(Exception) as exc_info:
+            parser._execute_multi_step_processing(multi_step_config)
+
+        self.assertIn("Авторизация недействительна", str(exc_info.exception))
+        self.assertEqual(parser._execute_single_step.call_count, 1)
+
+    def test_run_parser_raises_on_failed_run_status(self):
+        """run_parser should fail when all steps are failed."""
+        parser = TestConcreteReportParser(self.config)
+        parser.setup_browser = Mock(return_value=True)
+        parser.login = Mock(return_value=True)
+        parser.logout = Mock(return_value=True)
+        parser.close_browser = Mock()
+        parser.config['multi_step_config'] = {"steps": ["step1"], "step_configurations": {"step1": {}}}
+        parser._execute_multi_step_processing = Mock(return_value={"__RUN_STATUS__": "failed"})
+
+        with self.assertRaises(Exception) as exc_info:
+            parser.run_parser(save_to_file=False)
+
+        self.assertIn("неуспешно", str(exc_info.exception))
 
 if __name__ == '__main__':
     unittest.main()

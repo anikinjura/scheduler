@@ -68,7 +68,7 @@ class TestBaseParser(unittest.TestCase):
         """Тест инициализации"""
         self.assertEqual(self.parser.config, self.config)
         self.assertIsNone(self.parser.driver)
-        self.assertIsNone(self.parser.logger)
+        self.assertIsNotNone(self.parser.logger)
 
     def test_get_current_user(self):
         """Тест получения текущего пользователя"""
@@ -92,9 +92,12 @@ class TestBaseParser(unittest.TestCase):
         self.assertEqual(result_with_current, expected_with_current)
 
     @patch('scheduler_runner.tasks.reports.parser.core.base_parser.webdriver.Edge')
-    def test_setup_browser(self, mock_webdriver):
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.os.path.exists', return_value=True)
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.BaseParser._get_default_browser_user_data_dir', return_value='C:/tmp/edge-profile')
+    def test_setup_browser(self, mock_get_default_path, mock_exists, mock_webdriver):
         """Тест настройки браузера"""
         mock_driver = Mock()
+        mock_driver.session_id = "test_session_id_12345"
         mock_webdriver.return_value = mock_driver
 
         # Mock-им метод _terminate_browser_processes у экземпляра
@@ -133,8 +136,9 @@ class TestBaseParser(unittest.TestCase):
 
         mock_subprocess_run.assert_called_once_with(
             ["taskkill", "/f", "/im", "msedge.exe"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
         mock_sleep.assert_called_once_with(2)
 
@@ -151,8 +155,9 @@ class TestBaseParser(unittest.TestCase):
 
         mock_subprocess_run.assert_called_once_with(
             ["taskkill", "/f", "/im", "chrome.exe"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
         mock_sleep.assert_called_once_with(2)
 

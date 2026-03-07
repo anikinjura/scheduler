@@ -56,3 +56,6 @@ tests/TestEnvironment/O_cameras/*
 scheduler_runner/utils/tools/collect_files.py
 scheduler_runner/tasks/reports/debug_parser.py
 scheduler_runner/utils/tools/notifications.txt
+
+# AI context directory
+.ai/
