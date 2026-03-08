@@ -356,7 +356,8 @@ def main():
     )
 
     try:
-        search_dir = Path(SCRIPT_CONFIG["SEARCH_DIR"])
+        search_dirs = SCRIPT_CONFIG.get("SEARCH_DIRS") or [SCRIPT_CONFIG["SEARCH_DIR"]]
+        search_dirs = [Path(path) for path in search_dirs]
         start_time = time.fromisoformat(SCRIPT_CONFIG["START_TIME"])
         end_time = time.fromisoformat(SCRIPT_CONFIG["END_TIME"])
 
@@ -393,7 +394,11 @@ def main():
                 logger.warning("Не удалось получить время выхода из спящего режима")
 
         # Получаем время первого кадра с камер
-        earliest_time = find_earliest_file_time(search_dir, start_time, end_time, logger)
+        earliest_time = None
+        for search_dir in search_dirs:
+            found_time = find_earliest_file_time(search_dir, start_time, end_time, logger)
+            if found_time and (earliest_time is None or found_time < earliest_time):
+                earliest_time = found_time
 
         # Определяем итоговое время начала работы
         if combined_analysis_enabled:

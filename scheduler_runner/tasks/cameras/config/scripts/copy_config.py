@@ -1,11 +1,7 @@
-"""
+﻿"""
 copy_config.py
-
-Параметры и расписание для CopyScript задачи cameras.
-
-Author: anikinjura
 """
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 from scheduler_runner.tasks.cameras.config.cameras_paths import CAMERAS_PATHS
 
@@ -13,23 +9,24 @@ MODULE_PATH = "scheduler_runner.tasks.cameras.CopyScript"
 
 SCRIPT_CONFIG = {
     "INPUT_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],
+    "INPUT_DIRS": list(CAMERAS_PATHS.get("LOCAL_ROOTS", {"default": CAMERAS_PATHS["CAMERAS_LOCAL"]}).values()),
     "OUTPUT_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],
     "MAX_AGE_DAYS": 3,
-    "ON_CONFLICT": "skip",          # skip/rename
-    "DETAILED_LOGS": False,         # Флаг по умолчанию (если не задан в аргументах --detailed_logs) для включения детализированного логирования
+    "ON_CONFLICT": "skip",
+    "DETAILED_LOGS": False,
     "USER": "operator",
     "TASK_NAME": "CopyScript",
-    "SHUTDOWN_ENABLED": True,       # Возможность отключить выключение если нужно
-    "SHUTDOWN_IF_NO_FILES": False,  # Выключать ли компьютер при отсутствии файлов для копирования
+    "SHUTDOWN_ENABLED": True,
+    "SHUTDOWN_IF_NO_FILES": False,
 }
 
 SCHEDULE = [{
     "name": SCRIPT_CONFIG["TASK_NAME"],
     "module": MODULE_PATH,
-    "args": ["--shutdown", "1"],  # Уменьшено до 1 минуты для тестирования
+    "args": ["--shutdown", "1"],
     "schedule": "daily",
     "time": "22:30",
     "user": SCRIPT_CONFIG["USER"],
-    "no_timeout_control": False, # no_timeout_control=False - синхронный режим: Процесс запускается, но планировщик ожидает его завершения с указанным таймаутом, и при превышении времени выполнения происходит принудительное завершение с помощью process.kill()
-    "timeout": 21600  # Таймаут 6 часов на копирование и синхранизацию с облачным хранилищем, затем процесс прерывается и выключение компьютера, в рамках процесса, может быть прервано
+    "no_timeout_control": False,
+    "timeout": 21600,
 }]

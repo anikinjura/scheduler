@@ -267,7 +267,8 @@ def main() -> None:
         logger.error("Конфигурация камер недоступна или PVZ_ID не найден.")
         sys.exit(1)
 
-    root_dir = Path(scenario_config["CHECK_DIR"])
+    default_root_dir = Path(scenario_config["CHECK_DIR"])
+    local_roots = scenario_config.get("LOCAL_ROOTS", {"default": default_root_dir})
     missing_records = []
 
     # Основной цикл по всем камерам
@@ -275,6 +276,17 @@ def main() -> None:
         for cam in cam_list:
             uid = cam["uid"]
             cam_id = cam["id"]
+            root_dir = default_root_dir
+            if scenario == "local":
+                camera_root_key = cam.get("root_key", "default")
+                resolved_root = local_roots.get(camera_root_key)
+                if resolved_root is None:
+                    logger.warning(
+                        "root_key '%s' not found for camera %s, fallback to %s",
+                        camera_root_key, cam_id, default_root_dir
+                    )
+                else:
+                    root_dir = Path(resolved_root)
             # Для UNV-камер используем unv_path_builder, для Xiaomi — xiaomi_path_builder
             if cam_id.startswith("unv"):
                 if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, unv_path_builder, logger, "UNV", current_time):

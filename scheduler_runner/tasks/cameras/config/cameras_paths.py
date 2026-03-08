@@ -1,49 +1,71 @@
-"""
+﻿"""
 cameras_paths.py
 
-Определяет все специфичные для задачи cameras пути и переменные, зависящие от среды (production/test) и PVZ_ID.
-
-Используется для централизованного хранения путей к локальным, сетевым и резервным директориям с видеозаписями.
-Поддерживает кириллические имена ПВЗ с использованием транслитерации для сетевых путей.
-
-Пример использования:
-    from .cameras_paths import CAMERAS_PATHS
-    local_path = CAMERAS_PATHS['CAMERAS_LOCAL']
-
-Структура CAMERAS_PATHS:
-    {
-        'CAMERAS_LOCAL': Path,   # Путь к локальной директории с видеоархивом
-        'CAMERAS_NETWORK': Path, # Путь к сетевой директории с видеоархивом (с транслитерацией PVZ_ID)
-    }
-
-Author: anikinjura
+Centralized camera paths for cameras domain.
+Supports per-PVZ overrides for multiple local roots and network destination.
 """
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
-from pathlib import Path
 import os
-from config.base_config import PVZ_ID, ENV_MODE
+from pathlib import Path
+
+from config.base_config import ENV_MODE, PVZ_ID
 from scheduler_runner.utils.system import SystemUtils
 
-# Получаем безопасное имя для использования в сетевых путях (транслитерация кириллицы)
-def get_safe_pvz_path_name(pvz_id):
-    """Преобразует PVZ_ID в безопасное имя для использования в сетевых путях файловой системы."""
+
+def get_safe_pvz_path_name(pvz_id: str) -> str:
+    """Convert PVZ_ID to filesystem-safe transliterated value for network paths."""
     return SystemUtils.cyrillic_to_translit(str(pvz_id))
 
-if ENV_MODE == 'production':
-    CAMERAS_LOCAL = Path('D:/camera')
-    CAMERAS_NETWORK = Path('O:/cameras') / get_safe_pvz_path_name(PVZ_ID)
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_PROD")               # Токен для продакшен-бота
-    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_PROD")           # Чат-ID для продакшен-чата
+
+if ENV_MODE == "production":
+    default_local = Path("D:/camera")
+    default_network = Path("O:/cameras") / get_safe_pvz_path_name(PVZ_ID)
+    telegram_token = os.environ.get("TELEGRAM_TOKEN_PROD")
+    telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID_PROD")
 else:
-    CAMERAS_LOCAL = Path('C:/tools/scheduler/tests/TestEnvironment/D_camera')
-    CAMERAS_NETWORK = Path('C:/tools/scheduler/tests/TestEnvironment/O_cameras') / get_safe_pvz_path_name(PVZ_ID)
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN_TEST")               # Токен для тест-бота
-    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_TEST")           # Чат-ID для тест-чата
+    default_local = Path("C:/tools/scheduler/tests/TestEnvironment/D_camera")
+    default_network = Path("C:/tools/scheduler/tests/TestEnvironment/O_cameras") / get_safe_pvz_path_name(PVZ_ID)
+    telegram_token = os.environ.get("TELEGRAM_TOKEN_TEST")
+    telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID_TEST")
+
+
+# Per-PVZ path overrides.
+# LOCAL_ROOTS keys are referenced by camera.root_key in cameras_list.py.
+OBJECT_PATH_OVERRIDES = {
+    "СОСНОВКА_10": {
+        "production": {
+            "LOCAL_ROOTS": {
+                "local_1": Path("D:/camera"),
+                "local_2": Path("E:/camera"),
+                "local_3": Path("F:/camera"),
+            },
+            "CAMERAS_NETWORK": Path("R:/cameras") / get_safe_pvz_path_name(PVZ_ID),
+        },
+        "test": {
+            "LOCAL_ROOTS": {
+                "local_1": Path("C:/tools/scheduler/tests/TestEnvironment/D_camera"),
+                "local_2": Path("C:/tools/scheduler/tests/TestEnvironment/E_camera"),
+                "local_3": Path("C:/tools/scheduler/tests/TestEnvironment/F_camera"),
+            },
+            "CAMERAS_NETWORK": Path("C:/tools/scheduler/tests/TestEnvironment/REMOVABLE_cameras") / get_safe_pvz_path_name(PVZ_ID),
+        },
+    }
+}
+
+mode_key = "production" if ENV_MODE == "production" else "test"
+overrides = OBJECT_PATH_OVERRIDES.get(PVZ_ID, {}).get(mode_key, {})
+
+LOCAL_ROOTS = overrides.get("LOCAL_ROOTS", {"default": default_local})
+CAMERAS_LOCAL = LOCAL_ROOTS.get("default", next(iter(LOCAL_ROOTS.values())))
+CAMERAS_NETWORK = Path(overrides.get("CAMERAS_NETWORK", default_network))
+TELEGRAM_TOKEN = telegram_token
+TELEGRAM_CHAT_ID = telegram_chat_id
 
 CAMERAS_PATHS = {
-    'CAMERAS_LOCAL': CAMERAS_LOCAL,
-    'CAMERAS_NETWORK': CAMERAS_NETWORK,
-    'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
-    'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+    "CAMERAS_LOCAL": CAMERAS_LOCAL,
+    "LOCAL_ROOTS": LOCAL_ROOTS,
+    "CAMERAS_NETWORK": CAMERAS_NETWORK,
+    "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
+    "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
 }

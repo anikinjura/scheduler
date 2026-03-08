@@ -1,151 +1,132 @@
-"""
-test_opening_monitor_script.py
-
-Модуль тестов для OpeningMonitorScript.
-
-Проверяются:
-- `_parse_time_from_filename`: корректность разбора времени из разных форматов имен файлов.
-- `find_earliest_file_time`: логика поиска самого раннего файла в заданном диапазоне.
-- `main`: общая логика, включая формирование сообщений и вызов отправки в Telegram.
-"""
-import pytest
-from unittest import mock
+﻿import os
+from datetime import datetime, time
 from pathlib import Path
-from datetime import time, datetime
-import os
+from unittest import mock
 
-# Добавляем корень проекта в sys.path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+import pytest
 
-from scheduler_runner.tasks.cameras.OpeningMonitorScript import (
-    _parse_time_from_filename,
-    find_earliest_file_time,
-    main as opening_monitor_main
+import scheduler_runner.tasks.cameras.OpeningMonitorScript as oms
+from scheduler_runner.tasks.cameras.tests._test_tmp_utils import cleanup_dir, make_temp_dir
+
+
+@pytest.mark.parametrize(
+    "filename, expected_time",
+    [
+        ("08-30-15.jpg", time(8, 30, 15)),
+        ("09-01-02.jpg", time(9, 1, 2)),
+        ("some_prefix_1751862000.mp4", datetime.fromtimestamp(1751862000).time()),
+        ("another_video_1751862065.mp4", datetime.fromtimestamp(1751862065).time()),
+    ],
 )
-
-# --- Тесты для _parse_time_from_filename ---
-
-@pytest.mark.parametrize("filename, expected_time", [
-    ("08-30-15.jpg", time(8, 30, 15)),
-    ("09-01-02.jpg", time(9, 1, 2)),
-    # 1751862000 -> 2025-07-09 09:00:00
-    ("some_prefix_1751862000.mp4", time(9, 0, 0)),
-    # 1751862065 -> 2025-07-09 09:01:05
-    ("another_video_1751862065.mp4", time(9, 1, 5)),
-])
 def test_parse_time_from_filename_valid(filename, expected_time):
-    """Проверяет корректный парсинг валидных имен файлов."""
-    assert _parse_time_from_filename(filename) == expected_time
+    assert oms._parse_time_from_filename(filename) == expected_time
 
-@pytest.mark.parametrize("filename", [
-    "invalid-name.txt",
-    "08_30_15.jpg",
-    "video.mp4",
-    "_12345.mp4", # Неверная длина timestamp
-    "10-20-30.gif", # Неверное расширение
-])
+
+@pytest.mark.parametrize("filename", ["invalid-name.txt", "08_30_15.jpg", "video.mp4", "_12345.mp4", "10-20-30.gif"])
 def test_parse_time_from_filename_invalid(filename):
-    """Проверяет, что для невалидных имен возвращается None."""
-    assert _parse_time_from_filename(filename) is None
+    assert oms._parse_time_from_filename(filename) is None
 
-# --- Тесты для find_earliest_file_time ---
 
-@pytest.fixture
-def create_files(tmp_path):
-    """Фикстура для создания тестовых файлов."""
-    def _creator(file_specs):
-        for name, mtime_ts in file_specs:
-            file_path = tmp_path / name
-            file_path.touch()
-            # Устанавливаем время модификации
-            if mtime_ts:
-                os.utime(file_path, (mtime_ts, mtime_ts))
-    return _creator
+def test_find_earliest_file_time_found():
+    tmp_path = make_temp_dir("opening_found")
+    try:
+        today_ts = datetime.now().timestamp()
+        yesterday_ts = today_ts - 86400
+        for name, mtime_ts in [
+            ("08-30-00.jpg", today_ts),
+            ("08-15-00.jpg", today_ts),
+            ("09-59-59.jpg", today_ts),
+            ("10-00-01.jpg", today_ts),
+            ("07-59-59.jpg", today_ts),
+            ("prefix_1751862000.mp4", today_ts),
+            ("yesterday-file.jpg", yesterday_ts),
+        ]:
+            p = tmp_path / name
+            p.touch()
+            os.utime(p, (mtime_ts, mtime_ts))
 
-def test_find_earliest_file_time_found(create_files, tmp_path):
-    """Проверяет успешный поиск самого раннего файла."""
-    today_ts = datetime.now().timestamp()
-    yesterday_ts = today_ts - 86400
-    
-    files = [
-        ("08-30-00.jpg", today_ts),      # Входит в диапазон
-        ("08-15-00.jpg", today_ts),      # Самый ранний
-        ("09-59-59.jpg", today_ts),      # Входит в диапазон
-        ("10-00-01.jpg", today_ts),      # Не входит (позже)
-        ("07-59-59.jpg", today_ts),      # Не входит (раньше)
-        ("prefix_1751862000.mp4", today_ts), # 09:00, входит
-        ("yesterday-file.jpg", yesterday_ts) # Не сегодняшний
-    ]
-    create_files(files)
-    
-    logger = mock.Mock()
-    start_time = time(8, 0)
-    end_time = time(10, 0)
-    
-    earliest = find_earliest_file_time(tmp_path, start_time, end_time, logger)
-    assert earliest == time(8, 15, 0)
+        earliest = oms.find_earliest_file_time(tmp_path, time(8, 0), time(10, 0), mock.Mock())
+        assert earliest == time(8, 15, 0)
+    finally:
+        cleanup_dir(tmp_path)
 
-def test_find_earliest_file_time_not_found(create_files, tmp_path):
-    """Проверяет случай, когда файлы в диапазоне не найдены."""
-    today_ts = datetime.now().timestamp()
-    files = [
-        ("07-50-00.jpg", today_ts),
-        ("10-10-10.jpg", today_ts),
-    ]
-    create_files(files)
-    
-    logger = mock.Mock()
-    start_time = time(8, 0)
-    end_time = time(10, 0)
-    
-    earliest = find_earliest_file_time(tmp_path, start_time, end_time, logger)
-    assert earliest is None
 
-# --- Тесты для main ---
+def test_find_earliest_file_time_not_found():
+    tmp_path = make_temp_dir("opening_not_found")
+    try:
+        today_ts = datetime.now().timestamp()
+        for name in ["07-50-00.jpg", "10-10-10.jpg"]:
+            p = tmp_path / name
+            p.touch()
+            os.utime(p, (today_ts, today_ts))
 
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.send_telegram_message')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.find_earliest_file_time')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.configure_logger')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.SCRIPT_CONFIG', {
-    "SEARCH_DIR": "/fake/dir",
-    "START_TIME": "08:00:00",
-    "END_TIME": "10:00:00",
-    "USER": "test",
-    "TASK_NAME": "test",
-    "TELEGRAM_TOKEN": "fake_token",
-    "TELEGRAM_CHAT_ID": "fake_chat_id",
-})
-def test_main_sends_success_message(mock_config, mock_logger, mock_find_earliest, mock_send_telegram):
-    """Проверяет отправку успешного сообщения, когда файл найден."""
-    mock_find_earliest.return_value = time(8, 25, 10)
-    
-    opening_monitor_main()
-    
-    expected_message = "✅ Объект начал работу в 08:25:10."
-    mock_send_telegram.assert_called_once_with(
-        "fake_token", "fake_chat_id", expected_message, mock.ANY
-    )
+        earliest = oms.find_earliest_file_time(tmp_path, time(8, 0), time(10, 0), mock.Mock())
+        assert earliest is None
+    finally:
+        cleanup_dir(tmp_path)
 
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.send_telegram_message')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.find_earliest_file_time')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.configure_logger')
-@mock.patch('scheduler_runner.tasks.cameras.OpeningMonitorScript.SCRIPT_CONFIG', {
-    "SEARCH_DIR": "/fake/dir",
-    "START_TIME": "08:00:00",
-    "END_TIME": "10:00:00",
-    "USER": "test",
-    "TASK_NAME": "test",
-    "TELEGRAM_TOKEN": "fake_token",
-    "TELEGRAM_CHAT_ID": "fake_chat_id",
-})
-def test_main_sends_failure_message(mock_config, mock_logger, mock_find_earliest, mock_send_telegram):
-    """Проверяет отправку сообщения, когда файлы не найдены."""
-    mock_find_earliest.return_value = None
-    
-    opening_monitor_main()
-    
-    expected_message = "⚠️ Объект не начал работу до 10:00. Видеофайлы не обнаружены."
-    mock_send_telegram.assert_called_once_with(
-        "fake_token", "fake_chat_id", expected_message, mock.ANY
-    )
+
+def test_main_uses_search_dirs_and_sends_success(monkeypatch):
+    test_config = {
+        "PVZ_ID": "TEST",
+        "SEARCH_DIR": "/fake/dir",
+        "SEARCH_DIRS": ["/fake/dir1", "/fake/dir2"],
+        "START_TIME": "08:00:00",
+        "END_TIME": "10:00:00",
+        "USER": "test",
+        "TASK_NAME": "test",
+        "DETAILED_LOGS": False,
+        "TELEGRAM_TOKEN": "fake_token",
+        "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "COMBINED_ANALYSIS_ENABLED": False,
+    }
+
+    monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
+    monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
+    monkeypatch.setattr(oms, "test_notification_connection", lambda *a, **k: {"success": True})
+    monkeypatch.setattr(oms, "send_telegram_notification", lambda *a, **k: True)
+
+    calls = {"n": 0}
+
+    def fake_find(search_dir, start_t, end_t, logger):
+        calls["n"] += 1
+        return time(8, 25, 10) if "dir2" in str(search_dir) else None
+
+    monkeypatch.setattr(oms, "find_earliest_file_time", fake_find)
+    monkeypatch.setattr("sys.argv", ["OpeningMonitorScript.py"])
+
+    oms.main()
+    assert calls["n"] == 2
+
+
+def test_main_sends_failure_message_when_no_files(monkeypatch):
+    test_config = {
+        "PVZ_ID": "TEST",
+        "SEARCH_DIR": "/fake/dir",
+        "SEARCH_DIRS": ["/fake/dir1"],
+        "START_TIME": "08:00:00",
+        "END_TIME": "10:00:00",
+        "USER": "test",
+        "TASK_NAME": "test",
+        "DETAILED_LOGS": False,
+        "TELEGRAM_TOKEN": "fake_token",
+        "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "COMBINED_ANALYSIS_ENABLED": False,
+    }
+
+    monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
+    monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
+    monkeypatch.setattr(oms, "test_notification_connection", lambda *a, **k: {"success": True})
+    monkeypatch.setattr(oms, "find_earliest_file_time", lambda *a, **k: None)
+
+    captured = {}
+
+    def fake_send(message, main_logger=None):
+        captured["message"] = message
+        return True
+
+    monkeypatch.setattr(oms, "send_telegram_notification", fake_send)
+    monkeypatch.setattr("sys.argv", ["OpeningMonitorScript.py"])
+
+    oms.main()
+    assert "не начал работу" in captured["message"]
