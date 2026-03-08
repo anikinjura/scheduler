@@ -12,6 +12,7 @@
 ## Актуальная логика путей
 
 Базовая конфигурация находится в `config/cameras_paths.py`.
+Политика сроков хранения находится в `config/cameras_retention.py`.
 
 Ключевые поля:
 - `CAMERAS_LOCAL` - базовый локальный путь (legacy/fallback).
@@ -40,8 +41,8 @@
 - `config/scripts/copy_config.py`
   - `INPUT_DIRS` (fallback: `INPUT_DIR`), `OUTPUT_DIR`.
 - `config/scripts/cleanup_config.py`
-  - `local`: `CLEANUP_DIRS` (fallback: `CLEANUP_DIR`).
-  - `network`: `CLEANUP_DIR`.
+  - `local`: `CLEANUP_DIRS` (fallback: `CLEANUP_DIR`), `MAX_AGE_DAYS` из `cameras_retention.py`.
+  - `network`: `CLEANUP_DIR`, `MAX_AGE_DAYS` из `cameras_retention.py`.
 - `config/scripts/openingmonitor_config.py`
   - `SEARCH_DIRS` (fallback: `SEARCH_DIR`).
 - `config/scripts/cloudmonitor_config.py`
@@ -74,6 +75,13 @@
 ```
 
 Для `ENV_MODE=test` генератор использует тестовые пути из `cameras_paths.py`, включая `LOCAL_ROOTS` и `CAMERAS_NETWORK`.
+
+### Индивидуальные пороги очистки
+
+В `config/cameras_retention.py`:
+- `RETENTION_DEFAULTS_DAYS` задает дефолты (`local=8`, `network=120`);
+- `RETENTION_OVERRIDES_DAYS` позволяет задать per-PVZ значения;
+- `cleanup_config.py` автоматически берет пороги через `get_retention_days(PVZ_ID, scenario)`.
 
 ## Логи
 
