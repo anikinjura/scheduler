@@ -1,8 +1,8 @@
-﻿"""
+"""
 cameras_paths.py
-
-Centralized camera paths for cameras domain.
-Supports per-PVZ overrides for multiple local roots and network destination.
+Централизованные пути поддомена cameras.
+Поддерживает объектные overrides, несколько локальных корней (`LOCAL_ROOTS`)
+и отдельный target для архива/съемного диска (`CAMERAS_NETWORK`).
 """
 __version__ = '0.0.3'
 

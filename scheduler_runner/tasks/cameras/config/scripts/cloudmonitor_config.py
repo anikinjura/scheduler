@@ -1,9 +1,6 @@
 """
 cloudmonitor_config.py
-
-Конфиг для CloudMonitorScript задачи cameras.
-
-Author: anikinjura
+Конфигурация CloudMonitorScript для проверки доступности `CAMERAS_NETWORK`.
 """
 __version__ = '0.0.1'
 

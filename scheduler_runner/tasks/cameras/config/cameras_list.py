@@ -1,9 +1,8 @@
-﻿"""
+"""
 cameras_list.py
-
-Camera catalog by PVZ.
-Optional camera field `root_key` maps a camera to a specific local root
-from cameras_paths.LOCAL_ROOTS.
+Справочник камер по PVZ.
+Необязательное поле камеры `root_key` связывает камеру с ключом из `LOCAL_ROOTS`
+в cameras_paths.py.
 """
 __version__ = '0.0.3'
 

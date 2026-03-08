@@ -1,5 +1,8 @@
-﻿"""
+"""
 videomonitor_config.py
+Конфигурация VideoMonitorScript.
+- local: проверка локальных записей по одному или нескольким корням (`LOCAL_ROOTS`).
+- network: проверка целевого архива (`CAMERAS_NETWORK`).
 """
 __version__ = '0.0.2'
 

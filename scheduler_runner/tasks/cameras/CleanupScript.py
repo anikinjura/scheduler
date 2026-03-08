@@ -1,4 +1,10 @@
-﻿"""CleanupScript for cameras domain."""
+"""
+CleanupScript.py
+
+Очистка архивов камер:
+- сценарий `local` поддерживает несколько директорий (`CLEANUP_DIRS`);
+- сценарий `network` очищает целевой архив/съемный носитель.
+"""
 __version__ = "0.1.0"
 
 import argparse
@@ -14,7 +20,7 @@ from scheduler_runner.utils.logging import configure_logger
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Удаление старых файлов и пустых папок",
-        epilog="Пример: python CleanupScript.py --input_dir_scenario local --max_age_days 15 --detailed_logs",
+        epilog="Пример: python -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario local --max_age_days 15 --detailed_logs",
     )
     parser.add_argument("--input_dir_scenario", type=str, required=True, choices=["local", "network"], help="Сценарий: local/network")
     parser.add_argument("--max_age_days", type=int, help="Порог возраста файлов в днях")

@@ -28,7 +28,7 @@ def parse_arguments() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Мониторинг доступности облачного хранилища",
-        epilog="Пример: python CloudMonitorScript.py --detailed_logs"
+        epilog="Пример: python -m scheduler_runner.tasks.cameras.CloudMonitorScript --detailed_logs"
     )
     parser.add_argument(
         "--detailed_logs",

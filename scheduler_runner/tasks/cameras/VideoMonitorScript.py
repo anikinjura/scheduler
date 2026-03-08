@@ -4,10 +4,11 @@ VideoMonitorScript.py
 Скрипт для мониторинга наличия видеозаписей с камер видеонаблюдения.
 
 Основной функционал:
-- Локальная проверка: по каждому uid камеры ищет записи за последние N часов (N задаётся в конфиге) в локальной директории.
+- Локальная проверка: по каждому uid камеры ищет записи за последние N часов (N задаётся в конфиге) в локальных директориях.
+  Для камеры может быть задан индивидуальный корень через `camera.root_key` -> `LOCAL_ROOTS`.
 - Облачная проверка: по каждому uid камеры ищет записи за последние N часов (N задаётся в конфиге) в облачной директории.
 - Если для какой-либо камеры не найдено нужного количества файлов ни в одном из последних N часов — формируется уведомление.
-- Уведомления отправляются через утилиту ядра notify.py (Telegram).
+- Уведомления отправляются через scheduler_runner.utils.notifications (Telegram).
 
 Архитектура:
 - Все параметры (пути, список камер, параметры Telegram, глубина проверки) задаются в cameras/config/scripts/videomonitor_config.py.
@@ -16,7 +17,7 @@ VideoMonitorScript.py
 - Скрипт поддерживает детализированные логи и параметр --min_files для задания минимального количества файлов.
 
 Пример использования:
-    python VideoMonitorScript.py --check_type local --detailed_logs --min_files 2
+    python -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type local --detailed_logs --min_files 2
 
 Author: anikinjura
 """
@@ -44,7 +45,7 @@ def parse_arguments() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Мониторинг видеозаписей с камер",
-        epilog="Пример: python VideoMonitorScript.py --check_type local --detailed_logs --min_files 2"
+        epilog="Пример: python -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type local --detailed_logs --min_files 2"
     )
     parser.add_argument(
         "--check_type",

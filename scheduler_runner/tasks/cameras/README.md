@@ -1,223 +1,89 @@
-# cameras — Задача мониторинга и обслуживания видеонаблюдения
+# cameras - Мониторинг и обслуживание видеоархива
 
-## Описание
+## Назначение
 
-Задача **cameras** предназначена для автоматизации процессов мониторинга, копирования, очистки и контроля доступности видеозаписей с камер видеонаблюдения на объектах. Она интегрируется с ядром планировщика (`scheduler_runner/runner.py`) и включает четыре основных подпроцесса:
+Поддомен `scheduler_runner/tasks/cameras` автоматизирует:
+- контроль наличия свежих записей с камер;
+- копирование архива с локальных дисков в целевой архив (сетевой/съемный диск);
+- очистку устаревших файлов;
+- контроль доступности целевого архива;
+- контроль времени открытия объекта по первому файлу.
 
-- **`VideoMonitorScript`** — мониторинг наличия свежих видеозаписей с камер (локально или в облаке).
-  - Проверяет наличие записей за последние N часов (настраивается в конфиге).
-  - Отправляет уведомления в Telegram при отсутствии записей.
+## Актуальная логика путей
 
-- **`CopyScript`** — копирование новых файлов из локального архива в облачное хранилище.
-  - Копирует файлы не старше заданного возраста (в днях).
-  - Поддерживает обработку конфликтов имен файлов (пропуск или переименование).
+Базовая конфигурация находится в `config/cameras_paths.py`.
 
-- **`CleanupScript`** — удаление устаревших файлов и пустых папок.
-  - Работает с локальными и облачными директориями.
-  - Удаляет файлы старше заданного порога возраста.
+Ключевые поля:
+- `CAMERAS_LOCAL` - базовый локальный путь (legacy/fallback).
+- `LOCAL_ROOTS` - словарь локальных корней для объектов с несколькими дисками.
+- `CAMERAS_NETWORK` - целевой архив (в production может быть сетевой диск, для отдельных объектов - съемный).
+- `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`.
 
-- **`CloudMonitorScript`** — контроль доступности облачного хранилища.
-  - Проверяет возможность записи в облачную директорию.
-  - Уведомляет через Telegram при недоступности.
+### Индивидуальные пути камер
 
-- **`OpeningMonitorScript`** — контроль времени начала работы объекта.
-  - Ищет самый ранний видеофайл за текущий день в заданном временном интервале (например, с 8 до 10 утра).
-  - Отправляет в Telegram сообщение о времени первого найденного файла или об их отсутствии.
-  - Учитывает разные форматы имен файлов для определения времени (камеры UNV, Xiaomi).
+В `config/cameras_list.py` камера может иметь `root_key`.
 
-Задача разработана для гибкой настройки через конфигурационные файлы и поддерживает централизованное логирование и юнит-тестирование.
-
----
-
-## Структура проекта
-
-```
-tasks/cameras/
-├── VideoMonitorScript.py        # Скрипт мониторинга записей
-├── CopyScript.py                # Скрипт копирования файлов
-├── CleanupScript.py             # Скрипт очистки директорий
-├── CloudMonitorScript.py        # Скрипт мониторинга облака
-├── OpeningMonitorScript.py      # Скрипт контроля начала работы
-├── config/                      # Конфигурационные файлы
-│   ├── cameras_list.py          # Справочник камер по объектам (PVZ_ID)
-│   ├── cameras_paths.py         # Пути к директориям и параметры Telegram
-│   ├── cameras_schedule.py      # Общее расписание задачи cameras
-│   └── scripts/                 # Конфиги отдельных скриптов
-│       ├── videomonitor_config.py
-│       ├── copy_config.py
-│       ├── cleanup_config.py
-│       ├── cloudmonitor_config.py
-│       └── openingmonitor_config.py
-└── tests/                       # Юнит-тесты
-    ├── test_videomonitor_script.py
-    ├── test_copy_script.py
-    ├── test_cleanup_script.py
-    ├── test_cloud_monitor_script.py
-    └── test_opening_monitor_script.py
+Пример:
+```python
+{"id": "xiaomi_001", "uid": "78df72028ea2", "root_key": "local_2"}
 ```
 
----
+`root_key` должен совпадать с ключом в `LOCAL_ROOTS`.
 
-## Основные параметры
+Если `root_key` не задан, используется fallback на `CAMERAS_LOCAL`.
 
-- **Пути и Telegram**: Задаются централизованно в `config/cameras_paths.py` через переменные среды, зависящие от режима (`production` или `test`):
-  - `CAMERAS_LOCAL`: Локальная директория с видеоархивом.
-  - `CAMERAS_NETWORK`: Сетевая (облачная) директория.
-  - `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`: Токен и чат для уведомлений.
+## Конфиги скриптов
 
-- **Список камер**: Определяется в `config/cameras_list.py` как словарь `CAMERAS_BY_PVZ` с камерами по зонам для каждого объекта (PVZ_ID).
+- `config/scripts/videomonitor_config.py`
+  - `local`: использует `CHECK_DIR` + `LOCAL_ROOTS`.
+  - `network`: использует `CHECK_DIR=CAMERAS_NETWORK`.
+- `config/scripts/copy_config.py`
+  - `INPUT_DIRS` (fallback: `INPUT_DIR`), `OUTPUT_DIR`.
+- `config/scripts/cleanup_config.py`
+  - `local`: `CLEANUP_DIRS` (fallback: `CLEANUP_DIR`).
+  - `network`: `CLEANUP_DIR`.
+- `config/scripts/openingmonitor_config.py`
+  - `SEARCH_DIRS` (fallback: `SEARCH_DIR`).
+- `config/scripts/cloudmonitor_config.py`
+  - `CHECK_DIR=CAMERAS_NETWORK`.
 
-- **Конфигурация скриптов**: Хранится в `config/scripts/*_config.py`:
-  - Параметры запуска (например, `MAX_AGE_DAYS`, `CHECK_DIR`).
-  - Расписания задач (`SCHEDULE`) для интеграции с планировщиком.
+## Запуск скриптов вручную
 
-- **Расписание**: Собирается в `config/cameras_schedule.py` из всех скриптовых конфигов через `collect_task_schedule`.
+Рекомендуется запуск через модульный формат:
 
----
-
-## Конфигурационные файлы
-
-### `cameras_paths.py`
-- Определяет пути и параметры Telegram в зависимости от `ENV_MODE`:
-  - Production: `D:/camera` (локально), `O:/cameras/<транслитерация(PVZ_ID)>` (сетевая).
-  - Test: `C:/TestEnvironment/D_camera` (локально), `C:/TestEnvironment/O_cameras/<транслитерация(PVZ_ID)>` (сетевая).
-  - Использует переменные среды: `TELEGRAM_TOKEN_PROD`, `TELEGRAM_CHAT_ID_PROD` (или `_TEST` для тестовой среды).
-  - Для поддержки кириллических имен ПВЗ используется транслитерация при формировании сетевых путей.
-
-### `cameras_list.py`
-- Содержит словарь `CAMERAS_BY_PVZ`:
-  ```python
-  CAMERAS_BY_PVZ = {
-      "СОСНОВКА_10": {
-          "склад": [{"id": "unv_001", "uid": "sklad", "локация": "над стелажами"}, ...],
-          "клиентская зона": [...]
-      },
-      ...
-  }
-  ```
-- Используется для идентификации камер и проверки их записей.
-- Поддерживает строковые идентификаторы ПВЗ (включая кириллические имена).
-
-### `cameras_schedule.py`
-- Экспортирует `TASK_SCHEDULE` — список задач для ядра планировщика, собираемый из всех `SCHEDULE` в `scripts/*_config.py`.
-
-### Скриптовые конфиги (`scripts/*_config.py`)
-- **`videomonitor_config.py`**:
-  - Локальная проверка: `MAX_LOOKBACK_HOURS=2`, `CHECK_DIR=CAMERAS_LOCAL`.
-  - Сетевая проверка: `MAX_LOOKBACK_HOURS=24`, `CHECK_DIR=CAMERAS_NETWORK`.
-- **`copy_config.py`**:
-  - `INPUT_DIR=CAMERAS_LOCAL`, `OUTPUT_DIR=CAMERAS_NETWORK`, `MAX_AGE_DAYS=3`, `ON_CONFLICT="skip"`.
-- **`cleanup_config.py`**:
-  - Локально: `CLEANUP_DIR=CAMERAS_LOCAL`, `MAX_AGE_DAYS=8`.
-  - Сетевая: `CLEANUP_DIR=CAMERAS_NETWORK`, `MAX_AGE_DAYS=120`.
-- **`cloudmonitor_config.py`**:
-  - `CHECK_DIR=CAMERAS_NETWORK`, `RETRIES=4`, `DELAY=10`.
-- **`openingmonitor_config.py`**:
-  - `SEARCH_DIR=CAMERAS_LOCAL`: Директория для поиска файлов.
-  - `START_TIME="08:00:00"`: Начало временного окна для поиска.
-  - `END_TIME="10:00:00"`: Конец временного окна.
-  - `timeout: 120`: Индивидуальный таймаут для задачи (в секундах), так как сканирование может быть длительным.
-
----
-
-## Запуск подпроцессов вручную
-
-Каждый скрипт можно запустить вручную из корня проекта с параметрами через Python. Примеры:
-
-### Мониторинг видеозаписей
 ```bash
-python -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type local --min_files 2 --detailed_logs
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type local --detailed_logs
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.VideoMonitorScript --check_type network
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --conflict_mode skip
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario local
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario network
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 4 --delay 10
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.OpeningMonitorScript --detailed_logs
 ```
-- `--check_type`: `local` или `network`.
-- `--min_files`: Минимальное количество файлов для успешной проверки (по умолчанию 1).
-
-### Копирование файлов
-```bash
-python -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --conflict_mode skip --detailed_logs --shutdown 10
-```
-- `--max_age_days`: Максимальный возраст файлов для копирования.
-- `--conflict_mode`: `skip` (пропустить) или `rename` (переименовать).
-- `--shutdown`: Выключить компьютер после завершения. Можно указать задержку в минутах (например, `--shutdown 10`).
-
-### Очистка директорий
-```bash
-python -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario local --max_age_days 7 --detailed_logs
-```
-- `--input_dir_scenario`: `local` или `network`.
-- `--max_age_days`: Порог возраста файлов для удаления.
-
-### Мониторинг облака
-```bash
-python -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 5 --delay 15 --detailed_logs
-```
-- `--retries`: Количество попыток проверки.
-- `--delay`: Задержка между попытками (в секундах).
-
-### Контроль времени открытия
-```bash
-python -m scheduler_runner.tasks.cameras.OpeningMonitorScript --detailed_logs
-```
-- Скрипт не принимает внешних аргументов для настройки времени или путей, так как все параметры (включая временной интервал) жестко заданы в `openingmonitor_config.py`.
-- Флаг `--detailed_logs` позволяет включить расширенное логирование.
-
----
-
-## Переменные среды
-
-Для работы уведомлений через Telegram необходимо задать переменные среды:
-
-- **Production**:
-  - `TELEGRAM_TOKEN_PROD`
-  - `TELEGRAM_CHAT_ID_PROD`
-- **Test**:
-  - `TELEGRAM_TOKEN_TEST`
-  - `TELEGRAM_CHAT_ID_TEST`
-
-Переменные подтягиваются в `cameras_paths.py` в зависимости от `ENV_MODE`.
-
----
-
-## Логирование
-
-- Все скрипты используют централизованное логирование через `scheduler_runner.utils.logging`.
-- Логи записываются в `logs/<user>/<task>/`.
-- Флаг `--detailed_logs` включает детализированные логи (уровень DEBUG).
-
----
 
 ## Тесты
 
-Юнит-тесты находятся в `tasks/cameras/tests/` и покрывают основные функции скриптов:
-- `test_videomonitor_script.py`: Проверка наличия записей, обработка ошибок.
-- `test_copy_script.py`: Тестирование копирования с конфликтами (`skip`, `rename`).
-- `test_cleanup_script.py`: Удаление старых файлов и пустых папок.
-- `test_cloud_monitor_script.py`: Проверка доступности облака и уведомлений.
-
-### Запуск тестов
+Юнит-тесты:
 ```bash
-pytest scheduler_runner/tasks/cameras/tests/
+.venv\Scripts\python.exe -m pytest scheduler_runner/tasks/cameras/tests -q -p no:tmpdir -p no:cacheprovider
 ```
 
-## Автоматизация
-
-Задачи предназначены для запуска через ядро планировщика:
+Генерация синтетики:
 ```bash
-pythonw -m scheduler_runner.runner --user operator
-```
-- Расписание задается в `config/scripts/*_config.py` и собирается в `cameras_schedule.py`.
-- Примеры расписаний:
-  - `VideoMonitorScript_local`: Ежечасно.
-  - `CopyScript`: Ежедневно в 21:10.
-  - `CleanupScript_network`: Ежедневно в 20:55.
-
-Для принудительного запуска конкретной задачи:
-```bash
-pythonw -m scheduler_runner.runner --user operator --task CopyScript
+.venv\Scripts\python.exe tests\TestEnvironment\run_camera_structure_generator.py --start-date 20260307 --end-date 20260308
 ```
 
----
+Для `ENV_MODE=test` генератор использует тестовые пути из `cameras_paths.py`, включая `LOCAL_ROOTS` и `CAMERAS_NETWORK`.
 
-## Примечания
+## Логи
 
-- Код поддерживает версионность (например, `CopyScript` — `1.2.0`, `CleanupScript` — `0.0.2`).
-- Автор всех компонентов: `anikinjura`.
+Логи пишутся в `logs/<user>/<task>/`.
+
+Ключевые задачи:
+- `VideoMonitorScript_local`
+- `VideoMonitorScript_network`
+- `CopyScript`
+- `CleanupScript_local`
+- `CleanupScript_network`
+- `CloudMonitorScript`
+- `OpeningMonitorScript`

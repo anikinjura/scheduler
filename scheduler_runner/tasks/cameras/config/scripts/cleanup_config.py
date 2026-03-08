@@ -1,5 +1,8 @@
-﻿"""
+"""
 cleanup_config.py
+Конфигурация CleanupScript.
+- local: очистка всех локальных корней (`CLEANUP_DIRS`).
+- network: очистка целевого архива (`CLEANUP_DIR`).
 """
 __version__ = '0.0.2'
 

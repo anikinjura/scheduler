@@ -1,4 +1,11 @@
-﻿"""CopyScript for cameras domain."""
+"""
+CopyScript.py
+
+Копирование видеофайлов в целевое хранилище:
+- поддерживает несколько входных директорий (`INPUT_DIRS`) для объектов с несколькими локальными дисками;
+- сохраняет обратную совместимость с `INPUT_DIR`;
+- позволяет явно задать одиночный источник через `--source_dir`.
+"""
 __version__ = "1.3.0"
 
 import argparse
@@ -15,7 +22,7 @@ from scheduler_runner.utils.system import SystemUtils
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Система копирования файлов по возрасту",
-        epilog="Пример: python CopyScript.py --max_age_days 3 --source_dir D:/input --dest_dir D:/output --shutdown 60",
+        epilog="Пример: python -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --source_dir D:/input --dest_dir D:/output --shutdown 60",
     )
     parser.add_argument("--max_age_days", "--days", type=int, help=f"Максимальный возраст файлов (по умолчанию: {SCRIPT_CONFIG['MAX_AGE_DAYS']})")
     parser.add_argument("--conflict_mode", type=str, choices=["skip", "rename"], help=f"Режим конфликта (по умолчанию: {SCRIPT_CONFIG['ON_CONFLICT']})")

@@ -1,5 +1,7 @@
-﻿"""
+"""
 copy_config.py
+Конфигурация CopyScript.
+Поддерживает множественные источники через `INPUT_DIRS` (с fallback на `INPUT_DIR`).
 """
 __version__ = '0.0.2'
 

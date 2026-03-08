@@ -1,5 +1,7 @@
-﻿"""
+"""
 openingmonitor_config.py
+Конфигурация OpeningMonitorScript.
+Поиск выполняется по `SEARCH_DIRS` (fallback: `SEARCH_DIR`).
 """
 __version__ = '2.0.1'
 
