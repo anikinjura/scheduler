@@ -985,13 +985,28 @@ python scheduler_runner/tasks/reports/reports_processor.py --detailed_logs
 
 ---
 
-**Версия документа:** 1.7
+**Версия документа:** 1.8
 **Дата:** 2026-02-27
-**Дата обновления:** 2026-03-06 (v1.7)
+**Дата обновления:** 2026-03-09 (v1.8)
 
 ---
 
 ## 📝 История изменений
+
+### v1.8 (2026-03-09)
+- **Аварийный обход startup-crash добавлен** (коммит `8b891c5`):
+  - при сигнатуре падения старта браузера в headless (`DevToolsActivePort`, `Microsoft Edge failed to start: crashed`, `session not created`)
+  - выполняется controlled fallback: повторный запуск с `headless=False`.
+- **Добавлены новые маркеры логов для диагностики старта:**
+  - `ENV_BROWSER_STARTUP_CONTEXT`
+  - `BROWSER_START_ATTEMPT_CONTEXT`
+  - `BROWSER_POST_FAILURE_STATE`
+  - `BROWSER_STARTUP_CRASH_SIGNATURE`
+  - `BROWSER_FALLBACK_TRIGGERED`
+  - `BROWSER_FALLBACK_SUCCESS`
+  - `BROWSER_FALLBACK_FAILED`
+- **Назначение изменения:** снизить impact массового сбоя 08.03.2026, когда парсер падал до `login()` и не запускал `Uploader/Notification`.
+- **Ограничение:** это не root-cause fix, а mitigation; первопричину падения headless нужно продолжать диагностировать по новым логам.
 
 ### v1.7 (2026-03-06)
 - **Результаты тестирования headless режима:** ✅ УСПЕШНО
@@ -1083,3 +1098,44 @@ python scheduler_runner/tasks/reports/reports_processor.py --detailed_logs
 2. Проверить, где впервые установлен `_last_navigation_failure_reason = login_redirect`.
 3. Проверить финальный `__RUN_STATUS__` в итоговом результате шага/запуска.
 4. Если `__RUN_STATUS__ = failed`, считать запуск неуспешным даже при частичных данных.
+
+---
+
+## Update 2026-03-09: mitigation для падения старта Edge в headless (после инцидента 08.03.2026)
+
+По логам 08.03.2026 на всех объектах (`143`, `144`, `182`, `340`) зафиксирован массовый сбой до `login()`:
+- `SessionNotCreatedException`
+- `Microsoft Edge failed to start: crashed`
+- `DevToolsActivePort file doesn't exist`
+- запуск с `headless=True` и `--user-data-dir=...`
+
+Что изменено в коде (коммит `8b891c5`):
+- В `BaseParser.setup_browser()` добавлен controlled fallback:
+  1. primary-попытки с исходным `headless` (обычно `True`);
+  2. если обнаружена сигнатура startup-crash и `headless=True`, выполняется fallback-фаза с `headless=False`;
+  3. при успехе fallback парсер продолжает обычный цикл (`login` → сбор данных → upload → notification).
+
+Новые ключевые маркеры в debug-логе:
+```text
+ENV_BROWSER_STARTUP_CONTEXT
+BROWSER_START_ATTEMPT_CONTEXT
+BROWSER_POST_FAILURE_STATE
+BROWSER_STARTUP_CRASH_SIGNATURE
+BROWSER_FALLBACK_TRIGGERED
+BROWSER_FALLBACK_SUCCESS
+BROWSER_FALLBACK_FAILED
+```
+
+Чек-лист расследования после 09.03.2026:
+1. Найти `BROWSER_STARTUP_CRASH_SIGNATURE` и убедиться, что это именно startup-crash, а не ошибка бизнес-логики.
+2. Проверить, был ли вызван `BROWSER_FALLBACK_TRIGGERED`.
+3. Проверить исход fallback:
+   - `BROWSER_FALLBACK_SUCCESS` — инцидент смягчен, запуск должен дойти до downstream-этапов;
+   - `BROWSER_FALLBACK_FAILED` — mitigation не помог, нужен разбор окружения объекта.
+4. При `BROWSER_FALLBACK_SUCCESS` дополнительно проверить наличие логов:
+   - `Uploader/<date>.log` (запись в Google Sheets),
+   - `Notification/<date>.log` (отправка в Telegram).
+
+Важно:
+- fallback — это mitigation, а не устранение первопричины headless-сбоя;
+- для root-cause анализа использовать расширенный startup-debug (контекст окружения, опции запуска, post-failure state).

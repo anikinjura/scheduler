@@ -98,7 +98,7 @@ scheduler_runner/tasks/reports/parser/
 - `DEFAULT_TIMEOUT` - таймаут ожидания элементов (60 сек)
 - `BROWSER_EXECUTABLE` - имя исполняемого файла браузера ('msedge.exe')
 - `EDGE_USER_DATA_DIR` - путь к пользовательским данным Edge
-- `HEADLESS` - режим headless для браузера (False для стабильности)
+- `HEADLESS` - режим headless для браузера (при startup-crash есть автоматический fallback на `headless=False`)
 - `table_configs` - конфигурации для извлечения данных из таблиц
 
 ---
@@ -250,8 +250,9 @@ scheduler_runner/tasks/reports/parser/
 2. run_parser() - запуск парсера (наследуется из BaseReportParser)
    ├── setup_browser() - настройка браузера
    │   ├── _terminate_browser_processes() - завершение процессов msedge.exe
-   │   ├── _cleanup_lock_files() - удаление Lock-файлов
-   │   └── webdriver.Edge() - запуск браузера с профилем пользователя
+   │   ├── _start_edge_driver_with_retries() - запуск с ретраями (phase=primary)
+   │   ├── _is_startup_crash_signature() - распознавание известной сигнатуры падения
+   │   └── fallback: повторный запуск с `headless=False` (phase=fallback)
    ├── login() - вход в систему (реализуется в дочернем классе)
    │   └── MultiStepOzonParser: использует сохранённую сессию
    ├── navigate_to_target() - навигация к целевой странице
@@ -367,7 +368,7 @@ python overlay_closer/overlay_closer.py --strategy postpone
 1. **Параметры браузера:**
    - `BROWSER_EXECUTABLE` - имя исполняемого файла ('msedge.exe')
    - `EDGE_USER_DATA_DIR` - путь к профилю пользователя
-   - `HEADLESS` - режим headless (False для стабильности)
+   - `HEADLESS` - режим headless (при crash-сигнатуре выполняется fallback на `headless=False`)
    - `DEFAULT_TIMEOUT` - таймаут ожидания элементов (60 сек)
 
 2. **Селекторы элементов:**
@@ -453,7 +454,7 @@ python overlay_closer/overlay_closer.py --strategy postpone
 
 | Ошибка | Причина | Решение |
 |--------|---------|---------|
-| `SessionNotCreatedException` | Lock-файл в профиле, headless режим | Завершить процессы браузера, удалить Lock-файлы, отключить headless |
+| `SessionNotCreatedException` | Lock-файл в профиле, падение startup в headless | Завершить процессы браузера, удалить Lock-файлы, проверить маркеры fallback; временно зафиксировать `headless=False` при необходимости |
 | `element click intercepted` | Элемент перекрыт другим оверлеем | Использовать другой селектор (кнопка вместо крестика) |
 | `timeout` при проверке backdrop | Долгий implicit_wait | Использовать WebDriverWait с коротким таймаутом (1 сек) |
 | Страница логина вместо отчёта | Истекла сессия | Проверить валидность сессии, обновить при необходимости |
@@ -478,6 +479,11 @@ python overlay_closer/overlay_closer.py --strategy postpone
 ---
 
 ## 📝 История изменений
+
+### v1.4 (2026-03-09)
+- **Проблема:** повторяющиеся падения на старте браузера в headless и недостаточная наблюдаемость.
+- **Решение:** добавлены структурированные startup-debug маркеры и аварийный обход `headless=True -> headless=False` по сигнатуре падения.
+- **Файлы:** `base_parser.py`, `DEBUG_GUIDE.md`, `docs/BaseParser/setup_browser().md`, `docs/BaseReportParser/setup_browser().md`, `README.md`
 
 ### v1.3 (2026-03-03)
 - **Проблема:** Оверлей не закрывается (крестик перекрыт другим оверлеем)
