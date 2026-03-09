@@ -23,6 +23,9 @@ import subprocess
 import time
 import re
 import os
+import json
+import platform
+import shutil
 from pathlib import Path
 from abc import ABC, abstractmethod
 from selenium import webdriver
@@ -94,6 +97,7 @@ class BaseParser(ABC):
             self.logger.trace("Попали в метод BaseParser.__init__")
 
         self.driver = None
+        self._startup_environment_logged = False
 
     # === АБСТРАКТНЫЕ МЕТОДЫ (обязательны для реализации в дочерних классах) ===
 
@@ -181,6 +185,11 @@ class BaseParser(ABC):
             
         if self.logger:
             self.logger.debug(f"Путь к пользовательским данным браузера: {user_data_dir}")
+
+        # Логируем окружение старта браузера один раз за запуск парсера.
+        if not self._startup_environment_logged:
+            self._log_startup_environment(user_data_dir=user_data_dir, config=config)
+            self._startup_environment_logged = True
             
         # Проверяем, существует ли директория с пользовательскими данными
         if not os.path.exists(user_data_dir):
@@ -188,7 +197,135 @@ class BaseParser(ABC):
                 self.logger.error(f"Директория пользовательских данных браузера не существует: {user_data_dir}")
             return False
 
-        # Создаем опции для Edge
+        # Создаем экземпляр драйвера Edge с повторными попытками
+        max_retries = 3
+        retry_delay = 3  # секунды между попытками
+
+        primary_success, crash_signature_detected = self._start_edge_driver_with_retries(
+            config=config,
+            user_data_dir=user_data_dir,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+            phase='primary'
+        )
+        if primary_success:
+            return True
+
+        requested_headless = config.get('headless', self.config.get('HEADLESS', False))
+        if requested_headless and crash_signature_detected:
+            if self.logger:
+                self.logger.warning(
+                    "BROWSER_FALLBACK_TRIGGERED: "
+                    "обнаружена сигнатура падения headless старта, активируем аварийный обход headless=False"
+                )
+
+            fallback_config = dict(config)
+            fallback_config['headless'] = False
+
+            # Перед fallback принудительно очищаем остатки предыдущих попыток.
+            self._terminate_browser_processes()
+            fallback_success, _ = self._start_edge_driver_with_retries(
+                config=fallback_config,
+                user_data_dir=user_data_dir,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+                phase='fallback'
+            )
+            if fallback_success:
+                if self.logger:
+                    self.logger.warning("BROWSER_FALLBACK_SUCCESS: браузер запущен в режиме headless=False")
+                return True
+            if self.logger:
+                self.logger.error("BROWSER_FALLBACK_FAILED: аварийный обход headless=False не помог")
+
+        return False
+
+    def _start_edge_driver_with_retries(
+        self,
+        config: Dict[str, Any],
+        user_data_dir: str,
+        max_retries: int,
+        retry_delay: int,
+        phase: str
+    ) -> tuple[bool, bool]:
+        """
+        Запускает Edge-драйвер с ретраями.
+
+        Returns:
+            tuple[bool, bool]:
+                [0] success: успешно ли поднят драйвер,
+                [1] crash_signature_detected: обнаружена ли сигнатура startup crash.
+        """
+        crash_signature_detected = False
+        options = self._build_edge_options(config=config, user_data_dir=user_data_dir)
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                if self.logger:
+                    if attempt == 1:
+                        self.logger.debug(f"Попытка создания экземпляра драйвера Edge (phase={phase})...")
+                    else:
+                        self.logger.debug(
+                            f"Повторная попытка #{attempt} создания экземпляра драйвера Edge (phase={phase})..."
+                        )
+
+                self._log_attempt_runtime_context(
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    user_data_dir=user_data_dir,
+                    config=config,
+                    options=options
+                )
+
+                self.driver = webdriver.Edge(options=options)
+                if self.logger:
+                    self.logger.debug(f"Экземпляр драйвера Edge успешно создан (phase={phase})")
+                    if self.driver.session_id:
+                        self.logger.debug(f"ID сессии драйвера: {self.driver.session_id[:10]}...")
+
+                timeout = config.get('timeout', self.config.get('DEFAULT_TIMEOUT', 60))
+                self.driver.implicitly_wait(timeout)
+                if self.logger:
+                    self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
+                return True, crash_signature_detected
+
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"Ошибка при настройке браузера Edge (phase={phase}, попытка {attempt}/{max_retries}): {e}"
+                    )
+                    self.logger.error(f"Тип ошибки: {type(e).__name__}")
+                    self._log_known_startup_crash_signature(error=e, attempt=attempt, max_retries=max_retries)
+                    self._log_post_failed_attempt_state(user_data_dir=user_data_dir, attempt=attempt)
+
+                is_signature = self._is_startup_crash_signature(e)
+                if is_signature:
+                    crash_signature_detected = True
+
+                if attempt == max_retries:
+                    if self.logger:
+                        self.logger.error(
+                            f"Параметры запуска браузера (phase={phase}): "
+                            f"--user-data-dir={user_data_dir}, "
+                            f"headless={config.get('headless', self.config.get('HEADLESS', False))}"
+                        )
+                        self._log_user_data_dir_diagnostics(user_data_dir=user_data_dir)
+                    return False, crash_signature_detected
+
+                if self.logger:
+                    self.logger.info(f"Ожидание {retry_delay} секунд перед повторной попыткой...")
+
+                try:
+                    self._cleanup_lock_files(user_data_dir)
+                except Exception as cleanup_error:
+                    if self.logger:
+                        self.logger.debug(f"Очистка Lock-файлов не удалась: {cleanup_error}")
+                time.sleep(retry_delay)
+
+        return False, crash_signature_detected
+
+    def _build_edge_options(self, config: Dict[str, Any], user_data_dir: str) -> EdgeOptions:
+        """Создает и возвращает EdgeOptions для запуска браузера."""
         options = EdgeOptions()
         options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--profile-directory=Default")
@@ -196,110 +333,216 @@ class BaseParser(ABC):
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
 
-        # Устанавливаем headless режим, если указано
         if config.get('headless', self.config.get('HEADLESS', False)):
             options.add_argument("--headless")
             if self.logger:
                 self.logger.debug("Включен headless режим браузера")
 
-        # Устанавливаем размер окна, если указано
         window_size = config.get('window_size', [1920, 1080])
         if window_size and len(window_size) >= 2:
             width, height = window_size[0], window_size[1]
             options.add_argument(f"--window-size={width},{height}")
             if self.logger:
                 self.logger.debug(f"Установлен размер окна браузера: {width}x{height}")
+        return options
 
-        # Создаем экземпляр драйвера Edge с повторными попытками
-        max_retries = 3
-        retry_delay = 3  # секунды между попытками
-        
-        for attempt in range(1, max_retries + 1):
-            try:
-                if self.logger:
-                    if attempt == 1:
-                        self.logger.debug("Попытка создания экземпляра драйвера Edge...")
-                    else:
-                        self.logger.debug(f"Повторная попытка #{attempt} создания экземпляра драйвера Edge...")
-                
-                self.driver = webdriver.Edge(options=options)
-                
-                if self.logger:
-                    self.logger.debug("Экземпляр драйвера Edge успешно создан")
-                    if self.driver.session_id:
-                        self.logger.debug(f"ID сессии драйвера: {self.driver.session_id[:10]}...")
+    def _log_user_data_dir_diagnostics(self, user_data_dir: str) -> None:
+        """Логирует детали по директории профиля браузера."""
+        if not self.logger:
+            return
+        try:
+            if os.path.exists(user_data_dir):
+                if os.access(user_data_dir, os.R_OK):
+                    self.logger.debug(f"Директория {user_data_dir} доступна для чтения")
+                else:
+                    self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
 
-                # Устанавливаем таймауты
-                timeout = config.get('timeout', self.config.get('DEFAULT_TIMEOUT', 60))
-                self.driver.implicitly_wait(timeout)
-                if self.logger:
-                    self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
+                lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
+                if os.path.exists(lock_file_path):
+                    self.logger.error(
+                        f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен."
+                    )
+                    try:
+                        os.remove(lock_file_path)
+                        self.logger.info(f"Lock-файл удален: {lock_file_path}")
+                    except Exception as lock_error:
+                        self.logger.warning(f"Не удалось удалить Lock-файл: {lock_error}")
 
-                return True
-                
-            except Exception as e:
-                error_message = f"Ошибка при настройке браузера Edge (попытка {attempt}/{max_retries}): {e}"
-                if self.logger:
-                    self.logger.error(error_message)
-                    self.logger.error(f"Тип ошибки: {type(e).__name__}")
-                
-                # Если это последняя попытка, логируем детали и возвращаем False
-                if attempt == max_retries:
-                    if self.logger:
-                        self.logger.error(f"Параметры запуска браузера: --user-data-dir={user_data_dir}, headless={config.get('headless', self.config.get('HEADLESS', False))}")
-                        
-                        # Проверяем, есть ли доступ к директории пользовательских данных
-                        try:
-                            if os.path.exists(user_data_dir):
-                                # Проверяем права доступа к директории
-                                if os.access(user_data_dir, os.R_OK):
-                                    self.logger.debug(f"Директория {user_data_dir} доступна для чтения")
-                                else:
-                                    self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
+                local_state_path = os.path.join(user_data_dir, "Local State")
+                if os.path.exists(local_state_path):
+                    try:
+                        with open(local_state_path, 'r', encoding='utf-8') as f:
+                            local_state = json.load(f)
+                            if 'profile' in local_state and 'info_cache' in local_state['profile']:
+                                active_profiles = local_state['profile']['info_cache']
+                                self.logger.debug(f"Найдено профилей в Local State: {len(active_profiles)}")
+                    except Exception as json_error:
+                        self.logger.debug(f"Не удалось прочитать Local State: {json_error}")
+            else:
+                self.logger.error(f"Директория пользовательских данных {user_data_dir} не существует")
+        except Exception as dir_check_error:
+            self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
 
-                                # Проверяем, заблокирована ли директория другим процессом
-                                lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
-                                if os.path.exists(lock_file_path):
-                                    self.logger.error(f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен.")
-                                    # Пробуем удалить Lock-файл перед последней попыткой
-                                    try:
-                                        os.remove(lock_file_path)
-                                        self.logger.info(f"Lock-файл удален: {lock_file_path}")
-                                    except Exception as lock_error:
-                                        self.logger.warning(f"Не удалось удалить Lock-файл: {lock_error}")
+    def _log_startup_environment(self, user_data_dir: str, config: Dict[str, Any]) -> None:
+        """Логирует общий контекст окружения для диагностики сбоев старта браузера."""
+        if not self.logger:
+            return
 
-                                # Также проверим файлы Local State и другие возможные индикаторы активности
-                                local_state_path = os.path.join(user_data_dir, "Local State")
-                                if os.path.exists(local_state_path):
-                                    try:
-                                        import json
-                                        with open(local_state_path, 'r', encoding='utf-8') as f:
-                                            local_state = json.load(f)
-                                            # Проверим, есть ли информация о запущенных профилях
-                                            if 'profile' in local_state and 'info_cache' in local_state['profile']:
-                                                active_profiles = local_state['profile']['info_cache']
-                                                self.logger.debug(f"Найдено профилей в Local State: {len(active_profiles)}")
-                                    except Exception as json_error:
-                                        self.logger.debug(f"Не удалось прочитать Local State: {json_error}")
-                            else:
-                                self.logger.error(f"Директория пользовательских данных {user_data_dir} не существует")
-                        except Exception as dir_check_error:
-                            self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
-                    
-                    return False
-                
-                # Если не последняя попытка, ждем и пробуем снова
-                if self.logger:
-                    self.logger.info(f"Ожидание {retry_delay} секунд перед повторной попыткой...")
-                
-                # Дополнительная очистка Lock-файлов перед повторной попыткой
-                try:
-                    self._cleanup_lock_files(user_data_dir)
-                except Exception as cleanup_error:
-                    if self.logger:
-                        self.logger.debug(f"Очистка Lock-файлов не удалась: {cleanup_error}")
-                
-                time.sleep(retry_delay)
+        current_user = self._safe_get_current_user()
+        edge_version = self._get_command_output("msedge.exe --version")
+        edgedriver_version = self._get_command_output("msedgedriver.exe --version")
+        temp_dir = os.environ.get("TEMP", "")
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        diagnostics = {
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "current_user": current_user,
+            "headless": config.get('headless', self.config.get('HEADLESS', False)),
+            "user_data_dir": user_data_dir,
+            "temp_dir": temp_dir,
+            "local_app_data": local_app_data,
+            "user_data_exists": os.path.exists(user_data_dir),
+            "temp_exists": os.path.exists(temp_dir) if temp_dir else False,
+            "local_app_data_exists": os.path.exists(local_app_data) if local_app_data else False,
+            "user_data_disk_free_mb": self._get_disk_free_mb(user_data_dir),
+            "temp_disk_free_mb": self._get_disk_free_mb(temp_dir) if temp_dir else None,
+            "edge_version": edge_version,
+            "msedgedriver_version": edgedriver_version,
+        }
+        self.logger.debug(
+            f"ENV_BROWSER_STARTUP_CONTEXT: {json.dumps(diagnostics, ensure_ascii=False, default=str)}"
+        )
+
+    def _log_attempt_runtime_context(
+        self,
+        attempt: int,
+        max_retries: int,
+        user_data_dir: str,
+        config: Dict[str, Any],
+        options: EdgeOptions
+    ) -> None:
+        """Логирует контекст конкретной попытки создания драйвера."""
+        if not self.logger:
+            return
+
+        default_lock_path = os.path.join(user_data_dir, "Default", "Lock")
+        local_state_path = os.path.join(user_data_dir, "Local State")
+        runtime_context = {
+            "attempt": attempt,
+            "max_retries": max_retries,
+            "headless": config.get('headless', self.config.get('HEADLESS', False)),
+            "window_size": config.get('window_size', [1920, 1080]),
+            "user_data_dir": user_data_dir,
+            "lock_exists_before_start": os.path.exists(default_lock_path),
+            "local_state_exists": os.path.exists(local_state_path),
+            "options_arguments": list(getattr(options, "arguments", [])),
+            "options_experimental": getattr(options, "experimental_options", {}),
+        }
+        self.logger.debug(
+            f"BROWSER_START_ATTEMPT_CONTEXT: {json.dumps(runtime_context, ensure_ascii=False, default=str)}"
+        )
+
+    def _log_post_failed_attempt_state(self, user_data_dir: str, attempt: int) -> None:
+        """Логирует состояние окружения сразу после неудачной попытки старта драйвера."""
+        if not self.logger:
+            return
+
+        lock_path = os.path.join(user_data_dir, "Default", "Lock")
+        local_state_path = os.path.join(user_data_dir, "Local State")
+        post_state = {
+            "attempt": attempt,
+            "lock_exists_after_failure": os.path.exists(lock_path),
+            "local_state_exists_after_failure": os.path.exists(local_state_path),
+            "local_state_mtime": self._get_file_mtime(local_state_path),
+            "msedge_process_count_after_failure": self._get_process_count("msedge.exe"),
+        }
+        self.logger.debug(
+            f"BROWSER_POST_FAILURE_STATE: {json.dumps(post_state, ensure_ascii=False, default=str)}"
+        )
+
+    def _log_known_startup_crash_signature(self, error: Exception, attempt: int, max_retries: int) -> None:
+        """Логирует маркер известного инцидента падения старта браузера."""
+        if not self.logger:
+            return
+
+        message = str(error)
+        if self._is_startup_crash_signature(error):
+            self.logger.error(
+                "BROWSER_STARTUP_CRASH_SIGNATURE: "
+                f"attempt={attempt}/{max_retries}; message={message}"
+            )
+
+    @staticmethod
+    def _is_startup_crash_signature(error: Exception) -> bool:
+        """Проверяет, содержит ли ошибка сигнатуру падения старта браузера."""
+        message = str(error)
+        crash_tokens = (
+            "DevToolsActivePort file doesn't exist",
+            "Microsoft Edge failed to start: crashed",
+            "session not created",
+        )
+        return any(token in message for token in crash_tokens)
+
+    @staticmethod
+    def _get_file_mtime(path: str) -> Optional[str]:
+        """Возвращает mtime файла в строковом формате ISO, если файл существует."""
+        try:
+            if not path or not os.path.exists(path):
+                return None
+            return datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _get_disk_free_mb(path: str) -> Optional[int]:
+        """Возвращает объем свободного места в MB для диска, где расположен путь."""
+        try:
+            if not path:
+                return None
+            target = path
+            if not os.path.exists(target):
+                target = os.path.dirname(target) or target
+            usage = shutil.disk_usage(target)
+            return int(usage.free / (1024 * 1024))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _get_command_output(command: str) -> str:
+        """Запускает shell-команду и возвращает stdout либо сообщение об ошибке."""
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, shell=True, timeout=5)
+            if result.returncode == 0 and result.stdout:
+                return result.stdout.strip()
+            if result.stderr:
+                return f"error: {result.stderr.strip()}"
+            return f"error: returncode={result.returncode}"
+        except Exception as e:
+            return f"error: {type(e).__name__}: {e}"
+
+    @staticmethod
+    def _get_process_count(process_name: str) -> Optional[int]:
+        """Возвращает количество процессов по имени через tasklist."""
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {process_name}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return None
+            lines = [line for line in result.stdout.splitlines() if process_name.lower() in line.lower()]
+            return len(lines)
+        except Exception:
+            return None
+
+    def _safe_get_current_user(self) -> str:
+        """Безопасное получение текущего пользователя с fallback в env."""
+        try:
+            return self._get_current_user()
+        except Exception:
+            return os.environ.get("USERNAME", "unknown")
 
     def close_browser(self):
         """Закрытие браузера и освобождение ресурсов"""

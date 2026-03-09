@@ -110,6 +110,56 @@ class TestBaseParser(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(self.parser.driver, mock_driver)
 
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.webdriver.Edge')
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.time.sleep')
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.os.path.exists', return_value=True)
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.BaseParser._get_default_browser_user_data_dir', return_value='C:/tmp/edge-profile')
+    def test_setup_browser_fallback_to_non_headless_on_startup_crash(
+        self, mock_get_default_path, mock_exists, mock_sleep, mock_webdriver
+    ):
+        """Тест аварийного обхода: после краша в headless выполняется fallback headless=False."""
+        crash_error = Exception("Microsoft Edge failed to start: crashed. DevToolsActivePort file doesn't exist")
+        fallback_driver = Mock()
+        fallback_driver.session_id = "fallback_session_id_12345"
+
+        # 3 фейла primary + 1 успешный запуск fallback.
+        mock_webdriver.side_effect = [crash_error, crash_error, crash_error, fallback_driver]
+
+        self.parser._terminate_browser_processes = Mock()
+        self.parser._cleanup_lock_files = Mock()
+        self.parser._log_startup_environment = Mock()
+        self.parser.config['browser_config']['headless'] = True
+
+        result = self.parser.setup_browser()
+
+        self.assertTrue(result)
+        self.assertEqual(self.parser.driver, fallback_driver)
+        # Один вызов до primary + один перед fallback.
+        self.assertEqual(self.parser._terminate_browser_processes.call_count, 2)
+        self.assertEqual(mock_webdriver.call_count, 4)
+
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.webdriver.Edge')
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.time.sleep')
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.os.path.exists', return_value=True)
+    @patch('scheduler_runner.tasks.reports.parser.core.base_parser.BaseParser._get_default_browser_user_data_dir', return_value='C:/tmp/edge-profile')
+    def test_setup_browser_no_fallback_for_non_signature_error(
+        self, mock_get_default_path, mock_exists, mock_sleep, mock_webdriver
+    ):
+        """Тест: fallback не срабатывает, если ошибка не содержит сигнатуру startup crash."""
+        generic_error = Exception("Random webdriver error")
+        mock_webdriver.side_effect = [generic_error, generic_error, generic_error]
+
+        self.parser._terminate_browser_processes = Mock()
+        self.parser._cleanup_lock_files = Mock()
+        self.parser._log_startup_environment = Mock()
+
+        result = self.parser.setup_browser()
+
+        self.assertFalse(result)
+        # Только первичный вызов, fallback запускаться не должен.
+        self.assertEqual(self.parser._terminate_browser_processes.call_count, 1)
+        self.assertEqual(mock_webdriver.call_count, 3)
+
     def test_close_browser(self):
         """Тест закрытия браузера"""
         mock_driver = Mock()
