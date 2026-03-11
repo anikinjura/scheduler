@@ -7,6 +7,7 @@ system.py
     - Выключение компьютера (shutdown) с учётом платформы (Windows, Linux, macOS)
     - Возможность расширения: перезагрузка, выход из системы и др.
     - Транслитерация кириллических строк для использования в путях файловой системы
+    - Обратная конвертация транслита в кириллицу
 
 Функции и классы:
     - SystemUtils.shutdown_computer(logger: logging.Logger, force: bool = False) -> None
@@ -14,15 +15,18 @@ system.py
         Логирует все этапы и ошибки.
     - SystemUtils.cyrillic_to_translit(text: str) -> str
         Конвертирует кириллический текст в транслит для использования в путях файловой системы.
+    - SystemUtils.translit_to_cyrillic(text: str, uppercase_first: bool = False) -> str
+        Конвертирует транслитерированный текст обратно в кириллицу.
 
 Пример использования:
     from scheduler_runner.utils.system import SystemUtils
     SystemUtils.shutdown_computer(logger)
     safe_path_name = SystemUtils.cyrillic_to_translit("ЧЕБОКСАРЫ_182")
+    # Обратная конвертация: SystemUtils.translit_to_cyrillic("cheboksary_182") → "Чебоксары_182"
 
 Author: anikinjura
 """
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 import subprocess
 import logging
@@ -32,6 +36,23 @@ class SystemUtils:
     """
     Системные утилиты для выполнения операций, связанных с управлением системой.
     """
+
+    # Словарь транслитерации (кириллица → транслит)
+    CYRILLIC_TO_TRANSLIT_MAP = {
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
+        'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+        'Ф': 'F', 'Х': 'Kh', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Shch',
+        'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+    }
+
+    # Обратный словарь (транслит → кириллица) - для основных однозначных соответствий
+    TRANSLIT_TO_CYRILLIC_MAP = {v: k for k, v in CYRILLIC_TO_TRANSLIT_MAP.items() if v}
 
     @staticmethod
     def cyrillic_to_translit(text: str) -> str:
@@ -44,26 +65,65 @@ class SystemUtils:
         Returns:
             str: Транслитерированный текст
         """
-        # Словарь транслитерации
-        translit_map = {
-            'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
-            'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
-            'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
-            'Ф': 'F', 'Х': 'Kh', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Shch',
-            'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
-            'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
-            'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-            'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-            'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
-            'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
-        }
-
         result = ""
         for char in text:
-            if char in translit_map:
-                result += translit_map[char]
+            if char in SystemUtils.CYRILLIC_TO_TRANSLIT_MAP:
+                result += SystemUtils.CYRILLIC_TO_TRANSLIT_MAP[char]
             else:
                 result += char  # Оставляем символы, не входящие в кириллицу, без изменений (например, цифры и подчеркивания)
+        return result
+
+    @staticmethod
+    def translit_to_cyrillic(text: str, uppercase_first: bool = False) -> str:
+        """
+        Конвертирует транслитерированный текст обратно в кириллицу.
+
+        Примечание: Транслитерация неоднозначна (например, 'kh' может быть 'х' или 'кх'),
+        поэтому функция использует жадный алгоритм для поиска наиболее длинных совпадений.
+
+        Args:
+            text (str): Транслитерированный текст для конвертации
+            uppercase_first (bool): Если True, первая буква результата будет заглавной
+
+        Returns:
+            str: Текст в кириллице (с возможными неоднозначностями)
+        """
+        result = ""
+        i = 0
+        while i < len(text):
+            # Пробуем найти максимально длинное совпадение (сначала 4 символа, потом 3, 2, 1)
+            found = False
+            for length in range(4, 0, -1):
+                if i + length <= len(text):
+                    substring = text[i:i+length]
+                    # Пробуем точное совпадение
+                    if substring in SystemUtils.TRANSLIT_TO_CYRILLIC_MAP:
+                        result += SystemUtils.TRANSLIT_TO_CYRILLIC_MAP[substring]
+                        i += length
+                        found = True
+                        break
+                    # Пробуем совпадение без учёта регистра
+                    substring_lower = substring.lower()
+                    if substring_lower in SystemUtils.TRANSLIT_TO_CYRILLIC_MAP:
+                        cyrillic_char = SystemUtils.TRANSLIT_TO_CYRILLIC_MAP[substring_lower]
+                        # Сохраняем регистр первой буквы
+                        if substring[0].isupper():
+                            result += cyrillic_char.upper()
+                        else:
+                            result += cyrillic_char
+                        i += length
+                        found = True
+                        break
+            
+            if not found:
+                # Оставляем символ как есть (цифры, подчеркивания и т.д.)
+                result += text[i]
+                i += 1
+        
+        # Если нужно, делаем первую букву заглавной
+        if uppercase_first and result:
+            result = result[0].upper() + result[1:] if len(result) > 1 else result.upper()
+        
         return result
 
     @staticmethod

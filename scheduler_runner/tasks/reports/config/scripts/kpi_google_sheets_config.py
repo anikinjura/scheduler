@@ -15,8 +15,25 @@ TABLE_CONFIG = TableConfig(
     id_column="id",
     columns=[
         ColumnDefinition(name="id", column_type=ColumnType.FORMULA, formula_template="=B{row}&C{row}"),
-        ColumnDefinition(name="Дата", column_type=ColumnType.DATA, required=True, unique_key=True),
-        ColumnDefinition(name="ПВЗ", column_type=ColumnType.DATA, required=True, unique_key=True),
+        ColumnDefinition(
+            name="Дата",
+            column_type=ColumnType.DATA,
+            required=True,
+            unique_key=True,
+            coverage_filter=True,
+            coverage_filter_type="date_range",
+            date_input_format="YYYY-MM-DD",
+            date_output_format="DD.MM.YYYY"
+        ),
+        ColumnDefinition(
+            name="ПВЗ",
+            column_type=ColumnType.DATA,
+            required=True,
+            unique_key=True,
+            coverage_filter=True,
+            coverage_filter_type="list",
+            normalization="strip_lower_str"
+        ),
         ColumnDefinition(name="Количество выдач", column_type=ColumnType.DATA),
         ColumnDefinition(name="Прямой поток", column_type=ColumnType.DATA),
         ColumnDefinition(name="Возвратный поток", column_type=ColumnType.DATA),

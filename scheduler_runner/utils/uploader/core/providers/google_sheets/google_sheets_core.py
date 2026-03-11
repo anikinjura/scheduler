@@ -12,12 +12,14 @@ from google.oauth2.service_account import Credentials
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Callable
+from dataclasses import replace
 import time
 import random
 from functools import wraps
 
 from .google_sheets_data_models import TableConfig, ColumnDefinition, ColumnType, _index_to_column_letter
 from scheduler_runner.utils.logging import configure_logger
+from scheduler_runner.utils.system import SystemUtils
 
 
 def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
@@ -305,6 +307,459 @@ class GoogleSheetsReporter:
         if self.table_config:
             return self.table_config.get_column_index(column_name)
         return None
+
+    def _normalize_value(self, value: Any, normalization: Optional[str]) -> Any:
+        """
+        Универсальная нормализация значения (только для coverage-check).
+
+        Args:
+            value: Значение для нормализации
+            normalization: Тип нормализации из ColumnDefinition
+
+        Returns:
+            Нормализованное значение для сравнения
+        """
+        if normalization == "strip_lower_str":
+            # Транслитерация кириллицы + lower case для корректного сравнения
+            normalized = str(value).strip() if value else ""
+            if normalized:
+                # Транслитерация кириллицы в латиницу с использованием SystemUtils
+                normalized = SystemUtils.cyrillic_to_translit(normalized)
+                # Приводим к нижнему регистру для сравнения без учёта регистра
+                normalized = normalized.lower()
+            return normalized
+        elif normalization == "int":
+            try:
+                return int(value) if value else 0
+            except (ValueError, TypeError):
+                return 0
+        else:  # "none" или None
+            return str(value).strip() if value else ""
+
+    @retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
+    def check_missing_items(
+        self,
+        filters: Dict[str, Any],
+        config: Optional[TableConfig] = None,
+        strict_headers: bool = True,
+        max_scan_rows: Optional[int] = None,
+        max_expected_keys: int = 100000
+    ) -> Dict[str, Any]:
+        """
+        Проверка отсутствия комбинаций ключей unique_key_columns в Google Sheets.
+
+        Args:
+            filters: Фильтры для проверки (date_range: {col}_from/{col}_to, list/value: {col})
+            config: Конфигурация таблицы (если None, используется self.table_config)
+            strict_headers: Если False, возвращать подробную диагностику при отсутствии колонок
+            max_scan_rows: Ограничить количество сканируемых строк (None = без ограничений)
+            max_expected_keys: Максимальное количество ожидаемых ключей (защита от product explosion)
+
+        Returns:
+            Стандартизированный ответ с missing_items, stats, diagnostics
+        """
+        operation_start = time.perf_counter()
+        
+        cfg = config or self.table_config
+        if not cfg:
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": "Не указана конфигурация таблицы"
+            }
+
+        uk = list(cfg.unique_key_columns or [])
+        
+        # 1. Выбор колонок с coverage_filter=True
+        coverage_columns = [col for col in cfg.columns if col.coverage_filter]
+        
+        # Fallback на unique_key_columns если ни одна колонка не имеет coverage_filter.
+        # Важно: не мутируем исходный cfg/ColumnDefinition, а строим локальную effective-модель.
+        if not coverage_columns:
+            coverage_columns = []
+            for col in cfg.columns:
+                if col.name not in uk:
+                    continue
+
+                from_key = f"{col.name}_from"
+                to_key = f"{col.name}_to"
+                if from_key in filters and to_key in filters:
+                    filter_type = "date_range"
+                    normalization = col.normalization
+                elif col.name in filters:
+                    filter_value = filters[col.name]
+                    filter_type = "list" if isinstance(filter_value, list) else "value"
+                    normalization = col.normalization or "strip_lower_str"
+                else:
+                    # Тип не определяем здесь: последующая валидация покрытия вернет
+                    # понятную ошибку по отсутствующему фильтру.
+                    filter_type = col.coverage_filter_type
+                    normalization = col.normalization
+
+                coverage_columns.append(
+                    replace(
+                        col,
+                        coverage_filter=True,
+                        coverage_filter_type=filter_type,
+                        normalization=normalization
+                    )
+                )
+
+        # 2. Валидация покрытия unique_key_columns
+        missing_coverage = [col_name for col_name in uk 
+                           if not any(c.name == col_name for c in coverage_columns)]
+        if missing_coverage:
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": f"unique_key_columns не полностью покрыты фильтрами: {missing_coverage}"
+            }
+
+        # 3. Парсинг фильтров и валидация
+        filters_applied = {}
+        expected_values_by_col: Dict[str, List[Any]] = {}
+        normalization_rules = {}
+
+        for col in coverage_columns:
+            col_name = col.name
+            
+            # Сохраняем правила нормализации
+            norm_rule = {}
+            if col.coverage_filter_type == "date_range":
+                norm_rule["input_format"] = col.date_input_format or "YYYY-MM-DD"
+                norm_rule["output_format"] = col.date_output_format or "DD.MM.YYYY"
+            if col.normalization:
+                norm_rule["normalization"] = col.normalization
+            if norm_rule:
+                normalization_rules[col_name] = norm_rule
+
+            # Обработка по типу фильтра
+            if col.coverage_filter_type == "date_range":
+                from_key = f"{col_name}_from"
+                to_key = f"{col_name}_to"
+                
+                if from_key not in filters or to_key not in filters:
+                    return {
+                        "success": False,
+                        "action": "coverage_check",
+                        "error": f"Для колонки '{col_name}' типа date_range требуются фильтры '{from_key}' и '{to_key}'"
+                    }
+                
+                date_from = filters[from_key]
+                date_to = filters[to_key]
+                
+                # Валидация формата дат (MVP: ожидаем YYYY-MM-DD)
+                try:
+                    date_from_obj = datetime.strptime(date_from, "%Y-%m-%d").date()
+                    date_to_obj = datetime.strptime(date_to, "%Y-%m-%d").date()
+                except ValueError as e:
+                    return {
+                        "success": False,
+                        "action": "coverage_check",
+                        "error": f"Некорректный формат даты для '{col_name}': ожидаются YYYY-MM-DD. Ошибка: {e}"
+                    }
+                
+                if date_from_obj > date_to_obj:
+                    return {
+                        "success": False,
+                        "action": "coverage_check",
+                        "error": f"Дата 'from' ({date_from}) больше даты 'to' ({date_to}) для колонки '{col_name}'"
+                    }
+                
+                # Генерация диапазона дат
+                from datetime import timedelta
+                expected_dates = []
+                current = date_from_obj
+                while current <= date_to_obj:
+                    output_format = col.date_output_format or "DD.MM.YYYY"
+                    if output_format != "DD.MM.YYYY":
+                        # MVP coverage-check стандартизует даты в DD.MM.YYYY.
+                        self.logger.warning(f"Неподдерживаемый формат {output_format}, используем DD.MM.YYYY")
+
+                    formatted = self._normalize_date_format(current.strftime("%Y-%m-%d"))
+                    expected_dates.append(formatted)
+                    current += timedelta(days=1)
+                
+                expected_values_by_col[col_name] = expected_dates
+                filters_applied[col_name] = {
+                    "type": "date_range",
+                    "from": date_from,
+                    "to": date_to
+                }
+
+            elif col.coverage_filter_type in ("list", "value"):
+                filter_value = filters.get(col_name)
+
+                if filter_value is None:
+                    return {
+                        "success": False,
+                        "action": "coverage_check",
+                        "error": f"Для колонки '{col_name}' требуется фильтр '{col_name}'"
+                    }
+
+                # Нормализация списка значений
+                if isinstance(filter_value, list):
+                    values_list = filter_value
+                else:
+                    values_list = [filter_value]
+
+                # Нормализация каждого значения
+                normalized_values = [
+                    self._normalize_value(v, col.normalization)
+                    for v in values_list
+                ]
+                
+                # Отладочное логирование нормализации фильтра
+                self.logger.debug(f"Фильтр {col_name}: original={values_list} → normalized={normalized_values}")
+
+                expected_values_by_col[col_name] = normalized_values
+                filters_applied[col_name] = {
+                    "type": "list" if isinstance(filter_value, list) else "value",
+                    "values": normalized_values
+                }
+
+        # 4. Получение заголовков и индексов колонок
+        headers = self.worksheet.row_values(cfg.header_row)
+        headers_normalized = [h.strip().lower() for h in headers]
+        
+        # Поиск индексов coverage-колонок
+        col_indexes = {}
+        missing_col_names = []
+        
+        for col in coverage_columns:
+            col_name_lower = col.name.lower().strip()
+            try:
+                idx = headers_normalized.index(col_name_lower) + 1  # Индексы с 1
+                col_indexes[col.name] = idx
+            except ValueError:
+                missing_col_names.append(col.name)
+        
+        # Обработка отсутствующих колонок
+        if missing_col_names:
+            available_cols = [h for h in headers if h.strip()]
+            if strict_headers:
+                error_msg = f"Missing columns: {missing_col_names}"
+            else:
+                error_msg = f"Missing columns: {missing_col_names}. Available columns: {available_cols}"
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": error_msg
+            }
+
+        # 5. Определение диапазона чтения
+        # Выбираем первую required/unique колонку для определения last_data_row
+        selected_col_for_last_row = None
+        for col in coverage_columns:
+            if col.required or col.unique_key:
+                selected_col_for_last_row = col.name
+                break
+        
+        if selected_col_for_last_row and selected_col_for_last_row in col_indexes:
+            last_data_row = self.get_last_row_with_data(
+                column_index=col_indexes[selected_col_for_last_row],
+                start_row=2
+            )
+        else:
+            last_data_row = self.get_last_row_with_data(start_row=2)
+        
+        max_row = min(self.worksheet.row_count, last_data_row + 10)  # buffer = 10
+        
+        if max_scan_rows:
+            max_row = min(max_row, cfg.header_row + max_scan_rows)
+        
+        header_row = cfg.header_row
+        scanned_rows = max_row - header_row
+
+        # 6. Формирование A1-диапазонов для batch_get
+        ranges = []
+        for col in coverage_columns:
+            col_idx = col_indexes[col.name]
+            col_letter = _index_to_column_letter(col_idx)
+            range_str = f"{col_letter}{header_row + 1}:{col_letter}{max_row}"
+            ranges.append(range_str)
+
+        # 7. Выполнение batch_get (один запрос на все колонки)
+        batch_start = time.perf_counter()
+        batch_values = self.worksheet.batch_get(ranges)
+        batch_get_ms = int((time.perf_counter() - batch_start) * 1000)
+
+        # Распаковка значений (паттерн из _find_rows_by_unique_keys_batch)
+        cols_values: Dict[str, List[Any]] = {}
+        for i, col in enumerate(coverage_columns):
+            vals = batch_values[i] if i < len(batch_values) else []
+            flat = []
+            for item in vals:
+                if isinstance(item, list) and len(item) > 0:
+                    flat.append(item[0])
+                else:
+                    flat.append(item if not isinstance(item, list) else "")
+            cols_values[col.name] = flat
+
+        self.logger.debug(
+            f"Прочитано значений из таблицы: {[(col.name, len(cols_values[col.name])) for col in coverage_columns]}"
+        )
+
+        # 8. Нормализация и построение множества присутствия
+        present_set = set()
+        duplicates_counter: Dict[tuple, int] = {}
+        anomalies: List[Dict[str, Any]] = []
+
+        max_len = max((len(v) for v in cols_values.values()), default=0)
+        
+        self.logger.debug(
+            f"Ожидаемые значения фильтров: {[(k, len(v)) for k, v in expected_values_by_col.items()]}"
+        )
+
+        for row_idx in range(max_len):
+            row_values = []
+            row_has_empty_required = False
+            empty_required_cols = []
+
+            for col in coverage_columns:
+                raw_value = cols_values[col.name][row_idx] if row_idx < len(cols_values[col.name]) else ""
+                if col.coverage_filter_type == "date_range":
+                    norm_value = self._normalize_date_format(raw_value)
+                else:
+                    norm_value = self._normalize_value(raw_value, col.normalization)
+                
+                # Проверка на пустые значения в required колонках
+                if col.required and (norm_value == "" or norm_value is None):
+                    row_has_empty_required = True
+                    empty_required_cols.append(col.name)
+
+                row_values.append(norm_value)
+
+            if row_has_empty_required:
+                anomalies.append({
+                    "row": row_idx + header_row + 1,
+                    "reason": f"empty_value_in_required_columns: {empty_required_cols}"
+                })
+                continue
+
+            # Проверка попадания в фильтр
+            passes_filter = True
+            for i, col in enumerate(coverage_columns):
+                col_value = row_values[i]
+                expected = expected_values_by_col.get(col.name, [])
+
+                if col.coverage_filter_type == "date_range":
+                    # Для дат проверяем попадание в диапазон
+                    if col_value not in expected:
+                        passes_filter = False
+                        break
+                elif col.coverage_filter_type in ("list", "value"):
+                    # Для list/value проверяем наличие в списке
+                    if col_value not in expected:
+                        passes_filter = False
+                        break
+            
+            if passes_filter:
+                key_tuple = tuple(row_values)
+                present_set.add(key_tuple)
+                duplicates_counter[key_tuple] = duplicates_counter.get(key_tuple, 0) + 1
+
+        self.logger.info(f"present_set size={len(present_set)}, expected_keys size will be calculated")
+        self.logger.debug(
+            f"coverage-check summary before product: ranges={ranges}, scanned_rows={scanned_rows}, "
+            f"duplicates_candidates={sum(1 for c in duplicates_counter.values() if c > 1)}, anomalies={len(anomalies)}"
+        )
+
+        # 9. Safeguard против product explosion
+        expected_count = 1
+        for col in coverage_columns:
+            expected_count *= len(expected_values_by_col.get(col.name, []))
+        
+        if expected_count > max_expected_keys:
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": f"Превышен лимит ожидаемых ключей: {expected_count} > {max_expected_keys}"
+            }
+
+        # 10. Генерация декартова произведения ожидаемых значений
+        from itertools import product
+        
+        expected_keys = set()
+        col_order = [col.name for col in coverage_columns]
+        values_lists = [expected_values_by_col[col_name] for col_name in col_order]
+        
+        for combo in product(*values_lists):
+            expected_keys.add(combo)
+
+        # 11. Вычисление missing
+        missing = expected_keys - present_set
+        
+        # 12. Формирование missing_items в нормализованном виде.
+        # Контракт coverage-check должен возвращать значения в том же виде,
+        # в котором они сравниваются и ожидаются downstream backfill-сервисами.
+        missing_items = []
+        for key_tuple in sorted(missing):
+            item_dict = {}
+            for i, col_name in enumerate(col_order):
+                item_dict[col_name] = key_tuple[i]
+            missing_items.append(item_dict)
+
+        # 13. Группировка missing_by_key по unique_key_columns[0]
+        missing_by_key: Dict[str, List[Dict[str, Any]]] = {}
+        group_by_col = uk[0] if uk else col_order[0]
+        group_idx = col_order.index(group_by_col) if group_by_col in col_order else 0
+        
+        for key_tuple in sorted(missing):
+            group_value = key_tuple[group_idx]
+            remaining = {col_order[i]: key_tuple[i] for i in range(len(col_order)) if i != group_idx}
+            
+            if group_value not in missing_by_key:
+                missing_by_key[group_value] = []
+            missing_by_key[group_value].append(remaining)
+
+        # 14. Сборка дубликатов (только те, где count > 1)
+        duplicates_samples = []
+        for key_tuple, count in duplicates_counter.items():
+            if count > 1:
+                sample = {col_order[i]: key_tuple[i] for i in range(len(col_order))}
+                sample["count"] = count
+                duplicates_samples.append(sample)
+                if len(duplicates_samples) >= 20:  # Лимит 20 образцов
+                    break
+
+        # 15. Сборка ответа
+        operation_duration = time.perf_counter() - operation_start
+        
+        self.logger.info(
+            f"Coverage-check завершен: expected={len(expected_keys)}, "
+            f"present={len(present_set)}, missing={len(missing)}, "
+            f"scanned_rows={scanned_rows}, batch_get_ms={batch_get_ms}"
+        )
+        
+        return {
+            "success": True,
+            "action": "coverage_check",
+            "message": "Coverage computed",
+            "data": {
+                "filters_applied": filters_applied,
+                "key_columns": uk if uk else col_order,
+                "normalization_rules": normalization_rules,
+                "missing_items": missing_items,
+                "missing_by_key": missing_by_key,
+                "stats": {
+                    "expected_keys": len(expected_keys),
+                    "present_keys": len(present_set),
+                    "missing_keys": len(missing),
+                    "scanned_rows": scanned_rows,
+                    "batch_get_ms": batch_get_ms,
+                    "read_cells_est": scanned_rows * len(coverage_columns),
+                    "duplicates_keys_count": sum(1 for c in duplicates_counter.values() if c > 1),
+                    "anomalies_count": len(anomalies)
+                },
+                "diagnostics": {
+                    "ranges": ranges,
+                    "duplicates_samples": duplicates_samples,
+                    "anomalies_samples": anomalies[:20]
+                }
+            },
+            "error": None
+        }
 
     def update_or_append_data_with_config(self,
                                          data: Dict[str, Any],

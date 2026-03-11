@@ -10,6 +10,7 @@
 - upload_data(): Загрузка одиночного набора данных
 - upload_batch_data(): Пакетная загрузка данных
 - test_connection(): Проверка подключения
+- check_missing_items(): Проверка отсутствия комбинаций ключей в таблице
 
 Параметры, которые принимаются извне:
 - Параметры подключения (путь к учетным данным, ID таблицы и т.д.)
@@ -18,7 +19,7 @@
 - Дополнительные параметры загрузки (опционально)
 """
 
-from .interface import upload_data, upload_batch_data, test_connection
+from .interface import upload_data, upload_batch_data, test_connection, check_missing_items
 from .configs.base_configs.base_uploader_config import BASE_UPLOADER_CONFIG
 from .configs.base_configs.google_sheets_config import GOOGLE_SHEETS_BASE_CONFIG
 
@@ -26,6 +27,7 @@ __all__ = [
     'upload_data',
     'upload_batch_data',
     'test_connection',
+    'check_missing_items',
     'BASE_UPLOADER_CONFIG',
     'GOOGLE_SHEETS_BASE_CONFIG'
 ]

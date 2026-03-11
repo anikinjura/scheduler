@@ -128,3 +128,66 @@ def test_connection(connection_params: Dict[str, Any], logger=None) -> Dict[str,
             for param in config.get("REQUIRED_CONNECTION_PARAMS", [])
         )
     }
+
+
+def check_missing_items(
+    filters: Dict[str, Any],
+    connection_params: Dict[str, Any],
+    logger=None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Проверка отсутствия комбинаций ключей unique_key_columns в Google Sheets.
+
+    Args:
+        filters: Фильтры для проверки:
+            - date_range: "{col}_from" и "{col}_to" (ISO YYYY-MM-DD)
+            - list: "{col}" (str | int | List[str|int])
+            - value: "{col}" (единственное значение)
+        connection_params: Параметры подключения (CREDENTIALS_PATH, SPREADSHEET_ID, WORKSHEET_NAME, TABLE_CONFIG)
+        logger: Объект логгера (если не передан, будет использован внутренний)
+        **kwargs: Дополнительные параметры:
+            - strict_headers: bool (default True) — ошибка при отсутствии заголовков
+            - max_scan_rows: int | None — ограничить чтение строк
+            - max_expected_keys: int (default 100000) — лимит декартова произведения
+
+    Returns:
+        Dict с результатами проверки:
+        {
+            "success": bool,
+            "action": "coverage_check",
+            "data": {
+                "missing_items": [...],
+                "missing_by_key": {...},
+                "stats": {...},
+                "diagnostics": {...}
+            },
+            "error": str | None
+        }
+    """
+    # Формируем конфигурацию из переданных параметров
+    config = {
+        **connection_params,  # Параметры подключения
+    }
+
+    # Добавляем другие параметры из kwargs
+    config.update(kwargs)
+
+    # Создаем экземпляр загрузчика
+    uploader = GoogleSheetsUploader(config=config, logger=logger)
+
+    # Подключаемся к системе загрузки
+    if uploader.connect():
+        try:
+            # Выполняем проверку missing_items
+            result = uploader.check_missing_items(filters=filters, **kwargs)
+            return result
+        finally:
+            # Отключаемся от системы загрузки
+            uploader.disconnect()
+    else:
+        return {
+            "success": False,
+            "action": "coverage_check",
+            "error": "Не удалось подключиться к системе загрузки"
+        }

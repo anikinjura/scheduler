@@ -43,6 +43,13 @@ class ColumnDefinition:
         unique_key (bool): Является ли колонка частью уникального ключа записи
         data_key (Optional[str]): Ключ в данных, если отличается от имени колонки
         column_letter (Optional[str]): Буква колонки (A, B, C) - вычисляется автоматически
+        
+        # Coverage-check метаданные (для функциональности check_missing_items)
+        coverage_filter (bool): Участвует ли колонка в фильтрах проверки покрытия (по умолчанию False)
+        coverage_filter_type (Optional[str]): Тип фильтра: "date_range", "list", "value"
+        date_input_format (Optional[str]): Формат входной даты (например, "YYYY-MM-DD")
+        date_output_format (Optional[str]): Формат выходной даты (например, "DD.MM.YYYY")
+        normalization (Optional[str]): Тип нормализации: "strip_lower_str", "int", "none"
     """
     name: str
     column_type: ColumnType = ColumnType.DATA
@@ -51,6 +58,13 @@ class ColumnDefinition:
     unique_key: bool = False  # Является ли частью уникального ключа
     data_key: Optional[str] = None  # Ключ в данных, если отличается от имени колонки
     column_letter: Optional[str] = None  # Буква колонки (A, B, C) - вычисляем позже
+    
+    # Coverage-check метаданные
+    coverage_filter: bool = False
+    coverage_filter_type: Optional[str] = None
+    date_input_format: Optional[str] = None
+    date_output_format: Optional[str] = None
+    normalization: Optional[str] = None
 
     def __post_init__(self):
         """

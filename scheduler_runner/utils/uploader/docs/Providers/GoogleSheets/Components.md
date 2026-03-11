@@ -19,14 +19,28 @@ class GoogleSheetsReporter:
 
 ### Методы
 - `update_or_append_data_with_config()` - универсальный метод для обновления/добавления данных
+- `check_missing_items()` - основной read-only метод coverage-check
 - `get_table_headers()` - возвращает заголовки таблицы
 - `get_last_row_with_data()` - определяет последнюю строку с данными
 - `get_row_by_id()` - находит строку по ID
 - `get_rows_by_unique_keys()` - находит строки по уникальным ключам
 - `_find_rows_by_unique_keys_batch()` - находит строки по уникальным ключам с использованием batch_get для лучшей производительности
 - `_normalize_date_format()` - нормализует формат даты к единому формату DD.MM.YYYY для сравнения
+- `_normalize_value()` - локальная нормализация coverage-check для не-дата значений
 - `_normalize_for_comparison()` - нормализует значение для сравнения в логике поиска
 - `_prepare_value_for_search()` - подготавливает значение для поиска в таблице, нормализует формат дат/чисел/строк
+
+### Coverage-check
+
+`GoogleSheetsReporter.check_missing_items()`:
+- использует `TableConfig` и `coverage_filter` метаданные колонок;
+- читает данные через один `worksheet.batch_get(...)` на все coverage-колонки;
+- валидирует покрытие `unique_key_columns`;
+- возвращает результат в нормализованном виде:
+  - дата: `DD.MM.YYYY`
+  - строковые ключи с `strip_lower_str`: нормализованная строка, например `cheboksary_340`;
+- группирует `missing_by_key` по `unique_key_columns[0]`;
+- пишет operational metrics в `stats` и диагностические данные в `diagnostics`.
 
 ## TableConfig
 
@@ -69,6 +83,11 @@ class ColumnDefinition:
     unique_key: bool = False
     data_key: Optional[str] = None
     column_letter: Optional[str] = None
+    coverage_filter: bool = False
+    coverage_filter_type: Optional[str] = None
+    date_input_format: Optional[str] = None
+    date_output_format: Optional[str] = None
+    normalization: Optional[str] = None
 ```
 
 ### Параметры
@@ -79,6 +98,11 @@ class ColumnDefinition:
 - **unique_key** (`bool`): является ли колонка частью уникального ключа
 - **data_key** (`Optional[str]`): ключ в данных, если отличается от имени
 - **column_letter** (`Optional[str]`): буква колонки (A, B, C)
+- **coverage_filter** (`bool`): участвует ли колонка в coverage-check
+- **coverage_filter_type** (`Optional[str]`): тип фильтра (`date_range`, `list`, `value`)
+- **date_input_format** (`Optional[str]`): формат входной даты
+- **date_output_format** (`Optional[str]`): формат выходной даты
+- **normalization** (`Optional[str]`): тип нормализации значения для coverage-check
 
 ## ColumnType
 

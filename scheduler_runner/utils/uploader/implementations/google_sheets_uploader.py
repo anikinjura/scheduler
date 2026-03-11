@@ -294,3 +294,46 @@ class GoogleSheetsUploader(BaseReportUploader):
         except Exception as e:
             self.logger.error(f"Ошибка при получении информации о таблице: {e}")
             return {"success": False, "error": str(e)}
+
+    def check_missing_items(self, filters: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """
+        Проверка отсутствия комбинаций ключей unique_key_columns в Google Sheets.
+
+        Args:
+            filters: Фильтры для проверки (date_range: {col}_from/{col}_to, list/value: {col})
+            **kwargs: Дополнительные параметры (strict_headers, max_scan_rows, max_expected_keys)
+
+        Returns:
+            Dict с результатами проверки (missing_items, stats, diagnostics)
+        """
+        if self.logger:
+            self.logger.trace("Попали в метод GoogleSheetsUploader.check_missing_items")
+            self.logger.debug(f"Попытка проверки missing_items с фильтрами: {filters}")
+
+        if not self.connected or not self.sheets_reporter:
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": "Нет подключения к Google Sheets"
+            }
+
+        try:
+            # Делегируем в sheets_reporter с переданной table_config
+            result = self.sheets_reporter.check_missing_items(
+                filters=filters,
+                config=self.table_config,
+                **kwargs
+            )
+
+            if self.logger:
+                self.logger.debug(f"Результат проверки missing_items: {result.get('success', False)}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при проверке missing_items: {e}")
+            return {
+                "success": False,
+                "action": "coverage_check",
+                "error": str(e)
+            }

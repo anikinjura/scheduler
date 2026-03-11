@@ -10,6 +10,7 @@
 - `upload_data()` - загрузка одиночного набора данных
 - `upload_batch_data()` - пакетная загрузка данных
 - `test_connection()` - проверка подключения к системе загрузки
+- `check_missing_items()` - проверка отсутствующих комбинаций ключей в destination
 - Стратегии загрузки - управление дубликатами через сопоставление уникальных ключей
 
 ### 2. [Базовые классы](CoreClasses.md)
@@ -18,12 +19,14 @@
 
 ### 3. [Реализации](Implementations/GoogleSheetsUploader.md)
 - `GoogleSheetsUploader` - реализация для загрузки в Google Sheets
+- `GoogleSheetsUploader.check_missing_items()` - read-only wrapper для coverage-check
 
 ### 4. [Компоненты провайдеров](Providers/GoogleSheets/Components.md)
 - `providers/google_sheets/` - компоненты для Google Sheets:
   - `GoogleSheetsReporter` - основной класс для работы с Google Sheets
   - `TableConfig`, `ColumnDefinition`, `ColumnType` - структуры данных для конфигурации таблиц
   - Механизм сопоставления уникальных ключей - избежание дубликатов при загрузке
+  - Coverage-check - чтение наличия данных через `batch_get`
 
 ## Параметры, принимаемые извне
 
@@ -45,6 +48,10 @@
 - `UPLOAD_STRATEGY` - стратегия загрузки (update_or_append, append_only, update_only)
 - `TABLE_CONFIG` - конфигурация структуры таблицы, включая уникальные ключи
 - Другие параметры, специфичные для конкретной задачи
+- Для `check_missing_items()`:
+  - `strict_headers`
+  - `max_scan_rows`
+  - `max_expected_keys`
 
 ### 5. Стратегии загрузки
 - `update_or_append` (по умолчанию) - обновляет строку, если найдена по уникальным ключам, иначе добавляет новую
@@ -113,7 +120,43 @@ else:
     print("Ошибка подключения")
 ```
 
-### 5. Работа с уникальными ключами
+### 5. Coverage-check отсутствующих данных
+```python
+from scheduler_runner.utils.uploader import check_missing_items
+
+filters = {
+    "Дата_from": "2026-03-04",
+    "Дата_to": "2026-03-10",
+    "ПВЗ": "ЧЕБОКСАРЫ_340"
+}
+
+result = check_missing_items(
+    filters=filters,
+    connection_params=connection_params,
+    strict_headers=True,
+    max_expected_keys=100000
+)
+```
+
+Актуальный контракт результата:
+- `missing_items` и `missing_by_key` возвращают значения в нормализованном виде
+- дата: `DD.MM.YYYY`
+- строковые ключи с `normalization="strip_lower_str"`: нормализованное строковое значение, например `cheboksary_340`
+- `stats` содержит:
+  - `expected_keys`
+  - `present_keys`
+  - `missing_keys`
+  - `scanned_rows`
+  - `batch_get_ms`
+  - `read_cells_est`
+  - `duplicates_keys_count`
+  - `anomalies_count`
+- `diagnostics` содержит:
+  - `ranges`
+  - `duplicates_samples`
+  - `anomalies_samples`
+
+### 6. Работа с уникальными ключами
 Микросервис поддерживает стратегию `update_or_append`, которая позволяет избежать дубликатов при загрузке данных:
 
 ```python
@@ -130,7 +173,7 @@ result = upload_data(
 # 3. Если строка не найдена - добавляет новую
 ```
 
-### 6. Примеры использования различных стратегий
+### 7. Примеры использования различных стратегий
 ```python
 # Стратегия update_or_append - обновить или добавить
 result = upload_data(

@@ -117,6 +117,69 @@ else:
     print("Ошибка подключения")
 ```
 
+## check_missing_items()
+
+### Описание
+Read-only проверка отсутствующих комбинаций ключей `unique_key_columns` в Google Sheets по фильтрам.
+
+### Сигнатура
+```python
+def check_missing_items(
+    filters: Dict[str, Any],
+    connection_params: Dict[str, Any],
+    logger=None,
+    **kwargs
+) -> Dict[str, Any]:
+```
+
+### Параметры
+- **filters** (`Dict[str, Any]`): фильтры coverage-check
+  - `date_range`: `"{col}_from"` и `"{col}_to"` в формате `YYYY-MM-DD`
+  - `list`: `"{col}"` со списком значений
+  - `value`: `"{col}"` с одним значением
+- **connection_params** (`Dict[str, Any]`): параметры подключения
+- **logger** (`Optional[Logger]`): объект логгера
+- **kwargs**:
+  - **strict_headers** (`bool`): при `False` ошибка по отсутствующим колонкам содержит список доступных заголовков
+  - **max_scan_rows** (`Optional[int]`): ограничение диапазона чтения
+  - **max_expected_keys** (`int`): safeguard для декартова произведения
+
+### Возвращаемое значение
+- **Dict[str, Any]**: результат coverage-check
+
+Обязательные поля успешного ответа:
+- `success`
+- `action="coverage_check"`
+- `data.filters_applied`
+- `data.key_columns`
+- `data.normalization_rules`
+- `data.missing_items`
+- `data.missing_by_key`
+- `data.stats`
+- `data.diagnostics`
+
+Контракт значений:
+- даты возвращаются в формате `DD.MM.YYYY`
+- строковые ключи с `normalization="strip_lower_str"` возвращаются в нормализованном виде, например `cheboksary_340`
+
+### Пример использования
+```python
+from scheduler_runner.utils.uploader import check_missing_items
+
+filters = {
+    "Дата_from": "2026-03-04",
+    "Дата_to": "2026-03-10",
+    "ПВЗ": "ЧЕБОКСАРЫ_340"
+}
+
+result = check_missing_items(
+    filters=filters,
+    connection_params=connection_params,
+    strict_headers=True,
+    max_expected_keys=100000
+)
+```
+
 ## Стратегии загрузки
 
 ### Описание

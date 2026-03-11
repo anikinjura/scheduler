@@ -19,6 +19,7 @@ class GoogleSheetsUploader(BaseReportUploader):
 - `_establish_connection()` - устанавливает подключение к Google Sheets API
 - `_close_connection()` - закрывает подключение к Google Sheets API
 - `_perform_upload()` - выполняет загрузку данных в Google Sheets
+- `check_missing_items()` - делегирует read-only coverage-check в `GoogleSheetsReporter`
 - `_perform_upload_process()` - реализует основной процесс загрузки отчетов
 - `upload_multiple_reports()` - загрузка нескольких отчетов
 - `get_sheet_info()` - получение информации о таблице
@@ -26,8 +27,10 @@ class GoogleSheetsUploader(BaseReportUploader):
 ### Особенности реализации
 - Использует `GoogleSheetsReporter` для взаимодействия с Google Sheets API
 - Поддерживает стратегии загрузки: `update_or_append`, `append_only`, `update_only`
+- Поддерживает read-only API `check_missing_items()` для поиска отсутствующих ключей
 - Обрабатывает конфигурацию таблицы через `TableConfig`
 - Обеспечивает валидацию данных перед загрузкой
 - Поддерживает работу с уникальными ключами для избежания дубликатов
 - Использует механизм нормализации дат для корректного сопоставления уникальных ключей
 - Применяет эффективный поиск по уникальным ключам с использованием `batch_get`
+- Прокидывает `strict_headers`, `max_scan_rows`, `max_expected_keys` в provider-логику coverage-check
