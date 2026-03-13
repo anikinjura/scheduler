@@ -89,23 +89,29 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Селекторы ПВЗ: {pvz_selectors}")
 
-            pvz_input_selector = pvz_selectors.get("input_class_readonly",
-                                                 pvz_selectors.get("input_readonly",
-                                                                 pvz_selectors.get("input")))
+            selector_candidates = pvz_selectors.get("input_candidates") or [
+                pvz_selectors.get("input_readonly"),
+                pvz_selectors.get("input"),
+                pvz_selectors.get("input_class_readonly"),
+            ]
+            selector_candidates = [selector for selector in selector_candidates if selector]
 
-            if not pvz_input_selector:
+            if not selector_candidates:
                 if self.logger:
                     self.logger.error("Не найден селектор для получения текущего ПВЗ")
                 return "Unknown"
 
-            if self.logger:
-                self.logger.debug(f"Используемый селектор для получения ПВЗ: {pvz_input_selector}")
+            current_pvz = ""
+            for pvz_input_selector in selector_candidates:
+                if self.logger:
+                    self.logger.debug(f"Пробуем селектор для получения ПВЗ: {pvz_input_selector}")
 
-            # Используем метод из базового класса для извлечения значения
-            current_pvz = self.get_element_value(
-                selector=pvz_input_selector,
-                element_type="input"
-            )
+                current_pvz = self.get_element_value(
+                    selector=pvz_input_selector,
+                    element_type="input"
+                )
+                if current_pvz:
+                    break
 
             if self.logger:
                 self.logger.info(f"Текущий ПВЗ: {current_pvz}")
@@ -137,18 +143,24 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Селекторы для установки ПВЗ: {selectors}")
 
-            dropdown_selector = selectors.get("dropdown")
-            option_selector = selectors.get("option")
+            dropdown_candidates = selectors.get("dropdown_candidates") or [
+                selectors.get("dropdown"),
+            ]
+            option_templates = selectors.get("option_candidates") or [
+                selectors.get("option"),
+            ]
+            option_candidates = [
+                option_selector.format(target_pvz=target_pvz)
+                for option_selector in option_templates
+                if option_selector
+            ]
+            dropdown_candidates = [selector for selector in dropdown_candidates if selector]
+            option_candidates = [selector for selector in option_candidates if selector]
 
-            if not dropdown_selector or not option_selector:
+            if not dropdown_candidates or not option_candidates:
                 if self.logger:
                     self.logger.error("Не найдены селекторы для установки ПВЗ")
                 return False
-
-            if self.logger:
-                self.logger.debug(f"Селектор выпадающего списка: {dropdown_selector}")
-                self.logger.debug(f"Селектор опции: {option_selector}")
-                self.logger.debug(f"Целевой ПВЗ для установки: {target_pvz}")
 
             # === ПРОВЕРКА И ЗАКРЫТИЕ ОВЕРЛЕЯ ПЕРЕД ОТКРЫТИЕМ DROPDOWN ===
             if self.logger:
@@ -157,13 +169,24 @@ class OzonReportParser(BaseReportParser):
                 if self.logger:
                     self.logger.warning("Не удалось закрыть оверлей перед открытием dropdown")
 
-            # Используем метод из базового класса для установки значения в выпадающем списке
-            success = self.set_element_value(
-                selector=dropdown_selector,
-                value=target_pvz,
-                element_type="dropdown",
-                option_selector=option_selector
-            )
+            success = False
+            for dropdown_selector in dropdown_candidates:
+                for option_selector in option_candidates:
+                    if self.logger:
+                        self.logger.debug(f"Пробуем dropdown selector: {dropdown_selector}")
+                        self.logger.debug(f"Пробуем option selector: {option_selector}")
+                        self.logger.debug(f"Целевой ПВЗ для установки: {target_pvz}")
+
+                    success = self.set_element_value(
+                        selector=dropdown_selector,
+                        value=target_pvz,
+                        element_type="dropdown",
+                        option_selector=option_selector
+                    )
+                    if success:
+                        break
+                if success:
+                    break
 
             if success:
                 if self.logger:
@@ -255,6 +278,7 @@ class OzonReportParser(BaseReportParser):
                 if current_pvz == 'Unknown':
                     self.logger.warning("⚠️ ПВЗ не определен (Unknown) — возможна проблема с сессией или структурой страницы")
                     self.logger.warning("Проверьте, что браузер находится на правильной странице, а не на странице логина")
+                    self.dump_debug_artifacts("pvz_unknown_before_set")
 
                 # Устанавливаем нужный ПВЗ
                 success = self.set_pvz(required_pvz)
@@ -307,6 +331,7 @@ class OzonReportParser(BaseReportParser):
                 else:
                     if self.logger:
                         self.logger.error(f"Не удалось установить требуемый ПВЗ: {required_pvz}")
+                    self.dump_debug_artifacts("pvz_set_failed")
                     return False
         except Exception as e:
             if self.logger:

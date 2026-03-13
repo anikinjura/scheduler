@@ -24,6 +24,7 @@ import time
 import re
 import os
 import json
+import tempfile
 import platform
 import shutil
 from pathlib import Path
@@ -36,6 +37,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from datetime import datetime
 from typing import Dict, Any, Union, Optional
+from scheduler_runner.utils.logging import ensure_logger_artifacts_dir
 
 
 class BaseParser(ABC):
@@ -200,6 +202,7 @@ class BaseParser(ABC):
         # Создаем экземпляр драйвера Edge с повторными попытками
         max_retries = 3
         retry_delay = 3  # секунды между попытками
+        self._ensure_selenium_manager_environment()
 
         primary_success, crash_signature_detected = self._start_edge_driver_with_retries(
             config=config,
@@ -327,6 +330,9 @@ class BaseParser(ABC):
     def _build_edge_options(self, config: Dict[str, Any], user_data_dir: str) -> EdgeOptions:
         """Создает и возвращает EdgeOptions для запуска браузера."""
         options = EdgeOptions()
+        browser_binary = self._resolve_edge_binary_location()
+        if browser_binary:
+            options.binary_location = browser_binary
         options.add_argument(f"--user-data-dir={user_data_dir}")
         options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -345,6 +351,36 @@ class BaseParser(ABC):
             if self.logger:
                 self.logger.debug(f"Установлен размер окна браузера: {width}x{height}")
         return options
+
+    def _ensure_selenium_manager_environment(self) -> None:
+        """Настраивает writable cache path для Selenium Manager в локальном окружении."""
+        if os.environ.get("SE_CACHE_PATH"):
+            return
+
+        cache_root = os.path.join(tempfile.gettempdir(), "selenium-cache")
+        try:
+            os.makedirs(cache_root, exist_ok=True)
+            os.environ["SE_CACHE_PATH"] = cache_root
+            if self.logger:
+                self.logger.debug(f"Установлен SE_CACHE_PATH: {cache_root}")
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Не удалось установить SE_CACHE_PATH: {e}")
+
+    def _resolve_edge_binary_location(self) -> Optional[str]:
+        """Ищет установленный msedge.exe в типовых Windows paths."""
+        configured_path = self.config.get("BROWSER_BINARY")
+        if configured_path and os.path.exists(configured_path):
+            return configured_path
+
+        candidates = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return None
 
     def _log_user_data_dir_diagnostics(self, user_data_dir: str) -> None:
         """Логирует детали по директории профиля браузера."""
@@ -568,6 +604,56 @@ class BaseParser(ABC):
         else:
             if self.logger:
                 self.logger.debug("Драйвер не инициализирован, закрывать нечего")
+
+    def dump_debug_artifacts(self, label: str) -> dict:
+        """Сохраняет screenshot и HTML текущей страницы для отладки runtime-сбоев."""
+        if not self.driver:
+            return {}
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label or "debug")).strip("_") or "debug"
+        if self.logger:
+            artifacts_dir = ensure_logger_artifacts_dir(self.logger, artifacts_subdir="artifacts")
+        else:
+            artifacts_dir = Path(".tmp") / "parser_debug_artifacts"
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        screenshot_path = artifacts_dir / f"{timestamp}_{safe_label}.png"
+        html_path = artifacts_dir / f"{timestamp}_{safe_label}.html"
+        meta_path = artifacts_dir / f"{timestamp}_{safe_label}.json"
+
+        payload = {
+            "url": None,
+            "title": None,
+            "screenshot_path": str(screenshot_path),
+            "html_path": str(html_path),
+        }
+
+        try:
+            payload["url"] = self.driver.current_url
+            payload["title"] = self.driver.title
+        except Exception:
+            pass
+
+        try:
+            self.driver.save_screenshot(str(screenshot_path))
+        except Exception as e:
+            payload["screenshot_error"] = str(e)
+
+        try:
+            html_path.write_text(self.driver.page_source, encoding="utf-8")
+        except Exception as e:
+            payload["html_error"] = str(e)
+
+        try:
+            meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        if self.logger:
+            self.logger.info(f"DEBUG_ARTIFACTS_SAVED: {json.dumps(payload, ensure_ascii=False)}")
+
+        return payload
 
     # === УНИВЕРСАЛЬНЫЕ МЕТОДЫ РАБОТЫ С ЭЛЕМЕНТАМИ ===
 
@@ -955,13 +1041,33 @@ class BaseParser(ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseParser._get_default_browser_user_data_dir")
+        resolved_path = self._resolve_existing_edge_user_data_dir()
+        if resolved_path:
+            return resolved_path
+
         if username is None:
-            username = self._get_current_user()
+            username = self._safe_get_current_user()
 
         # Получаем путь к данным браузера из конфига или используем значение по умолчанию
         default_path_template = self.config.get('BROWSER_USER_DATA_PATH_TEMPLATE',
                                                "C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data")
         return default_path_template.format(username=username)
+
+    def _resolve_existing_edge_user_data_dir(self) -> Optional[str]:
+        """Ищет существующую директорию профиля Edge через переменные окружения Windows."""
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            candidate = os.path.join(local_app_data, "Microsoft", "Edge", "User Data")
+            if os.path.exists(candidate):
+                return candidate
+
+        user_profile = os.environ.get("USERPROFILE", "").strip()
+        if user_profile:
+            candidate = os.path.join(user_profile, "AppData", "Local", "Microsoft", "Edge", "User Data")
+            if os.path.exists(candidate):
+                return candidate
+
+        return None
 
     def _get_current_user(self) -> str:
         """
@@ -972,7 +1078,11 @@ class BaseParser(ABC):
         """
         if self.logger:
             self.logger.trace("Попали в метод BaseParser._get_current_user")
-        return os.getlogin()
+        return (
+            os.environ.get("USERNAME")
+            or os.environ.get("USER")
+            or os.getlogin()
+        )
 
 
 

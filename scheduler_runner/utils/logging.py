@@ -60,6 +60,39 @@ def trace(self, message, *args, **kwargs):
 
 logging.Logger.trace = trace
 
+
+def build_log_path(user: str, task_name: Optional[str] = None, logs_dir: str = "logs") -> Path:
+    """?????????? ???????????? ???? ? ?????????? ????? ??? user/task."""
+    log_path = Path(logs_dir) / user
+    if task_name:
+        log_path = log_path / task_name
+    return log_path
+
+
+def get_logger_log_path(logger: logging.Logger, default_logs_dir: str = "logs") -> Path:
+    """??????????????? ???? ? ?????????? ????? ?? ??????? logger."""
+    logger_config = _LOGGER_CONFIGS.get(logger.name, {})
+    logs_dir = logger_config.get("logs_dir", default_logs_dir)
+    logger_name_parts = logger.name.split(".", 1)
+    user = logger_name_parts[0]
+    task_name = logger_name_parts[1] if len(logger_name_parts) > 1 else None
+    return build_log_path(user=user, task_name=task_name, logs_dir=logs_dir)
+
+
+def ensure_logger_artifacts_dir(
+    logger: logging.Logger,
+    artifacts_subdir: str = "artifacts",
+    default_logs_dir: str = "logs",
+    default_retention_days: int = 5,
+) -> Path:
+    """??????? ?????????? ?????????? ????? ? ?????? ? ????????? cleanup ?? ????????."""
+    logger_config = _LOGGER_CONFIGS.get(logger.name, {})
+    retention_days = logger_config.get("backup_count", default_retention_days)
+    artifacts_dir = get_logger_log_path(logger, default_logs_dir=default_logs_dir) / artifacts_subdir
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_files(artifacts_dir, retention_days)
+    return artifacts_dir
+
 # Глобальный кеш логгеров и их конфигураций для предотвращения дублирования хендлеров
 _LOGGERS: Dict[str, logging.Logger] = {}
 _LOGGER_CONFIGS: Dict[str, dict] = {}  # Хранит параметры конфигурации для каждого логгера
@@ -104,7 +137,10 @@ def configure_logger(
     current_config = {
         'detailed': detailed,
         'log_levels': log_levels,
-        'single_file_for_levels': single_file_for_levels
+        'single_file_for_levels': single_file_for_levels,
+        'logs_dir': logs_dir,
+        'max_bytes': max_bytes,
+        'backup_count': backup_count
     }
 
     cached_config = _LOGGER_CONFIGS.get(logger_name)
@@ -129,9 +165,7 @@ def configure_logger(
     logger.setLevel(min_level)
 
     # Создаем структуру директорий: logs/user/task_name
-    log_path = Path(logs_dir) / user
-    if task_name:
-        log_path = log_path / task_name
+    log_path = build_log_path(user=user, task_name=task_name, logs_dir=logs_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
     # Формат сообщений: время, уровень, [пользователь.задача], сообщение
@@ -234,25 +268,37 @@ def configure_logger(
 
 def _cleanup_old_logs(log_path: Path, days_to_keep: int) -> None:
     """
-    Удаляет лог-файлы старше указанного количества дней.
+    ?????????????? ??????-?????????? ???????????? ???????????????????? ???????????????????? ????????.
 
-    :param log_path: путь к директории с лог-файлами
-    :param days_to_keep: количество дней для хранения файлов
+    :param log_path: ???????? ?? ???????????????????? ?? ??????-??????????????
+    :param days_to_keep: ???????????????????? ???????? ?????? ???????????????? ????????????
     """
     try:
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-
-        for log_file in log_path.glob("*.log"):
-            # Извлекаем дату из имени файла (формат YYYY-MM-DD.log, YYYY-MM-DD_detailed.log или YYYY-MM-DD_{level}.log)
-            try:
-                date_part = log_file.stem.split('_')[0]  # Убираем суффикс уровня если есть
-                file_date = datetime.strptime(date_part, "%Y-%m-%d")
-
-                if file_date < cutoff_date:
-                    log_file.unlink()
-            except (ValueError, IndexError):
-                # Пропускаем файлы с неожиданным форматом имени
-                continue
+        _cleanup_old_files(log_path, days_to_keep, patterns=["*.log"])
     except Exception:
-        # Ошибки очистки не должны прерывать основную работу
+        # ???????????? ?????????????? ???? ???????????? ?????????????????? ???????????????? ????????????
         pass
+
+
+def _cleanup_old_files(path: Path, days_to_keep: int, patterns: Optional[List[str]] = None) -> None:
+    """??????? ????? ? ????? ? ????? ?????? ?????????? ?????????? ????."""
+    cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+    glob_patterns = patterns or ["*"]
+
+    for pattern in glob_patterns:
+        for file_path in path.glob(pattern):
+            if not file_path.is_file():
+                continue
+            try:
+                date_part = file_path.stem.split('_')[0]
+                file_date = None
+                for date_format in ("%Y-%m-%d", "%Y%m%d"):
+                    try:
+                        file_date = datetime.strptime(date_part, date_format)
+                        break
+                    except ValueError:
+                        continue
+                if file_date and file_date < cutoff_date:
+                    file_path.unlink()
+            except (ValueError, IndexError):
+                continue

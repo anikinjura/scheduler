@@ -634,6 +634,7 @@ def main():
     parser.add_argument("--pvz", action="append", default=None, help="PVZ for backfill; may be passed multiple times")
     args = parser.parse_args()
     processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=args.detailed_logs)
+    parser_logger = create_parser_logger()
     effective_mode = args.mode or ("single" if args.execution_date else "backfill")
 
     try:
@@ -645,6 +646,7 @@ def main():
                 execution_date=execution_date,
                 parser_api=args.parser_api,
                 pvz_id=PVZ_ID,
+                logger=parser_logger,
             )
 
             if parsing_result and isinstance(parsing_result, dict) and ("summary" in parsing_result or "issued_packages" in parsing_result):
@@ -656,7 +658,7 @@ def main():
                 else:
                     create_uploader_logger().warning("Микросервис загрузчика завершился с ошибкой, пропускаем отправку уведомления")
             else:
-                create_parser_logger().warning("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
+                parser_logger.warning("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
         else:
             date_to = args.date_to or datetime.now().strftime("%Y-%m-%d")
             if args.date_from:
@@ -684,6 +686,7 @@ def main():
                     grouped_jobs=grouped_jobs,
                     pvz_ids=resolved_pvz_ids,
                     parser_api=args.parser_api,
+                    logger=parser_logger,
                 )
                 had_missing_dates = False
                 pvz_results = {}
@@ -740,7 +743,7 @@ def main():
                 return
 
             jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
-            batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs)
+            batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
             upload_result = run_upload_batch_microservice(batch_result)
             notification_data = prepare_batch_notification_data(
                 batch_result=batch_result,

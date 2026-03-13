@@ -110,8 +110,9 @@ def execute_parser_internal(
     result_mode="batch",
     save_to_file=False,
     output_format="json",
+    logger=None,
 ):
-    logger = create_parser_logger()
+    logger = logger or create_parser_logger()
     normalized_dates_source = execution_dates or [job.execution_date for job in (jobs or [])]
     normalized_jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=normalized_dates_source)
     normalized_dates = [job.execution_date for job in normalized_jobs]
@@ -166,7 +167,7 @@ def execute_parser_internal(
     return result
 
 
-def run_parsing_microservice(execution_date=None, pvz_id=PVZ_ID):
+def run_parsing_microservice(execution_date=None, pvz_id=PVZ_ID, logger=None):
     return execute_parser_internal(
         parser_api="legacy",
         pvz_id=pvz_id,
@@ -174,10 +175,11 @@ def run_parsing_microservice(execution_date=None, pvz_id=PVZ_ID):
         result_mode="single",
         save_to_file=True,
         output_format="json",
+        logger=logger,
     )
 
 
-def run_batch_parsing_microservice(execution_dates=None, pvz_id=PVZ_ID):
+def run_batch_parsing_microservice(execution_dates=None, pvz_id=PVZ_ID, logger=None):
     return execute_parser_internal(
         parser_api="legacy",
         pvz_id=pvz_id,
@@ -185,10 +187,11 @@ def run_batch_parsing_microservice(execution_dates=None, pvz_id=PVZ_ID):
         result_mode="batch",
         save_to_file=False,
         output_format="json",
+        logger=logger,
     )
 
 
-def run_parsing_microservice_new_api(execution_date=None, pvz_id=PVZ_ID):
+def run_parsing_microservice_new_api(execution_date=None, pvz_id=PVZ_ID, logger=None):
     return execute_parser_internal(
         parser_api="new",
         pvz_id=pvz_id,
@@ -196,10 +199,11 @@ def run_parsing_microservice_new_api(execution_date=None, pvz_id=PVZ_ID):
         result_mode="single",
         save_to_file=True,
         output_format="json",
+        logger=logger,
     )
 
 
-def run_batch_parsing_microservice_new_api(execution_dates=None, pvz_id=PVZ_ID):
+def run_batch_parsing_microservice_new_api(execution_dates=None, pvz_id=PVZ_ID, logger=None):
     return execute_parser_internal(
         parser_api="new",
         pvz_id=pvz_id,
@@ -207,10 +211,11 @@ def run_batch_parsing_microservice_new_api(execution_dates=None, pvz_id=PVZ_ID):
         result_mode="batch",
         save_to_file=False,
         output_format="json",
+        logger=logger,
     )
 
 
-def invoke_parser_for_single_date(*, execution_date=None, parser_api="legacy", pvz_id=PVZ_ID):
+def invoke_parser_for_single_date(*, execution_date=None, parser_api="legacy", pvz_id=PVZ_ID, logger=None):
     normalized_execution_date = execution_date or datetime.now().strftime("%Y-%m-%d")
     return execute_parser_internal(
         parser_api=parser_api,
@@ -219,10 +224,11 @@ def invoke_parser_for_single_date(*, execution_date=None, parser_api="legacy", p
         result_mode="single",
         save_to_file=True,
         output_format="json",
+        logger=logger,
     )
 
 
-def execute_parser_jobs_for_pvz(jobs, parser_api="legacy"):
+def execute_parser_jobs_for_pvz(jobs, parser_api="legacy", logger=None):
     if not jobs:
         return build_empty_batch_result()
 
@@ -233,10 +239,11 @@ def execute_parser_jobs_for_pvz(jobs, parser_api="legacy"):
         result_mode="batch",
         save_to_file=False,
         output_format="json",
+        logger=logger,
     )
 
 
-def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=None, jobs=None):
+def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=None, jobs=None, logger=None):
     normalized_jobs = jobs or build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=execution_dates or [])
     return execute_parser_internal(
         parser_api=parser_api,
@@ -245,10 +252,11 @@ def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=N
         result_mode="batch",
         save_to_file=False,
         output_format="json",
+        logger=logger,
     )
 
 
-def invoke_parser_for_grouped_jobs(*, grouped_jobs, pvz_ids=None, parser_api="legacy"):
+def invoke_parser_for_grouped_jobs(*, grouped_jobs, pvz_ids=None, parser_api="legacy", logger=None):
     batch_results_by_pvz = {}
     ordered_pvz_ids = pvz_ids or list((grouped_jobs or {}).keys())
 
@@ -260,6 +268,7 @@ def invoke_parser_for_grouped_jobs(*, grouped_jobs, pvz_ids=None, parser_api="le
             parser_api=parser_api,
             pvz_id=pvz_id,
             jobs=pvz_jobs,
+            logger=logger,
         )
 
     return batch_results_by_pvz

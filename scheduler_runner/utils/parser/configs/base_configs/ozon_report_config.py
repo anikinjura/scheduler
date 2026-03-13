@@ -69,7 +69,24 @@ OZON_BASE_CONFIG = {
             "dropdown": "//div[contains(@class, 'ozi__input__root__ie7wU') and contains(@class, 'ozi__input-select__root__UA4xr')]",
             "option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//div[contains(@class, 'ozi__data-content__label__TA_HC')]]",
             "option_label": ".//div[contains(@class, 'ozi__data-content__label__TA_HC')]",  # XPath для получения текста метки опции
-            "selected_option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//svg[contains(@class, 'ozi__dropdown-item__checkIcon__cDZcD')]]"
+            "selected_option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//svg[contains(@class, 'ozi__dropdown-item__checkIcon__cDZcD')]]",
+            "input_candidates": [
+                "//input[@id='input___v-0-0' and @readonly]",
+                "//input[@id='input___v-0-0']",
+                "//input[contains(@class, 'ozi__input__input__ie7wU') and @readonly]",
+                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]//input[@readonly]",
+                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]//input"
+            ],
+            "dropdown_candidates": [
+                "//div[contains(@class, 'ozi__input__root__ie7wU') and contains(@class, 'ozi__input-select__root__UA4xr')]",
+                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]",
+                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@readonly and @value]]"
+            ],
+            "option_candidates": [
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//div[contains(@class, 'ozi__data-content__label__TA_HC')]]",
+                "//*[contains(@class, 'ozi__data-content__label__') and normalize-space()='{target_pvz}']",
+                "//*[normalize-space()='{target_pvz}']"
+            ]
         }
     },
 
