@@ -80,7 +80,7 @@ def __init__(self, config: Dict[str, Any], logger=None)
 ## Пример использования
 
 ```python
-from scheduler_runner.tasks.reports.parser.core.base_parser import BaseParser
+from scheduler_runner.utils.parser.core.base_parser import BaseParser
 
 # Создание конфигурации
 config = {

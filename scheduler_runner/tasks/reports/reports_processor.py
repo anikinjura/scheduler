@@ -2,536 +2,600 @@
 """
 reports_processor.py
 
-Процессор поддомена reports, реализующий полный цикл:
-1. Парсинг данных из системы Ozon
-2. Загрузка данных в Google Sheets
-3. Отправка уведомлений через Telegram
+Процессор поддомена reports:
+1. Определяет отсутствующие записи в Google Sheets
+2. Парсит только missing dates
+3. Загружает результат пачкой
+4. Отправляет агрегированное уведомление
 
-Архитектура:
-- Использует изолированные микросервисы для каждой операции
-- Использует централизованную систему логирования
-
-Author: anikinjura
+Single-date режим сохранен для обратной совместимости.
 """
-__version__ = '0.0.1'
+__version__ = '0.1.0'
 
-
-import sys
-import os
-from datetime import datetime
-import logging
 import argparse
+import logging
+import os
+import sys
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-# Добавляем корень проекта в путь Python
+from config.base_config import PVZ_ID
+from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
+from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from scheduler_runner.utils.parser import (
+    build_parser_definition,
+    build_jobs_for_pvz,
+    convert_job_results_to_batch_result,
+    create_parser_logger,
+    execute_parser_internal,
+    execute_parser_jobs_for_pvz,
+    invoke_parser_for_grouped_jobs,
+    invoke_parser_for_pvz,
+    invoke_parser_for_single_date,
+)
+from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
+from scheduler_runner.utils.notifications import (
+    send_notification,
+    test_connection as test_notification_connection,
+)
+from scheduler_runner.utils.system import SystemUtils
+from scheduler_runner.utils.uploader import (
+    check_missing_items,
+    test_connection as test_upload_connection,
+    upload_batch_data,
+)
+
+
 project_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
-# Импортируем микросервисы и утилиту для логирования
-from scheduler_runner.tasks.reports.parser.implementations.multi_step_ozon_parser import MultiStepOzonParser
-from scheduler_runner.tasks.reports.parser.configs.implementations.multi_step_ozon_config import MULTI_STEP_OZON_CONFIG
-from scheduler_runner.utils.uploader import upload_data, upload_batch_data, test_connection as test_upload_connection
-from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
-from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
-from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
+
+@dataclass(frozen=True)
+class PVZExecutionResult:
+    pvz_id: str
+    coverage_result: dict
+    batch_result: dict
+    upload_result: dict
+    notification_data: dict
+
+    @property
+    def missing_dates_count(self):
+        return len(self.coverage_result.get("missing_dates", []))
+
+    @property
+    def successful_jobs_count(self):
+        return len(self.batch_result.get("successful_dates", []))
+
+    @property
+    def failed_jobs_count(self):
+        return len(self.batch_result.get("failed_dates", []))
+
+    @property
+    def uploaded_records(self):
+        return self.upload_result.get("uploaded_records", 0)
 
 
-def create_parser_logger():
-    """
-    Создает и настраивает логгер для микросервиса парсера
+@dataclass(frozen=True)
+class ReportsBackfillExecutionResult:
+    date_from: str | None
+    date_to: str | None
+    processed_pvz_count: int
+    missing_dates_count: int
+    successful_jobs_count: int
+    failed_jobs_count: int
+    uploaded_records: int
+    pvz_results: dict
 
-    Returns:
-        logging.Logger: Настроенный объект логгера для парсера
-    """
-    logger = configure_logger(
-        user="reports_domain",
-        task_name="Parser",
-        log_levels=[TRACE_LEVEL, logging.DEBUG],
-        single_file_for_levels=False
+
+def build_pvz_execution_result(pvz_id, coverage_result=None, batch_result=None, upload_result=None, notification_data=None):
+    return PVZExecutionResult(
+        pvz_id=pvz_id,
+        coverage_result=deepcopy(coverage_result or {}),
+        batch_result=deepcopy(batch_result or {}),
+        upload_result=deepcopy(upload_result or {}),
+        notification_data=deepcopy(notification_data or {}),
     )
 
-    return logger
 
 
 def create_uploader_logger():
-    """
-    Создает и настраивает логгер для микросервиса загрузчика
-
-    Returns:
-        logging.Logger: Настроенный объект логгера для загрузчика
-    """
-    logger = configure_logger(
+    return configure_logger(
         user="reports_domain",
         task_name="Uploader",
         log_levels=[TRACE_LEVEL, logging.DEBUG],
-        single_file_for_levels=False
+        single_file_for_levels=False,
     )
-
-    return logger
 
 
 def create_notification_logger():
-    """
-    Создает и настраивает логгер для микросервиса уведомлений
-
-    Returns:
-        logging.Logger: Настроенный объект логгера для уведомлений
-    """
-    logger = configure_logger(
+    return configure_logger(
         user="reports_domain",
         task_name="Notification",
         log_levels=[TRACE_LEVEL, logging.DEBUG],
-        single_file_for_levels=False
+        single_file_for_levels=False,
     )
 
-    return logger
 
 
-def run_parsing_microservice(execution_date=None):
-    """
-    Запускает микросервис парсера с его собственным логгером
-
-    Args:
-        execution_date: Дата выполнения в формате 'YYYY-MM-DD' (если не указана, используется текущая дата)
-
-    Returns:
-        dict: Результат выполнения микросервиса парсера
-    """
-    # Создаем логгер для парсера
-    logger = create_parser_logger()
-
-    # Логгируем начало процесса
-    logger.info("Запуск микросервиса парсера отчетов Ozon")
-
-    try:
-        # Подготовим конфигурацию
-        logger.debug("Подготовка конфигурации для парсера")
-        config = MULTI_STEP_OZON_CONFIG.copy()
-
-        # Установим дату для отчета
-        if execution_date is None:
-            execution_date = datetime.now().strftime("%Y-%m-%d")
-
-        config['execution_date'] = execution_date
-        logger.info(f"Установлена дата выполнения: {execution_date}")
-
-        # Создаем экземпляр парсера, передав ему его собственный логгер
-        logger.debug("Создание экземпляра парсера")
-        parser = MultiStepOzonParser(config, logger=logger)
-
-        # Запускаем парсер
-        logger.debug("Запуск парсера с собственным логгером")
-        result = parser.run_parser(save_to_file=True, output_format='json')
-
-        # Логгируем результат
-        logger.info(f"Микросервис парсера завершен успешно. Результат: {result}")
-
-        return result
-
-    except Exception as e:
-        # Логгируем ошибку
-        logger.error(f"Ошибка при выполнении микросервиса парсера: {e}", exc_info=True)
-        # Дополнительно логгируем информацию о конфигурации для диагностики
-        try:
-            logger.error(f"Конфигурация парсера: {config}")
-        except:
-            logger.error("Не удалось получить конфигурацию для логирования")
-        raise
 
 
-def run_upload_microservice(parsing_result=None):
-    """
-    Запускает изолированный микросервис загрузчика данных в Google Sheets с его собственным логгером
 
-    Args:
-        parsing_result: Результат работы микросервиса парсера (для передачи данных)
 
-    Returns:
-        dict: Результат выполнения изолированного микросервиса загрузчика
-    """
-    # Создаем логгер для загрузчика
-    logger = create_uploader_logger()
-
-    # Логгируем начало процесса
-    logger.info("Запуск изолированного микросервиса загрузчика данных в Google Sheets")
-
-    try:
-        # Подготовим параметры подключения для изолированного микросервиса
-        logger.debug("Подготовка параметров подключения")
-        connection_params = prepare_connection_params()
-
-        # Подготовим данные для загрузки из результата парсинга
-        logger.debug("Подготовка данных для загрузки")
-        upload_data_list = prepare_upload_data(parsing_result)
-
-        # Проверим подключение к Google Sheets
-        logger.info("Проверка подключения к Google Sheets...")
-        connection_result = test_upload_connection(connection_params, logger=logger)
-        logger.info(f"Результат проверки подключения: {connection_result}")
-
-        if not connection_result.get("success", False):
-            logger.error("Подключение к Google Sheets не удалось")
-            return {"success": False, "error": "Не удалось подключиться к Google Sheets"}
-
-        # Загрузим данные в Google Sheets
-        logger.info(f"Загрузка данных в Google Sheets: {len(upload_data_list)} записей")
-        upload_result = upload_batch_data(
-            data_list=upload_data_list,
-            connection_params=connection_params,
-            logger=logger,
-            strategy="update_or_append"  # Стратегия: обновить если существует, иначе добавить
+def build_jobs_from_missing_dates_by_pvz(missing_dates_by_pvz, definition=None, extra_params_by_pvz=None):
+    parser_definition = definition or build_parser_definition()
+    jobs = []
+    for pvz_id, execution_dates in (missing_dates_by_pvz or {}).items():
+        jobs.extend(
+            build_jobs_for_pvz(
+                pvz_id=pvz_id,
+                execution_dates=execution_dates,
+                definition=parser_definition,
+                extra_params=(extra_params_by_pvz or {}).get(pvz_id),
+            )
         )
+    return jobs
 
-        # Логгируем результат
-        logger.info(f"Изолированный микросервис загрузчика завершен успешно. Результат: {upload_result}")
 
-        return upload_result
+def group_jobs_by_pvz(jobs):
+    grouped_jobs = {}
+    for job in jobs or []:
+        grouped_jobs.setdefault(job.pvz_id, []).append(job)
+    return grouped_jobs
 
-    except Exception as e:
-        # Логгируем ошибку
-        logger.error(f"Ошибка при выполнении изолированного микросервиса загрузчика: {e}", exc_info=True)
-        # Дополнительно логгируем информацию о параметрах подключения и данных для диагностики
-        try:
-            logger.error(f"Параметры подключения: {connection_params}")
-            logger.error(f"Данные для загрузки: {upload_data_list}")
-        except:
-            logger.error("Не удалось получить параметры подключения или данные для логирования")
-        raise
+
+
+
+
+
+
+
+
+
+
 
 
 def prepare_connection_params():
-    """
-    Подготавливает параметры подключения к Google Sheets для изолированного микросервиса
-
-    Returns:
-        dict: Параметры подключения к Google Sheets
-    """
-    # Импортируем классы из нового изолированного микросервиса
-    from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import TableConfig, ColumnDefinition, ColumnType
-
-    # Получаем оригинальную конфигурацию
-    original_table_config = KPI_GOOGLE_SHEETS_CONFIG["TABLE_CONFIG"]
-
-    # Создаем новую конфигурацию с использованием классов из изолированного микросервиса,
-    # но с параметрами из оригинальной конфигурации
-    new_columns = []
-    for col in original_table_config.columns:
-        # Преобразуем старый тип колонки в новый
-        new_column_type = ColumnType.DATA  # по умолчанию
-        if col.column_type.name == 'DATA':
-            new_column_type = ColumnType.DATA
-        elif col.column_type.name == 'FORMULA':
-            new_column_type = ColumnType.FORMULA
-        elif col.column_type.name == 'CALCULATED':
-            new_column_type = ColumnType.CALCULATED
-        elif col.column_type.name == 'IGNORE':
-            new_column_type = ColumnType.IGNORE
-
-        new_columns.append(
-            ColumnDefinition(
-                name=col.name,
-                column_type=new_column_type,
-                required=col.required,
-                formula_template=col.formula_template,
-                unique_key=col.unique_key,
-                data_key=col.data_key,
-                column_letter=col.column_letter
-            )
-        )
-
-    new_table_config = TableConfig(
-        worksheet_name=original_table_config.worksheet_name,
-        columns=new_columns,
-        id_column=original_table_config.id_column,
-        unique_key_columns=original_table_config.unique_key_columns,
-        id_formula_template=original_table_config.id_formula_template,
-        header_row=original_table_config.header_row
-    )
-
-    # Подготовим путь к файлу учетных данных
     from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
 
-    connection_params = {
-        "CREDENTIALS_PATH": str(REPORTS_PATHS['GOOGLE_SHEETS_CREDENTIALS']),  # Путь к файлу учетных данных из конфига
-        "SPREADSHEET_ID": KPI_GOOGLE_SHEETS_CONFIG["SPREADSHEET_ID"],  # ID таблицы из KPI конфига
-        "WORKSHEET_NAME": KPI_GOOGLE_SHEETS_CONFIG["WORKSHEET_NAME"],  # Имя листа из KPI конфига
-        "TABLE_CONFIG": new_table_config,  # Используем новый объект TableConfig из изолированного микросервиса
-        "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"]
+    return {
+        "CREDENTIALS_PATH": str(REPORTS_PATHS["GOOGLE_SHEETS_CREDENTIALS"]),
+        "SPREADSHEET_ID": KPI_GOOGLE_SHEETS_CONFIG["SPREADSHEET_ID"],
+        "WORKSHEET_NAME": KPI_GOOGLE_SHEETS_CONFIG["WORKSHEET_NAME"],
+        "TABLE_CONFIG": deepcopy(KPI_GOOGLE_SHEETS_CONFIG["TABLE_CONFIG"]),
+        "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"],
     }
 
-    return connection_params
+
+def normalize_pvz_id(pvz_id):
+    transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
+    return transliterated.strip().lower()
+
+
+def resolve_pvz_ids(raw_pvz_ids=None):
+    if not raw_pvz_ids:
+        return [PVZ_ID]
+
+    resolved_pvz_ids = []
+    seen_pvz_ids = set()
+    for pvz_id in raw_pvz_ids:
+        normalized_pvz_id = str(pvz_id or "").strip()
+        if not normalized_pvz_id or normalized_pvz_id in seen_pvz_ids:
+            continue
+        resolved_pvz_ids.append(normalized_pvz_id)
+        seen_pvz_ids.add(normalized_pvz_id)
+
+    return resolved_pvz_ids or [PVZ_ID]
+
+
+def prepare_coverage_filters(date_from, date_to, pvz_id):
+    return {
+        "Дата_from": date_from,
+        "Дата_to": date_to,
+        "ПВЗ": [normalize_pvz_id(pvz_id)],
+    }
+
+
+def parse_sheet_date_to_iso(sheet_date):
+    return datetime.strptime(sheet_date, "%d.%m.%Y").strftime("%Y-%m-%d")
+
+
+def detect_missing_report_dates(date_from, date_to, logger=None, max_missing_dates=None, pvz_id=PVZ_ID):
+    logger = logger or create_uploader_logger()
+    connection_params = prepare_connection_params()
+    filters = prepare_coverage_filters(date_from=date_from, date_to=date_to, pvz_id=pvz_id)
+
+    logger.info(f"Проверка покрытия Google Sheets за диапазон {date_from}..{date_to} для PVZ {PVZ_ID}")
+    result = check_missing_items(
+        filters=filters,
+        connection_params=connection_params,
+        logger=logger,
+        strict_headers=BACKFILL_CONFIG.get("strict_headers", True),
+        max_scan_rows=BACKFILL_CONFIG.get("max_scan_rows"),
+        max_expected_keys=BACKFILL_CONFIG.get("max_expected_keys", 1000),
+    )
+
+    if not result.get("success", False):
+        return {
+            "success": False,
+            "pvz_id": pvz_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "missing_dates": [],
+            "coverage_result": result,
+            "error": result.get("error", "coverage_check_failed"),
+        }
+
+    missing_dates = []
+    for item in result.get("data", {}).get("missing_items", []):
+        sheet_date = item.get("Дата")
+        if sheet_date:
+            missing_dates.append(parse_sheet_date_to_iso(sheet_date))
+
+    missing_dates = sorted(set(missing_dates))
+    limit = max_missing_dates if max_missing_dates is not None else BACKFILL_CONFIG.get("max_missing_dates_per_run")
+    truncated = False
+    if limit and len(missing_dates) > limit:
+        missing_dates = missing_dates[:limit]
+        truncated = True
+
+    logger.info(f"Coverage-check завершен: missing_dates={len(missing_dates)}, truncated={truncated}")
+    return {
+        "success": True,
+        "pvz_id": pvz_id,
+        "date_from": date_from,
+        "date_to": date_to,
+        "missing_dates": missing_dates,
+        "coverage_result": result,
+        "truncated": truncated,
+    }
+
+
+def detect_missing_report_dates_by_pvz(date_from, date_to, pvz_ids, logger=None, max_missing_dates=None):
+    logger = logger or create_uploader_logger()
+    resolved_pvz_ids = resolve_pvz_ids(pvz_ids)
+    missing_dates_by_pvz = {}
+    coverage_results_by_pvz = {}
+    truncated_pvz_ids = []
+
+    for pvz_id in resolved_pvz_ids:
+        coverage_result = detect_missing_report_dates(
+            date_from=date_from,
+            date_to=date_to,
+            logger=logger,
+            max_missing_dates=max_missing_dates,
+            pvz_id=pvz_id,
+        )
+        if not coverage_result.get("success", False):
+            return {
+                "success": False,
+                "pvz_id": pvz_id,
+                "date_from": date_from,
+                "date_to": date_to,
+                "missing_dates_by_pvz": missing_dates_by_pvz,
+                "coverage_results_by_pvz": coverage_results_by_pvz,
+                "error": coverage_result.get("error", "coverage_check_failed"),
+            }
+
+        missing_dates_by_pvz[pvz_id] = coverage_result.get("missing_dates", [])
+        coverage_results_by_pvz[pvz_id] = coverage_result
+        if coverage_result.get("truncated"):
+            truncated_pvz_ids.append(pvz_id)
+
+    return {
+        "success": True,
+        "date_from": date_from,
+        "date_to": date_to,
+        "pvz_ids": resolved_pvz_ids,
+        "missing_dates_by_pvz": missing_dates_by_pvz,
+        "coverage_results_by_pvz": coverage_results_by_pvz,
+        "truncated_pvz_ids": truncated_pvz_ids,
+    }
 
 
 def prepare_upload_data(parsing_result=None):
-    """
-    Подготавливает данные для загрузки в Google Sheets из результата парсинга
-
-    Args:
-        parsing_result: Результат работы микросервиса парсера
-
-    Returns:
-        list: Список данных для загрузки в Google Sheets
-    """
     upload_data_list = []
 
-    # Если есть результат парсинга, преобразуем его в формат, подходящий для загрузки
     if parsing_result and isinstance(parsing_result, dict):
-        # Создаем одну запись на основе всей структуры результата парсинга
-        # Извлекаем нужные данные из вложенной структуры
         formatted_record = {}
 
-        # Извлекаем дату и конвертируем в нужный формат
-        if 'execution_date' in parsing_result:
-            # Используем формат даты из конфигурации поддомена
-            # В конфигурации поддомена формат даты определен как "%Y-%m-%d"
-            # Но для Google Sheets может потребоваться формат "%d.%m.%Y"
-            original_date = parsing_result['execution_date']
-            # Проверяем формат входящей даты и конвертируем при необходимости
+        if "execution_date" in parsing_result:
+            original_date = parsing_result["execution_date"]
             try:
-                # Если дата в формате YYYY-MM-DD, преобразуем в DD.MM.YYYY
                 parsed_date = datetime.strptime(original_date, "%Y-%m-%d")
-                formatted_record['Дата'] = parsed_date.strftime("%d.%m.%Y")
+                formatted_record["Дата"] = parsed_date.strftime("%d.%m.%Y")
             except ValueError:
-                # Если формат не YYYY-MM-DD, оставляем как есть
-                formatted_record['Дата'] = original_date
+                formatted_record["Дата"] = original_date
 
-        # Извлекаем ПВЗ
-        if 'location_info' in parsing_result:
-            formatted_record['ПВЗ'] = parsing_result['location_info']
+        if "location_info" in parsing_result:
+            formatted_record["ПВЗ"] = parsing_result["location_info"]
 
-        # Извлекаем данные из summary
-        if 'summary' in parsing_result and isinstance(parsing_result['summary'], dict):
-            summary = parsing_result['summary']
+        if "summary" in parsing_result and isinstance(parsing_result["summary"], dict):
+            summary = parsing_result["summary"]
 
-            # Извлекаем количество выдач
-            if 'giveout' in summary and isinstance(summary['giveout'], dict) and 'value' in summary['giveout']:
-                formatted_record['Количество выдач'] = summary['giveout']['value']
+            if "giveout" in summary and isinstance(summary["giveout"], dict) and "value" in summary["giveout"]:
+                formatted_record["Количество выдач"] = summary["giveout"]["value"]
 
-            # Извлекаем прямой поток
-            if 'direct_flow_total' in summary and isinstance(summary['direct_flow_total'], dict):
-                if 'total_carriages' in summary['direct_flow_total']:
-                    formatted_record['Прямой поток'] = summary['direct_flow_total']['total_carriages']
+            if "direct_flow_total" in summary and isinstance(summary["direct_flow_total"], dict):
+                if "total_carriages" in summary["direct_flow_total"]:
+                    formatted_record["Прямой поток"] = summary["direct_flow_total"]["total_carriages"]
 
-            # Извлекаем возвратный поток
-            if 'return_flow_total' in summary and isinstance(summary['return_flow_total'], dict):
-                if 'total_carriages' in summary['return_flow_total']:
-                    formatted_record['Возвратный поток'] = summary['return_flow_total']['total_carriages']
+            if "return_flow_total" in summary and isinstance(summary["return_flow_total"], dict):
+                if "total_carriages" in summary["return_flow_total"]:
+                    formatted_record["Возвратный поток"] = summary["return_flow_total"]["total_carriages"]
 
-        # Добавляем любые другие поля, которые могут быть полезны
         for key, value in parsing_result.items():
-            if key not in ['summary', 'location_info', 'execution_date', 'extraction_timestamp', 'source_url']:
+            if key not in ["summary", "location_info", "execution_date", "extraction_timestamp", "source_url"]:
                 formatted_record[key.title()] = value
 
-        # Добавляем timestamp с текущим временем
-        formatted_record['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        formatted_record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Проверяем, что обязательные поля присутствуют
-        if 'Дата' in formatted_record and 'ПВЗ' in formatted_record:
+        if "Дата" in formatted_record and "ПВЗ" in formatted_record:
             upload_data_list.append(formatted_record)
         else:
-            # Если обязательные поля отсутствуют, используем старую логику
             upload_record = transform_record_for_upload(parsing_result)
             if upload_record:
                 upload_data_list.append(upload_record)
-    else:
-        # Логгируем, что результат парсинга отсутствует или не является словарем
-        if parsing_result is None:
-            print("DEBUG: parsing_result is None")
-        elif not isinstance(parsing_result, dict):
-            print(f"DEBUG: parsing_result is not a dict, it's {type(parsing_result)}")
-        else:
-            print("DEBUG: parsing_result is a dict but empty or invalid")
 
-    # Если нет результатов парсинга, возвращаем пустой список
-    # (в продуктивной версии не используем тестовые данные)
     return upload_data_list
 
 
+def prepare_upload_data_batch(batch_parsing_result=None):
+    upload_data_list = []
+    if not batch_parsing_result or not isinstance(batch_parsing_result, dict):
+        return upload_data_list
+
+    for date_result in batch_parsing_result.get("results_by_date", {}).values():
+        if not date_result.get("success", False):
+            continue
+        parsing_data = date_result.get("data")
+        if parsing_data:
+            upload_data_list.extend(prepare_upload_data(parsing_data))
+
+    return upload_data_list
+
+
+def run_upload_microservice(parsing_result=None):
+    logger = create_uploader_logger()
+    logger.info("Запуск изолированного микросервиса загрузчика данных в Google Sheets")
+
+    connection_params = prepare_connection_params()
+    upload_data_list = prepare_upload_data(parsing_result)
+
+    connection_result = test_upload_connection(connection_params, logger=logger)
+    logger.info(f"Результат проверки подключения: {connection_result}")
+    if not connection_result.get("success", False):
+        return {"success": False, "error": "Не удалось подключиться к Google Sheets"}
+
+    upload_result = upload_batch_data(
+        data_list=upload_data_list,
+        connection_params=connection_params,
+        logger=logger,
+        strategy="update_or_append",
+    )
+    return upload_result
+
+
+def run_upload_batch_microservice(batch_parsing_result=None):
+    logger = create_uploader_logger()
+    logger.info("Запуск batch upload в Google Sheets")
+
+    connection_params = prepare_connection_params()
+    upload_data_list = prepare_upload_data_batch(batch_parsing_result)
+
+    if not upload_data_list:
+        logger.warning("Для batch upload нет подготовленных записей")
+        return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
+
+    connection_result = test_upload_connection(connection_params, logger=logger)
+    logger.info(f"Результат проверки подключения: {connection_result}")
+    if not connection_result.get("success", False):
+        return {"success": False, "error": "Не удалось подключиться к Google Sheets", "uploaded_records": 0}
+
+    upload_result = upload_batch_data(
+        data_list=upload_data_list,
+        connection_params=connection_params,
+        logger=logger,
+        strategy="update_or_append",
+    )
+    upload_result["uploaded_records"] = len(upload_data_list)
+    return upload_result
+
+
 def transform_record_for_upload(record):
-    """
-    Преобразует отдельную запись из результата парсинга в формат, подходящий для загрузки в Google Sheets
-
-    Args:
-        record: Отдельная запись из результата парсинга
-
-    Returns:
-        dict: Преобразованная запись для загрузки в Google Sheets
-    """
     if not isinstance(record, dict):
-        print(f"DEBUG: record is not a dict, it's {type(record)}")
         return None
 
-    # Преобразуем поля результата парсинга в поля таблицы Google Sheets
-    # Эта логика может варьироваться в зависимости от структуры результата парсинга
     upload_record = {}
-
-    # Пример преобразования - может потребоваться адаптация под реальную структуру данных
     field_mapping = {
-        'date': 'Дата',
-        'pvz': 'ПВЗ',
-        'issued_packages': 'Количество выдач',
-        'direct_flow': 'Прямой поток',
-        'return_flow': 'Возвратный поток'
+        "date": "Дата",
+        "pvz": "ПВЗ",
+        "issued_packages": "Количество выдач",
+        "direct_flow": "Прямой поток",
+        "return_flow": "Возвратный поток",
     }
 
     for source_field, target_field in field_mapping.items():
         if source_field in record:
             upload_record[target_field] = record[source_field]
 
-    # Если в записи есть поля с другими названиями, добавим их тоже
     for key, value in record.items():
-        if key not in field_mapping and key not in ['summary', 'details', 'timestamp']:
-            # Приведем название поля к формату, используемому в Google Sheets
-            formatted_key = key.replace('_', ' ').title()
-            upload_record[formatted_key] = value
+        if key not in field_mapping and key not in ["summary", "details", "timestamp"]:
+            upload_record[key.replace("_", " ").title()] = value
 
-    # Убедимся, что все обязательные поля присутствуют
-    required_fields = ['Дата', 'ПВЗ']
-    for field in required_fields:
-        if field not in upload_record:
-            if field == 'Дата':
-                upload_record[field] = datetime.now().strftime("%Y-%m-%d")
-            elif field == 'ПВЗ':
-                upload_record[field] = "DEFAULT_PVZ"
+    if "Дата" not in upload_record:
+        upload_record["Дата"] = datetime.now().strftime("%Y-%m-%d")
+    if "ПВЗ" not in upload_record:
+        upload_record["ПВЗ"] = "DEFAULT_PVZ"
 
     return upload_record
 
 
 def prepare_notification_data(parsing_result=None):
-    """
-    Подготавливает данные для уведомления из результата парсинга
-
-    Args:
-        parsing_result: Результат работы микросервиса парсера
-
-    Returns:
-        dict: Словарь с данными для уведомления
-    """
     notification_data = {}
 
     if parsing_result and isinstance(parsing_result, dict):
-        # Извлекаем дату
-        if 'execution_date' in parsing_result:
-            # Преобразуем дату в формат DD.MM.YYYY для уведомления
-            original_date = parsing_result['execution_date']
+        if "execution_date" in parsing_result:
+            original_date = parsing_result["execution_date"]
             try:
                 parsed_date = datetime.strptime(original_date, "%Y-%m-%d")
-                notification_data['date'] = parsed_date.strftime("%d.%m.%Y")
+                notification_data["date"] = parsed_date.strftime("%d.%m.%Y")
             except ValueError:
-                notification_data['date'] = original_date
+                notification_data["date"] = original_date
 
-        # Извлекаем ПВЗ
-        if 'location_info' in parsing_result:
-            notification_data['pvz'] = parsing_result['location_info']
+        if "location_info" in parsing_result:
+            notification_data["pvz"] = parsing_result["location_info"]
 
-        # Извлекаем данные из summary
-        if 'summary' in parsing_result and isinstance(parsing_result['summary'], dict):
-            summary = parsing_result['summary']
-
-            # Извлекаем количество выдач
-            if 'giveout' in summary and isinstance(summary['giveout'], dict) and 'value' in summary['giveout']:
-                notification_data['issued_packages'] = summary['giveout']['value']
-
-            # Извлекаем прямой поток
-            if 'direct_flow_total' in summary and isinstance(summary['direct_flow_total'], dict):
-                if 'total_carriages' in summary['direct_flow_total']:
-                    notification_data['direct_flow'] = summary['direct_flow_total']['total_carriages']
-
-            # Извлекаем возвратный поток
-            if 'return_flow_total' in summary and isinstance(summary['return_flow_total'], dict):
-                if 'total_carriages' in summary['return_flow_total']:
-                    notification_data['return_flow'] = summary['return_flow_total']['total_carriages']
-    else:
-        # Логгируем, что результат парсинга отсутствует или не является словарем
-        if parsing_result is None:
-            print("DEBUG: parsing_result is None for notification")
-        elif not isinstance(parsing_result, dict):
-            print(f"DEBUG: parsing_result is not a dict for notification, it's {type(parsing_result)}")
-        else:
-            print("DEBUG: parsing_result is a dict but empty or invalid for notification")
+        if "summary" in parsing_result and isinstance(parsing_result["summary"], dict):
+            summary = parsing_result["summary"]
+            if "giveout" in summary and isinstance(summary["giveout"], dict) and "value" in summary["giveout"]:
+                notification_data["issued_packages"] = summary["giveout"]["value"]
+            if "direct_flow_total" in summary and isinstance(summary["direct_flow_total"], dict):
+                if "total_carriages" in summary["direct_flow_total"]:
+                    notification_data["direct_flow"] = summary["direct_flow_total"]["total_carriages"]
+            if "return_flow_total" in summary and isinstance(summary["return_flow_total"], dict):
+                if "total_carriages" in summary["return_flow_total"]:
+                    notification_data["return_flow"] = summary["return_flow_total"]["total_carriages"]
 
     return notification_data
 
 
 def format_notification_message(notification_data):
-    """
-    Форматирует сообщение для уведомления в Telegram
-
-    Args:
-        notification_data: Данные для формирования сообщения
-
-    Returns:
-        str: Отформатированное сообщение для уведомления
-    """
-    # Шаблон сообщения
-    message_template = "📊 KPI отчет за {date}\nПВЗ: {pvz}\nВыдач: {issued_packages}\nПрямой поток: {direct_flow}\nВозвратный поток: {return_flow}"
-
-    # Заполняем шаблон данными
-    message = message_template.format(
-        date=notification_data.get('date', 'Неизвестно'),
-        pvz=notification_data.get('pvz', 'Неизвестно'),
-        issued_packages=notification_data.get('issued_packages', 0),
-        direct_flow=notification_data.get('direct_flow', 0),
-        return_flow=notification_data.get('return_flow', 0)
+    return (
+        f"KPI отчет за {notification_data.get('date', 'Неизвестно')}\n"
+        f"ПВЗ: {notification_data.get('pvz', 'Неизвестно')}\n"
+        f"Выдач: {notification_data.get('issued_packages', 0)}\n"
+        f"Прямой поток: {notification_data.get('direct_flow', 0)}\n"
+        f"Возвратный поток: {notification_data.get('return_flow', 0)}"
     )
 
-    return message
+
+def prepare_batch_notification_data(batch_result=None, upload_result=None, coverage_result=None, pvz_id=PVZ_ID):
+    batch_result = batch_result or {}
+    upload_result = upload_result or {}
+    coverage_result = coverage_result or {}
+
+    failed_dates = [
+        date for date, result in batch_result.get("results_by_date", {}).items()
+        if not result.get("success", False)
+    ]
+
+    return {
+        "pvz": pvz_id,
+        "date_from": coverage_result.get("date_from"),
+        "date_to": coverage_result.get("date_to"),
+        "missing_dates_count": len(coverage_result.get("missing_dates", [])),
+        "successful_dates": batch_result.get("successful_dates", 0),
+        "failed_dates": failed_dates,
+        "uploaded_records": upload_result.get("uploaded_records", 0),
+        "upload_success": upload_result.get("success", False),
+    }
+
+
+def format_batch_notification_message(notification_data):
+    failed_dates = notification_data.get("failed_dates", [])
+    failed_suffix = ", ".join(failed_dates[:5]) if failed_dates else "-"
+    return (
+        "KPI backfill\n"
+        f"ПВЗ: {notification_data.get('pvz', '-')}\n"
+        f"Диапазон: {notification_data.get('date_from', '-')} .. {notification_data.get('date_to', '-')}\n"
+        f"Отсутствовало дат: {notification_data.get('missing_dates_count', 0)}\n"
+        f"Успешно спарсено: {notification_data.get('successful_dates', 0)}\n"
+        f"Загружено записей: {notification_data.get('uploaded_records', 0)}\n"
+        f"Неуспешные даты: {failed_suffix}"
+    )
+
+
+def build_aggregated_backfill_summary(pvz_results=None, date_from=None, date_to=None):
+    normalized_pvz_results = {}
+    for pvz_id, pvz_result in (pvz_results or {}).items():
+        normalized_pvz_results[pvz_id] = (
+            pvz_result
+            if isinstance(pvz_result, PVZExecutionResult)
+            else build_pvz_execution_result(
+                pvz_id=pvz_id,
+                coverage_result=pvz_result.get("coverage_result", {}),
+                batch_result=pvz_result.get("batch_result", {}),
+                upload_result=pvz_result.get("upload_result", {}),
+                notification_data=pvz_result.get("notification_data", {}),
+            )
+        )
+    processed_pvz_count = len(normalized_pvz_results)
+    missing_dates_count = 0
+    successful_jobs_count = 0
+    failed_jobs_count = 0
+    uploaded_records = 0
+
+    for pvz_result in normalized_pvz_results.values():
+        missing_dates_count += pvz_result.missing_dates_count
+        successful_jobs_count += pvz_result.successful_jobs_count
+        failed_jobs_count += pvz_result.failed_jobs_count
+        uploaded_records += pvz_result.uploaded_records
+
+    return ReportsBackfillExecutionResult(
+        date_from=date_from,
+        date_to=date_to,
+        processed_pvz_count=processed_pvz_count,
+        missing_dates_count=missing_dates_count,
+        successful_jobs_count=successful_jobs_count,
+        failed_jobs_count=failed_jobs_count,
+        uploaded_records=uploaded_records,
+        pvz_results=normalized_pvz_results,
+    )
+
+
+def format_aggregated_backfill_notification_message(summary):
+    pvz_parts = []
+    for pvz_id, pvz_result in summary.pvz_results.items():
+        pvz_parts.append(
+            f"{pvz_id}: missing={pvz_result.missing_dates_count}, "
+            f"ok={pvz_result.successful_jobs_count}, "
+            f"failed={pvz_result.failed_jobs_count}, "
+            f"uploaded={pvz_result.uploaded_records}"
+        )
+
+    details = "\n".join(pvz_parts) if pvz_parts else "-"
+    return (
+        "KPI multi-PVZ backfill\n"
+        f"Диапазон: {summary.date_from or '-'} .. {summary.date_to or '-'}\n"
+        f"Обработано PVZ: {summary.processed_pvz_count}\n"
+        f"Найдено missing dates: {summary.missing_dates_count}\n"
+        f"Успешно jobs: {summary.successful_jobs_count}\n"
+        f"Неуспешно jobs: {summary.failed_jobs_count}\n"
+        f"Загружено записей: {summary.uploaded_records}\n"
+        f"Детали:\n{details}"
+    )
 
 
 def send_notification_microservice(notification_message, logger=None):
-    """
-    Отправляет уведомление через изолированный микросервис уведомлений
-
-    Args:
-        notification_message: Сообщение для отправки
-        logger: Объект логгера
-
-    Returns:
-        dict: Результат отправки уведомления
-    """
-    if logger is None:
-        logger = create_notification_logger()  # Используем изолированный логгер для уведомлений
-
+    logger = logger or create_notification_logger()
     logger.info("Подготовка к отправке уведомления в Telegram...")
 
     try:
-        # Подготовим параметры подключения из конфигурации поддомена
         from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
 
-        # Читаем параметры из REPORTS_PATHS
         token = REPORTS_PATHS.get("TELEGRAM_TOKEN")
         chat_id = REPORTS_PATHS.get("TELEGRAM_CHAT_ID")
 
         if not token or not chat_id:
-            logger.error("Не все параметры подключения присутствуют в REPORTS_PATHS")
-            if not token:
-                logger.error("Отсутствует TELEGRAM_TOKEN")
-            if not chat_id:
-                logger.error("Отсутствует TELEGRAM_CHAT_ID")
+            logger.error("Отсутствуют параметры подключения для Telegram")
             return {"success": False, "error": "Отсутствуют параметры подключения для Telegram"}
 
-        # Подготовим параметры подключения
         connection_params = {
             "TELEGRAM_BOT_TOKEN": token,
-            "TELEGRAM_CHAT_ID": chat_id
+            "TELEGRAM_CHAT_ID": chat_id,
         }
 
-        # Проверим подключение к Telegram
-        logger.info("Проверка подключения к Telegram...")
         connection_result = test_notification_connection(connection_params, logger=logger)
         logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
-
         if not connection_result.get("success", False):
-            logger.error("Подключение к Telegram не удалось")
             return {"success": False, "error": "Не удалось подключиться к Telegram"}
 
-        # Отправим уведомление
-        logger.info(f"Отправка уведомления в Telegram: {len(notification_message)} символов")
         notification_result = send_notification(
             message=notification_message,
             connection_params=connection_params,
-            logger=logger
+            logger=logger,
         )
-
         logger.info(f"Результат отправки уведомления: {notification_result}")
         return notification_result
 
@@ -541,62 +605,156 @@ def send_notification_microservice(notification_message, logger=None):
 
 
 def main():
-    """
-    Основная функция продуктового процессора домена reports
-    """
-    # Парсим аргументы командной строки
-    parser = argparse.ArgumentParser(description='Продуктовый процессор домена reports')
-    parser.add_argument('--execution_date', '-d', 
-                       help='Дата выполнения в формате YYYY-MM-DD (по умолчанию используется текущая дата)')
-    parser.add_argument('--detailed_logs', action='store_true', 
-                       help='Включить детализированное логирование')
-    
+    parser = argparse.ArgumentParser(description="Продуктовый процессор домена reports")
+    parser.add_argument("--execution_date", "-d", help="Дата выполнения в формате YYYY-MM-DD для single-режима")
+    parser.add_argument("--date_from", help="Начало backfill-диапазона в формате YYYY-MM-DD")
+    parser.add_argument("--date_to", help="Конец backfill-диапазона в формате YYYY-MM-DD")
+    parser.add_argument(
+        "--backfill_days",
+        type=int,
+        default=BACKFILL_CONFIG.get("default_days", 7),
+        help="Окно backfill в днях при автоматическом вычислении диапазона",
+    )
+    parser.add_argument("--mode", choices=["single", "backfill"], default=None, help="Режим запуска")
+    parser.add_argument(
+        "--max_missing_dates",
+        type=int,
+        default=BACKFILL_CONFIG.get("max_missing_dates_per_run", 7),
+        help="Максимальное количество missing dates за один batch-run",
+    )
+    parser.add_argument("--detailed_logs", action="store_true", help="Включить детализированное логирование")
+
+    parser.add_argument(
+        "--parser_api",
+        choices=["legacy", "new"],
+        default=BACKFILL_CONFIG.get("default_parser_api", "legacy"),
+        help="Путь вызова parser API",
+    )
+
+    parser.add_argument("--pvz", action="append", default=None, help="PVZ for backfill; may be passed multiple times")
     args = parser.parse_args()
-    
-    execution_date = args.execution_date
-    detailed_logs = args.detailed_logs
+    processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=args.detailed_logs)
+    effective_mode = args.mode or ("single" if args.execution_date else "backfill")
 
     try:
-        # Запускаем микросервис парсинга с его собственным логгером
-        parsing_result = run_parsing_microservice(execution_date=execution_date)
+        processor_logger.info(f"Запуск reports_processor в режиме: {effective_mode}")
 
-        # Проверяем, что парсинг прошел успешно (проверяем наличие ключевых полей)
-        if parsing_result and isinstance(parsing_result, dict) and ('summary' in parsing_result or 'issued_packages' in parsing_result):
-            # Запускаем микросервис загрузки данных в Google Sheets с его собственным логгером
-            upload_result = run_upload_microservice(parsing_result)
+        if effective_mode == "single":
+            execution_date = args.execution_date or datetime.now().strftime("%Y-%m-%d")
+            parsing_result = invoke_parser_for_single_date(
+                execution_date=execution_date,
+                parser_api=args.parser_api,
+                pvz_id=PVZ_ID,
+            )
 
-            # Если загрузка данных прошла успешно, отправляем уведомление
-            if upload_result and upload_result.get("success", False):
-                # Подготовим данные для уведомления
-                notification_data = prepare_notification_data(parsing_result)
-
-                # Форматируем сообщение для уведомления
-                notification_message = format_notification_message(notification_data)
-
-                # Отправляем уведомление с использованием изолированного логгера уведомлений
-                notification_logger = create_notification_logger()
-                notification_result = send_notification_microservice(notification_message, logger=notification_logger)
+            if parsing_result and isinstance(parsing_result, dict) and ("summary" in parsing_result or "issued_packages" in parsing_result):
+                upload_result = run_upload_microservice(parsing_result)
+                if upload_result and upload_result.get("success", False):
+                    notification_data = prepare_notification_data(parsing_result)
+                    notification_message = format_notification_message(notification_data)
+                    send_notification_microservice(notification_message, logger=create_notification_logger())
+                else:
+                    create_uploader_logger().warning("Микросервис загрузчика завершился с ошибкой, пропускаем отправку уведомления")
             else:
-                # Логгируем, что загрузчик завершился с ошибкой
-                logger = create_uploader_logger()
-                logger.warning("Микросервис загрузчика завершился с ошибкой, пропускаем отправку уведомления")
+                create_parser_logger().warning("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
         else:
-            # Логгируем, что парсер не завершился успешно
-            logger = create_parser_logger()
-            logger.warning("Микросервис парсера не завершился успешно, пропускаем загрузку данных и уведомление")
+            date_to = args.date_to or datetime.now().strftime("%Y-%m-%d")
+            if args.date_from:
+                date_from = args.date_from
+            else:
+                date_from = (
+                    datetime.strptime(date_to, "%Y-%m-%d") - timedelta(days=max(args.backfill_days - 1, 0))
+                ).strftime("%Y-%m-%d")
 
-        # Здесь может быть дополнительная логика центрального процессора:
-        # - обработка результатов
-        # - запуск других микросервисов
-        # - контроль последовательности выполнения
-        # - отчетность на вышестоящий уровень
+            resolved_pvz_ids = resolve_pvz_ids(args.pvz)
+            if len(resolved_pvz_ids) > 1:
+                coverage_result = detect_missing_report_dates_by_pvz(
+                    date_from=date_from,
+                    date_to=date_to,
+                    pvz_ids=resolved_pvz_ids,
+                    logger=create_uploader_logger(),
+                    max_missing_dates=args.max_missing_dates,
+                )
+                if not coverage_result.get("success", False):
+                    raise Exception(coverage_result.get("error", "coverage_check_failed"))
+
+                jobs = build_jobs_from_missing_dates_by_pvz(coverage_result.get("missing_dates_by_pvz", {}))
+                grouped_jobs = group_jobs_by_pvz(jobs)
+                batch_results_by_pvz = invoke_parser_for_grouped_jobs(
+                    grouped_jobs=grouped_jobs,
+                    pvz_ids=resolved_pvz_ids,
+                    parser_api=args.parser_api,
+                )
+                had_missing_dates = False
+                pvz_results = {}
+                for pvz_id in resolved_pvz_ids:
+                    pvz_jobs = grouped_jobs.get(pvz_id, [])
+                    missing_dates = [job.execution_date for job in pvz_jobs]
+                    if not missing_dates:
+                        processor_logger.info(f"Backfill for PVZ {pvz_id} is not required: no missing dates found")
+                        continue
+
+                    had_missing_dates = True
+                    batch_result = batch_results_by_pvz[pvz_id]
+                    upload_result = run_upload_batch_microservice(batch_result)
+                    notification_data = prepare_batch_notification_data(
+                        batch_result=batch_result,
+                        upload_result=upload_result,
+                        coverage_result=coverage_result.get("coverage_results_by_pvz", {}).get(pvz_id, {}),
+                        pvz_id=pvz_id,
+                    )
+                    pvz_results[pvz_id] = build_pvz_execution_result(
+                        pvz_id=pvz_id,
+                        coverage_result=coverage_result.get("coverage_results_by_pvz", {}).get(pvz_id, {}),
+                        batch_result=batch_result,
+                        upload_result=upload_result,
+                        notification_data=notification_data,
+                    )
+
+                if not had_missing_dates:
+                    processor_logger.info("Backfill РЅРµ С‚СЂРµР±СѓРµС‚СЃСЏ: РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РёС… РґР°С‚ РЅРµ РЅР°Р№РґРµРЅРѕ РЅРё РґР»СЏ РѕРґРЅРѕРіРѕ PVZ")
+                if had_missing_dates:
+                    aggregated_summary = build_aggregated_backfill_summary(
+                        pvz_results=pvz_results,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    notification_message = format_aggregated_backfill_notification_message(aggregated_summary)
+                    send_notification_microservice(notification_message, logger=create_notification_logger())
+                return
+
+            pvz_id = resolved_pvz_ids[0]
+            coverage_result = detect_missing_report_dates(
+                date_from=date_from,
+                date_to=date_to,
+                logger=create_uploader_logger(),
+                max_missing_dates=args.max_missing_dates,
+                pvz_id=pvz_id,
+            )
+            if not coverage_result.get("success", False):
+                raise Exception(coverage_result.get("error", "coverage_check_failed"))
+
+            missing_dates = coverage_result.get("missing_dates", [])
+            if not missing_dates:
+                processor_logger.info("Backfill не требуется: отсутствующих дат не найдено")
+                return
+
+            jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
+            batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs)
+            upload_result = run_upload_batch_microservice(batch_result)
+            notification_data = prepare_batch_notification_data(
+                batch_result=batch_result,
+                upload_result=upload_result,
+                coverage_result=coverage_result,
+                pvz_id=pvz_id,
+            )
+            notification_message = format_batch_notification_message(notification_data)
+            send_notification_microservice(notification_message, logger=create_notification_logger())
 
     except Exception as e:
-        processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
         processor_logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)
         raise
 
-    processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=detailed_logs)
     processor_logger.info("Продуктовый процессор домена reports завершен успешно")
 
 

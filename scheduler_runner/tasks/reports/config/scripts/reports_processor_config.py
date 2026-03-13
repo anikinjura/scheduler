@@ -5,19 +5,27 @@ reports_processor_config.py
 
 Author: anikinjura
 """
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 MODULE_PATH = "scheduler_runner.tasks.reports.reports_processor"
 
-# Расписание задач запуска скрипта для ядра планировщика.
+BACKFILL_CONFIG = {
+    "default_days": 7,
+    "default_parser_api": "legacy",
+    "max_missing_dates_per_run": 7,
+    "strict_headers": True,
+    "max_scan_rows": 5000,
+    "max_expected_keys": 1000,
+}
+
 SCHEDULE = [
     {
         "name": "ReportsProcessor",
         "module": MODULE_PATH,
-        "args": [],  # Скрипт будет использовать текущую дату по умолчанию
+        "args": [],
         "schedule": "daily",
         "time": "21:10",
         "user": "operator",
-        "timeout": 360  # Таймаут 6 минут для выполнения полного цикла: парсинг → загрузка → уведомление
+        "timeout": 360,
     },
 ]

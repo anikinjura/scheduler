@@ -42,7 +42,7 @@ def navigate_to_target(self) -> bool
 ## Пример использования
 
 ```python
-from scheduler_runner.tasks.reports.parser.core.ozon_report_parser import OzonReportParser
+from scheduler_runner.utils.parser.core.ozon_report_parser import OzonReportParser
 
 # Создание парсера
 parser = OzonReportParser(config)

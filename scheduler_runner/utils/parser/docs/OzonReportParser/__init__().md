@@ -38,7 +38,7 @@ def __init__(self, config: Dict[str, Any], args=None, logger=None)
 ## Пример использования
 
 ```python
-from scheduler_runner.tasks.reports.parser.core.ozon_report_parser import OzonReportParser
+from scheduler_runner.utils.parser.core.ozon_report_parser import OzonReportParser
 
 # Создание с конфигурацией по умолчанию (OZON_BASE_CONFIG)
 parser = OzonReportParser({})

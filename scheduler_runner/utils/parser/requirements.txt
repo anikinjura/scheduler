@@ -1,0 +1,4 @@
+﻿# Зависимости для parser runtime package (scheduler_runner/utils/parser)
+
+# Основная библиотека для автоматизации браузера
+selenium>=4.0.0

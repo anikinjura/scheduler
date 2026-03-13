@@ -37,7 +37,7 @@ def __init__(self, config: Dict[str, Any], args=None, logger=None)
 ## Пример использования
 
 ```python
-from scheduler_runner.tasks.reports.parser.core.base_report_parser import BaseReportParser
+from scheduler_runner.utils.parser.core.base_report_parser import BaseReportParser
 
 # Создание конфигурации
 config = {

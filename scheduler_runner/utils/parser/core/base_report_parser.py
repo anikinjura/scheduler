@@ -32,10 +32,13 @@ __version__ = '0.0.1'
 
 import argparse
 import time
+from collections import defaultdict
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import Dict, Any, Optional
 from .base_parser import BaseParser
 from datetime import datetime
+from .contracts import ParserJob, ParserJobResult, ParserRuntimeContext, ReportDefinition
 
 
 class BaseReportParser(BaseParser, ABC):
@@ -184,6 +187,164 @@ class BaseReportParser(BaseParser, ABC):
 
     # === МЕТОДЫ РАБОТЫ С ОТЧЕТАМИ ===
 
+    def _run_single_date_in_current_session(
+        self,
+        execution_date: str,
+        save_to_file: bool = True,
+        output_format: str = 'json'
+    ) -> Dict[str, Any]:
+        """Выполняет сбор данных за одну дату в уже открытой browser session."""
+        if self.logger:
+            self.logger.trace("Попали в метод BaseReportParser._run_single_date_in_current_session")
+            self.logger.info(f"Запуск обработки в текущей сессии за дату: {execution_date}")
+
+        self.config['execution_date'] = execution_date
+
+        multi_step_config = self.config.get("multi_step_config", {})
+        if not multi_step_config or not multi_step_config.get("steps"):
+            raise Exception("Для обработки обязательно должен быть указан multi_step_config со списком шагов")
+
+        data = self._execute_multi_step_processing(multi_step_config)
+        run_status = data.get('__RUN_STATUS__', 'success') if isinstance(data, dict) else 'success'
+        if run_status == 'failed':
+            raise Exception(f"Парсинг за дату {execution_date} завершился неуспешно: все шаги завершились ошибкой")
+        if run_status == 'partial' and self.logger:
+            self.logger.warning(f"Парсинг за дату {execution_date} завершен частично")
+
+        if save_to_file:
+            self.save_report(data=data, output_format=output_format)
+
+        return data
+
+    def _close_parser_session(self):
+        """Закрывает browser session с учетом configured delay."""
+        import time
+
+        close_delay = self.config.get("BROWSER_CLOSE_DELAY", 0)
+        if close_delay > 0:
+            if self.logger:
+                self.logger.info(f"Задержка перед закрытием браузера: {close_delay} секунд")
+            time.sleep(close_delay)
+        if self.logger:
+            self.logger.debug("Закрытие браузера")
+        self.close_browser()
+
+    def _apply_job_to_config(self, job: ParserJob, definition: ReportDefinition) -> None:
+        """Применяет параметры job к runtime-конфигурации parser."""
+        self.config = deepcopy(definition.config)
+        self.config["execution_date"] = job.execution_date
+
+        additional_params = deepcopy(self.config.get("additional_params", {}))
+        additional_params["location_id"] = job.pvz_id
+        additional_params.update(job.extra_params or {})
+        self.config["additional_params"] = additional_params
+
+    def run_job(
+        self,
+        job: ParserJob,
+        definition: ReportDefinition,
+        runtime: ParserRuntimeContext,
+        *,
+        reuse_open_session: bool = False
+    ) -> ParserJobResult:
+        """Выполняет один job поверх существующего parser workflow."""
+        self._apply_job_to_config(job, definition)
+
+        try:
+            if not reuse_open_session:
+                if not self.setup_browser():
+                    raise Exception("Не удалось настроить браузер")
+                if not self.login():
+                    raise Exception("Не удалось выполнить вход в систему")
+
+            data = self._run_single_date_in_current_session(
+                execution_date=job.execution_date,
+                save_to_file=runtime.save_to_file,
+                output_format=runtime.output_format,
+            )
+            return ParserJobResult.from_success(
+                report_type=job.report_type,
+                pvz_id=job.pvz_id,
+                execution_date=job.execution_date,
+                data=data,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            error_code = "AUTH_REQUIRED" if error_text.startswith("AUTH_REQUIRED:") else None
+            return ParserJobResult.from_error(
+                report_type=job.report_type,
+                pvz_id=job.pvz_id,
+                execution_date=job.execution_date,
+                error_message=error_text,
+                error_code=error_code,
+            )
+        finally:
+            if not reuse_open_session:
+                try:
+                    if not self.logout() and self.logger:
+                        self.logger.warning("Не удалось корректно выйти из системы")
+                finally:
+                    self._close_parser_session()
+
+    def run_jobs_for_pvz(self, *, jobs, definition: ReportDefinition, runtime: ParserRuntimeContext):
+        """Выполняет пачку job-ов одного PVZ в рамках одной browser session."""
+        if not jobs:
+            return []
+
+        results = []
+        base_pvz = jobs[0].pvz_id
+
+        try:
+            self._apply_job_to_config(jobs[0], definition)
+            if not self.setup_browser():
+                raise Exception("Не удалось настроить браузер")
+            if not self.login():
+                raise Exception("Не удалось выполнить вход в систему")
+
+            for job in jobs:
+                if job.pvz_id != base_pvz:
+                    raise ValueError(
+                        f"run_jobs_for_pvz ожидает jobs одного PVZ, получены {base_pvz} и {job.pvz_id}"
+                    )
+
+                job_result = self.run_job(
+                    job,
+                    definition,
+                    runtime,
+                    reuse_open_session=True,
+                )
+                results.append(job_result)
+
+                if job_result.error_code == "AUTH_REQUIRED":
+                    break
+                if not job_result.success and not runtime.continue_on_job_error:
+                    break
+
+            if not self.logout() and self.logger:
+                self.logger.warning("Не удалось корректно выйти из системы после batch-run по PVZ")
+        finally:
+            self._close_parser_session()
+
+        return results
+
+    def run_jobs_batch(self, *, jobs, definition: ReportDefinition, runtime: ParserRuntimeContext):
+        """Группирует jobs по PVZ и использует текущий lifecycle parser без переписывания flow."""
+        grouped_jobs = defaultdict(list)
+        for job in jobs or []:
+            grouped_jobs[job.pvz_id].append(job)
+
+        results = []
+        for pvz_jobs in grouped_jobs.values():
+            results.extend(
+                self.run_jobs_for_pvz(
+                    jobs=pvz_jobs,
+                    definition=definition,
+                    runtime=runtime,
+                )
+            )
+
+        return results
+
     def run_parser(self, save_to_file: bool = True, output_format: str = 'json') -> Dict[str, Any]:
         """
         Метод запуска парсера отчетов, определяющий последовательность вызова методов
@@ -218,26 +379,11 @@ class BaseReportParser(BaseParser, ABC):
             # 3. Выполнение мульти-шаговой обработки (теперь единственный способ обработки)
             if self.logger:
                 self.logger.debug("Шаг 3: Выполнение мульти-шаговой обработки")
-            multi_step_config = self.config.get("multi_step_config", {})
-            if not multi_step_config or not multi_step_config.get("steps"):
-                raise Exception("Для обработки обязательно должен быть указан multi_step_config со списком шагов")
-
-            if self.logger:
-                self.logger.debug(f"Конфигурация мульти-шаговой обработки: {list(multi_step_config.keys())}")
-                self.logger.debug(f"Количество шагов: {len(multi_step_config.get('steps', []))}")
-
-            data = self._execute_multi_step_processing(multi_step_config)
-            run_status = data.get('__RUN_STATUS__', 'success') if isinstance(data, dict) else 'success'
-            if run_status == 'failed':
-                raise Exception("Парсинг завершился неуспешно: все шаги завершились ошибкой")
-            if run_status == 'partial' and self.logger:
-                self.logger.warning("Парсинг завершен частично: часть шагов завершилась ошибкой")
-
-            # 4. Сохранение отчета в файл, если требуется
-            if save_to_file:
-                if self.logger:
-                    self.logger.debug("Шаг 4: Сохранение отчета в файл")
-                self.save_report(data=data, output_format=output_format)
+            data = self._run_single_date_in_current_session(
+                execution_date=self.config.get('execution_date'),
+                save_to_file=save_to_file,
+                output_format=output_format
+            )
 
             # 5. Выход из системы
             if self.logger:
@@ -260,16 +406,81 @@ class BaseReportParser(BaseParser, ABC):
         finally:
             # 6. Закрытие браузера
             # Добавляем задержку перед закрытием браузера, если указано в конфигурации
-            import time
-            close_delay = self.config.get("BROWSER_CLOSE_DELAY", 0)
-            if close_delay > 0:
-                if self.logger:
-                    self.logger.info(f"Задержка перед закрытием браузера: {close_delay} секунд")
-                time.sleep(close_delay)
-            if self.logger:
-                self.logger.debug("Закрытие браузера")
-            self.close_browser()
+            self._close_parser_session()
+    def run_parser_batch(
+        self,
+        execution_dates,
+        save_to_file: bool = False,
+        output_format: str = 'json'
+    ) -> Dict[str, Any]:
+        """
+        Выполняет batch-парсинг нескольких дат в рамках одной browser session.
+        """
+        if self.logger:
+            self.logger.trace("Попали в метод BaseReportParser.run_parser_batch")
 
+        normalized_dates = [date for date in (execution_dates or []) if date]
+        if not normalized_dates:
+            return {
+                "success": True,
+                "mode": "batch",
+                "total_dates": 0,
+                "successful_dates": 0,
+                "failed_dates": 0,
+                "results_by_date": {},
+            }
+
+        results_by_date = {}
+
+        try:
+            if not self.setup_browser():
+                raise Exception("Не удалось настроить браузер")
+
+            if not self.login():
+                raise Exception("Не удалось выполнить вход в систему")
+
+            for execution_date in normalized_dates:
+                try:
+                    data = self._run_single_date_in_current_session(
+                        execution_date=execution_date,
+                        save_to_file=save_to_file,
+                        output_format=output_format
+                    )
+                    results_by_date[execution_date] = {
+                        "success": True,
+                        "data": data,
+                    }
+                except Exception as exc:
+                    error_text = str(exc)
+                    results_by_date[execution_date] = {
+                        "success": False,
+                        "error": error_text,
+                    }
+                    if error_text.startswith("AUTH_REQUIRED:"):
+                        raise
+
+            if not self.logout() and self.logger:
+                self.logger.warning("Не удалось корректно выйти из системы после batch-run")
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка при выполнении batch-парсинга: {e}")
+                self.logger.error(f"Тип ошибки: {type(e).__name__}")
+            raise
+        finally:
+            self._close_parser_session()
+
+        successful_dates = sum(1 for item in results_by_date.values() if item.get("success"))
+        failed_dates = len(results_by_date) - successful_dates
+
+        return {
+            "success": failed_dates == 0,
+            "mode": "batch",
+            "total_dates": len(normalized_dates),
+            "successful_dates": successful_dates,
+            "failed_dates": failed_dates,
+            "results_by_date": results_by_date,
+        }
 
 
     def format_report_output(self,

@@ -7,7 +7,7 @@
 `BaseReportParser` не переопределяет `setup_browser()`. Используется реализация родительского класса `BaseParser`.
 
 ## Где смотреть фактическую реализацию
-- `scheduler_runner/tasks/reports/parser/core/base_parser.py`
+- `scheduler_runner/utils/parser/core/base_parser.py`
 - Подробное описание метода: `docs/BaseParser/setup_browser().md`
 
 ## Актуальное поведение (наследуется из `BaseParser`)
