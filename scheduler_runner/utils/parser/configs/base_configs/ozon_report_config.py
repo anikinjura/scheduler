@@ -86,7 +86,26 @@ OZON_BASE_CONFIG = {
                 "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//div[contains(@class, 'ozi__data-content__label__TA_HC')]]",
                 "//*[contains(@class, 'ozi__data-content__label__') and normalize-space()='{target_pvz}']",
                 "//*[normalize-space()='{target_pvz}']"
-            ]
+            ],
+            "options_container_candidates": [
+                "//div[contains(@class, 'ozi__dropdown__dropdown__')]",
+                "//div[contains(@class, 'ozi__popover__content__')]",
+                "//div[contains(@class, 'ozi__select-options__')]",
+            ],
+            "option_item_candidates": [
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD')]",
+                "//li[.//*[contains(@class, 'ozi__data-content__label__')]]",
+                "//*[contains(@class, 'ozi__data-content__label__')]/ancestor::*[self::div or self::li][1]",
+            ],
+            "option_label_candidates": [
+                ".//div[contains(@class, 'ozi__data-content__label__')]",
+                ".//span[contains(@class, 'ozi__data-content__label__')]",
+                ".//*[normalize-space()]",
+            ],
+            "selected_option_candidates": [
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD') and .//svg[contains(@class, 'ozi__dropdown-item__checkIcon__')]]",
+                "//li[.//svg[contains(@class, 'checkIcon')]]",
+            ],
         }
     },
 
@@ -139,6 +158,14 @@ OZON_BASE_CONFIG = {
         "enabled": True,  # Флаг включения проверки оверлея
         "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея (модального окна)
         "close_button_selector": "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",  # Селектор кнопки "Отложить"
+        "close_button_candidates": [
+            "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",
+            "//button[contains(@class, '_exitButton_')]",
+            "//button[contains(@class, 'ozi__icon-button__iconButton__') and contains(@class, '_exitButton_')]",
+            "//button[@aria-label='Закрыть']",
+            "//button[@title='Закрыть']",
+            "//button[contains(@class, 'ozi__icon-button__iconButton__')][.//*[name()='svg']]"
+        ],
         "wait_timeout": 2,  # Таймаут ожидания появления оверлея (секунды) (уменьшено с 5 до 2 сек для оптимизации)
         "retry_count": 3,  # Количество попыток закрытия
         "retry_delay": 1,   # Задержка между попытками (секунды)

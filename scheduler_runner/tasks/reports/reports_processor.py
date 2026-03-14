@@ -30,6 +30,7 @@ from scheduler_runner.utils.parser import (
     create_parser_logger,
     execute_parser_internal,
     execute_parser_jobs_for_pvz,
+    invoke_available_pvz_discovery,
     invoke_parser_for_grouped_jobs,
     invoke_parser_for_pvz,
     invoke_parser_for_single_date,

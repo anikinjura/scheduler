@@ -247,6 +247,63 @@ class TestOzonReportParser(unittest.TestCase):
         # Проверяем, что результат False
         self.assertFalse(result)
 
+    def test_collect_available_pvz_returns_normalized_unique_labels(self):
+        self.parser.driver = Mock()
+        self.parser._open_pvz_dropdown = Mock(return_value=True)
+        option1 = Mock()
+        option2 = Mock()
+        option3 = Mock()
+        self.parser._collect_pvz_dropdown_elements = Mock(return_value=[option1, option2, option3])
+        self.parser._extract_pvz_option_label = Mock(
+            side_effect=[" ЧЕБОКСАРЫ_340 ", "ЧЕБОКСАРЫ_341", "ЧЕБОКСАРЫ_340"]
+        )
+
+        result = self.parser.collect_available_pvz()
+
+        self.assertEqual(result, ["ЧЕБОКСАРЫ_340", "ЧЕБОКСАРЫ_341"])
+
+    def test_collect_available_pvz_returns_empty_list_when_dropdown_cannot_open(self):
+        self.parser.driver = Mock()
+        self.parser._open_pvz_dropdown = Mock(return_value=False)
+
+        result = self.parser.collect_available_pvz()
+
+        self.assertEqual(result, [])
+
+    def test_extract_pvz_option_label_uses_configured_label_candidates(self):
+        self.parser.config["selectors"] = {
+            "pvz_selectors": {
+                "option_label_candidates": [".//span[@data-role='label']"],
+            }
+        }
+        option_element = Mock()
+        label_element = Mock()
+        label_element.text = "ЧЕБОКСАРЫ_555"
+        option_element.find_element = Mock(return_value=label_element)
+
+        result = self.parser._extract_pvz_option_label(option_element)
+
+        option_element.find_element.assert_called_once_with(ANY, ".//span[@data-role='label']")
+        self.assertEqual(result, "ЧЕБОКСАРЫ_555")
+
+    def test_check_and_close_overlay_uses_close_button_candidates(self):
+        self.parser.config["overlay_config"] = {
+            "enabled": True,
+            "overlay_selector": "//overlay",
+            "close_button_candidates": ["//first", "//second"],
+            "wait_timeout": 1,
+            "retry_count": 1,
+            "retry_delay": 0,
+        }
+        self.parser._is_overlay_present = Mock(side_effect=[True, False])
+        self.parser._click_close_button = Mock(side_effect=[False, True])
+
+        result = self.parser._check_and_close_overlay()
+
+        self.assertTrue(result)
+        self.parser._click_close_button.assert_any_call("//first")
+        self.parser._click_close_button.assert_any_call("//second")
+
     # Тесты для метода ensure_correct_pvz
     def test_ensure_correct_pvz_with_matching_pvz(self):
         """Тест ensure_correct_pvz когда требуемый ПВЗ уже установлен"""

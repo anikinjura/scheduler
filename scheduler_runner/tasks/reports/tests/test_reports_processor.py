@@ -95,6 +95,24 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(mock_invoke.call_args_list[1].kwargs["jobs"][0].pvz_id, "PVZ2")
         self.assertEqual(mock_invoke.call_args_list[1].kwargs["pvz_id"], "PVZ2")
 
+    @patch("scheduler_runner.utils.parser.parser_invocation.OzonAvailablePvzParser")
+    def test_invoke_available_pvz_discovery_applies_pvz_override(self, mock_parser_cls):
+        mock_parser = mock_parser_cls.return_value
+        mock_parser.run_discovery.return_value = {
+            "success": True,
+            "available_pvz": ["PVZ1", "PVZ2"],
+        }
+
+        result = reports_processor.invoke_available_pvz_discovery(
+            pvz_id="PVZ2",
+            logger=Mock(),
+        )
+
+        self.assertTrue(result["success"])
+        parser_config = mock_parser_cls.call_args.args[0]
+        self.assertEqual(parser_config["additional_params"]["location_id"], "PVZ2")
+        mock_parser.run_discovery.assert_called_once_with(save_to_file=False, output_format="json")
+
     @patch("scheduler_runner.utils.parser.parser_invocation.execute_parser_internal")
     def test_invoke_parser_for_single_date_uses_internal_executor_and_pvz_override(
         self,

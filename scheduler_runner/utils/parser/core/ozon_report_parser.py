@@ -51,6 +51,7 @@ from .base_report_parser import BaseReportParser
 from ..configs.base_configs.ozon_report_config import OZON_BASE_CONFIG
 from typing import Dict, Any
 import time
+from selenium.webdriver.common.by import By
 
 
 class OzonReportParser(BaseReportParser):
@@ -83,6 +84,126 @@ class OzonReportParser(BaseReportParser):
     def _get_cached_pvz(self) -> str:
         return self._last_known_pvz or "Unknown"
 
+    def _get_pvz_selectors(self) -> Dict[str, Any]:
+        return self.config.get("selectors", {}).get("pvz_selectors", {})
+
+    def _get_pvz_dropdown_candidates(self) -> list[str]:
+        selectors = self._get_pvz_selectors()
+        return [
+            selector for selector in (
+                selectors.get("dropdown_candidates")
+                or [selectors.get("dropdown")]
+            )
+            if selector
+        ]
+
+    def _get_pvz_option_item_candidates(self) -> list[str]:
+        selectors = self._get_pvz_selectors()
+        return [
+            selector for selector in (
+                selectors.get("option_item_candidates")
+                or [selectors.get("option")]
+            )
+            if selector
+        ]
+
+    def _get_pvz_option_label_candidates(self) -> list[str]:
+        selectors = self._get_pvz_selectors()
+        return [
+            selector for selector in (
+                selectors.get("option_label_candidates")
+                or [selectors.get("option_label")]
+            )
+            if selector
+        ]
+
+    def _open_pvz_dropdown(self) -> bool:
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser._open_pvz_dropdown")
+
+        if not self._check_and_close_overlay() and self.logger:
+            self.logger.warning("Не удалось закрыть overlay перед открытием dropdown ПВЗ")
+
+        for dropdown_selector in self._get_pvz_dropdown_candidates():
+            if self.logger:
+                self.logger.debug(f"Пробуем открыть dropdown ПВЗ селектором: {dropdown_selector}")
+            if self._click_element(dropdown_selector, wait_for_clickable=True):
+                time.sleep(self.config.get("DROPDOWN_OPEN_DELAY", 1))
+                return True
+
+        return False
+
+    def _collect_pvz_dropdown_elements(self):
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser._collect_pvz_dropdown_elements")
+
+        for option_selector in self._get_pvz_option_item_candidates():
+            try:
+                option_elements = self.driver.find_elements(By.XPATH, option_selector)
+            except Exception as exc:
+                if self.logger:
+                    self.logger.debug(f"Ошибка поиска option elements по селектору {option_selector}: {exc}")
+                continue
+
+            if option_elements:
+                if self.logger:
+                    self.logger.debug(
+                        f"Найдено option elements для ПВЗ: {len(option_elements)} по селектору {option_selector}"
+                    )
+                return option_elements
+
+        return []
+
+    def _extract_pvz_option_label(self, option_element) -> str:
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser._extract_pvz_option_label")
+
+        for label_selector in self._get_pvz_option_label_candidates():
+            try:
+                label_element = option_element.find_element(By.XPATH, label_selector)
+                label_value = (label_element.text or label_element.get_attribute("textContent") or "").strip()
+                if label_value:
+                    return label_value
+            except Exception:
+                continue
+
+        fallback_label = (
+            option_element.text
+            or option_element.get_attribute("innerText")
+            or option_element.get_attribute("textContent")
+            or ""
+        )
+        return fallback_label.strip()
+
+    def collect_available_pvz(self) -> list[str]:
+        if self.logger:
+            self.logger.trace("Попали в метод OzonReportParser.collect_available_pvz")
+
+        if not getattr(self, "driver", None):
+            return []
+
+        if not self._open_pvz_dropdown():
+            if self.logger:
+                self.logger.warning("Не удалось открыть dropdown ПВЗ для сбора доступных объектов")
+            return []
+
+        option_elements = self._collect_pvz_dropdown_elements()
+        available_pvz = []
+        seen_values = set()
+
+        for option_element in option_elements:
+            label = self._extract_pvz_option_label(option_element)
+            normalized_label = " ".join((label or "").split())
+            if not normalized_label or normalized_label in seen_values:
+                continue
+            available_pvz.append(normalized_label)
+            seen_values.add(normalized_label)
+
+        if self.logger:
+            self.logger.info(f"Собран список доступных ПВЗ: {available_pvz}")
+
+        return available_pvz
+
     def get_current_pvz(self) -> str:
         """
         Извлекает текущий выбранный ПВЗ с помощью селектора из конфигурации
@@ -94,7 +215,7 @@ class OzonReportParser(BaseReportParser):
             self.logger.trace("Попали в метод OzonReportParser.get_current_pvz")
         try:
             # Получаем селектор для ПВЗ из конфигурации
-            pvz_selectors = self.config.get("selectors", {}).get("pvz_selectors", {})
+            pvz_selectors = self._get_pvz_selectors()
 
             if self.logger:
                 self.logger.debug(f"Селекторы ПВЗ: {pvz_selectors}")
@@ -159,7 +280,7 @@ class OzonReportParser(BaseReportParser):
             self.logger.trace("Попали в метод OzonReportParser.set_pvz")
         try:
             # Получаем селекторы для ПВЗ из конфигурации
-            selectors = self.config.get("selectors", {}).get("pvz_selectors", {})
+            selectors = self._get_pvz_selectors()
 
             if self.logger:
                 self.logger.debug(f"Селекторы для установки ПВЗ: {selectors}")
@@ -499,12 +620,16 @@ class OzonReportParser(BaseReportParser):
 
         # Получаем селекторы и параметры из конфигурации
         overlay_selector = overlay_config.get("overlay_selector")
+        close_button_candidates = overlay_config.get("close_button_candidates") or []
         close_button_selector = overlay_config.get("close_button_selector")
         wait_timeout = overlay_config.get("wait_timeout", 5)
         retry_count = overlay_config.get("retry_count", 3)
         retry_delay = overlay_config.get("retry_delay", 1)
 
-        if not overlay_selector or not close_button_selector:
+        if close_button_selector and close_button_selector not in close_button_candidates:
+            close_button_candidates.insert(0, close_button_selector)
+
+        if not overlay_selector or not close_button_candidates:
             if self.logger:
                 self.logger.warning("Не указаны селекторы для проверки оверлея в конфигурации")
             return True
@@ -522,7 +647,7 @@ class OzonReportParser(BaseReportParser):
                 if self.logger:
                     self.logger.debug(f"Попытка {attempt}/{retry_count}: клик по кнопке закрытия оверлея")
 
-                if self._click_close_button(close_button_selector):
+                if self._click_close_button_candidates(close_button_candidates):
                     if self.logger:
                         self.logger.info(f"Оверлей успешно закрыт с попытки {attempt}")
 
@@ -552,6 +677,13 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug("Оверлей не обнаружен на странице")
             return True
+
+    def _click_close_button_candidates(self, selectors: list[str]) -> bool:
+        """Последовательно пробует несколько селекторов кнопки закрытия overlay."""
+        for selector in selectors:
+            if self._click_close_button(selector):
+                return True
+        return False
 
     def _is_overlay_present(self, selector: str, timeout: int = 5) -> bool:
         """

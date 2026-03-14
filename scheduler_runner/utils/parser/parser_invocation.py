@@ -4,8 +4,10 @@ from datetime import datetime
 
 from config.base_config import PVZ_ID
 from scheduler_runner.utils.parser.configs.implementations.multi_step_ozon_config import MULTI_STEP_OZON_CONFIG
+from scheduler_runner.utils.parser.configs.implementations.ozon_available_pvz_config import OZON_AVAILABLE_PVZ_CONFIG
 from scheduler_runner.utils.parser.core.contracts import ParserJob, ParserRuntimeContext, ReportDefinition
 from scheduler_runner.utils.parser.implementations.multi_step_ozon_parser import MultiStepOzonParser
+from scheduler_runner.utils.parser.implementations.ozon_available_pvz_parser import OzonAvailablePvzParser
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
 
 
@@ -376,4 +378,11 @@ def invoke_parser_for_grouped_jobs(*, grouped_jobs, pvz_ids=None, parser_api="le
         )
 
     return batch_results_by_pvz
+
+
+def invoke_available_pvz_discovery(*, pvz_id=PVZ_ID, logger=None, save_to_file=False, output_format="json"):
+    logger = logger or create_parser_logger()
+    config = apply_pvz_to_parser_config(OZON_AVAILABLE_PVZ_CONFIG.copy(), pvz_id)
+    parser = OzonAvailablePvzParser(config, logger=logger)
+    return parser.run_discovery(save_to_file=save_to_file, output_format=output_format)
 

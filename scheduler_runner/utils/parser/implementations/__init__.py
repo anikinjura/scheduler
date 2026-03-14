@@ -9,7 +9,9 @@
 - Метод set_element_value теперь использует _select_option_from_dropdown для работы с выпадающими списками
 """
 from .multi_step_ozon_parser import MultiStepOzonParser
+from .ozon_available_pvz_parser import OzonAvailablePvzParser
 
 __all__ = [
     'MultiStepOzonParser',
+    'OzonAvailablePvzParser',
 ]
