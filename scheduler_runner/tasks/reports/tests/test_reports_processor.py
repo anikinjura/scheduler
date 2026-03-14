@@ -133,6 +133,102 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(parser_config["execution_date"], "2026-03-01")
         self.assertEqual(parser_config["additional_params"]["location_id"], "PVZ1")
 
+    @patch("scheduler_runner.utils.parser.parser_invocation.MultiStepOzonParser")
+    def test_execute_parser_internal_retries_legacy_batch_in_visible_browser_after_session_failure(self, mock_parser_cls):
+        first_parser = Mock()
+        first_parser.run_parser_batch.return_value = {
+            "success": False,
+            "mode": "batch",
+            "total_dates": 2,
+            "successful_dates": 1,
+            "failed_dates": 1,
+            "results_by_date": {
+                "2026-03-01": {"success": True, "data": {"execution_date": "2026-03-01"}},
+                "2026-03-02": {"success": False, "error": "InvalidSessionIdException: invalid session id"},
+            },
+        }
+        second_parser = Mock()
+        second_parser.run_parser_batch.return_value = {
+            "success": True,
+            "mode": "batch",
+            "total_dates": 2,
+            "successful_dates": 2,
+            "failed_dates": 0,
+            "results_by_date": {
+                "2026-03-01": {"success": True, "data": {"execution_date": "2026-03-01"}},
+                "2026-03-02": {"success": True, "data": {"execution_date": "2026-03-02"}},
+            },
+        }
+        mock_parser_cls.side_effect = [first_parser, second_parser]
+
+        result = reports_processor.execute_parser_internal(
+            parser_api="legacy",
+            pvz_id="PVZ1",
+            execution_dates=["2026-03-01", "2026-03-02"],
+            result_mode="batch",
+            save_to_file=False,
+            output_format="json",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(mock_parser_cls.call_count, 2)
+        first_config = mock_parser_cls.call_args_list[0].args[0]
+        second_config = mock_parser_cls.call_args_list[1].args[0]
+        self.assertTrue(first_config["browser_config"]["headless"])
+        self.assertFalse(second_config["browser_config"]["headless"])
+        self.assertTrue(first_config["HEADLESS"])
+        self.assertFalse(second_config["HEADLESS"])
+
+    @patch("scheduler_runner.utils.parser.parser_invocation.MultiStepOzonParser")
+    def test_execute_parser_internal_retries_new_batch_in_visible_browser_after_session_failure(self, mock_parser_cls):
+        first_parser = Mock()
+        first_parser.run_jobs_for_pvz.return_value = [
+            ParserJobResult.from_success(
+                report_type="ozon_reports",
+                pvz_id="PVZ1",
+                execution_date="2026-03-01",
+                data={"execution_date": "2026-03-01"},
+            ),
+            ParserJobResult.from_error(
+                report_type="ozon_reports",
+                pvz_id="PVZ1",
+                execution_date="2026-03-02",
+                error_message="Message: invalid session id",
+            ),
+        ]
+        second_parser = Mock()
+        second_parser.run_jobs_for_pvz.return_value = [
+            ParserJobResult.from_success(
+                report_type="ozon_reports",
+                pvz_id="PVZ1",
+                execution_date="2026-03-01",
+                data={"execution_date": "2026-03-01"},
+            ),
+            ParserJobResult.from_success(
+                report_type="ozon_reports",
+                pvz_id="PVZ1",
+                execution_date="2026-03-02",
+                data={"execution_date": "2026-03-02"},
+            ),
+        ]
+        mock_parser_cls.side_effect = [first_parser, second_parser]
+
+        result = reports_processor.execute_parser_internal(
+            parser_api="new",
+            pvz_id="PVZ1",
+            execution_dates=["2026-03-01", "2026-03-02"],
+            result_mode="batch",
+            save_to_file=False,
+            output_format="json",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(mock_parser_cls.call_count, 2)
+        first_config = mock_parser_cls.call_args_list[0].args[0]
+        second_config = mock_parser_cls.call_args_list[1].args[0]
+        self.assertTrue(first_config["browser_config"]["headless"])
+        self.assertFalse(second_config["browser_config"]["headless"])
+
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.format_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.prepare_notification_data")
@@ -170,6 +266,7 @@ class TestReportsProcessor(unittest.TestCase):
             execution_date="2026-03-01",
             parser_api="new",
             pvz_id=reports_processor.PVZ_ID,
+            logger=unittest.mock.ANY,
         )
         mock_run_upload_microservice.assert_called_once_with({"summary": {"total": 1}})
         mock_send_notification_microservice.assert_called_once()

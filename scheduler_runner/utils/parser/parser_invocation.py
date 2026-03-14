@@ -9,6 +9,19 @@ from scheduler_runner.utils.parser.implementations.multi_step_ozon_parser import
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
 
 
+SESSION_LEVEL_ERROR_SIGNATURES = (
+    "invalidsessionidexception",
+    "invalid session id",
+    "nosuchwindowexception",
+    "target window already closed",
+    "web view not found",
+    "session deleted because of page crash",
+    "disconnected: not connected to devtools",
+    "chrome not reachable",
+    "browser not reachable",
+)
+
+
 def create_parser_logger():
     return configure_logger(
         user="reports_domain",
@@ -26,6 +39,15 @@ def apply_pvz_to_parser_config(config, pvz_id):
     return normalized_config
 
 
+def apply_headless_override_to_parser_config(config, headless_enabled):
+    normalized_config = deepcopy(config)
+    normalized_config["HEADLESS"] = bool(headless_enabled)
+    browser_config = deepcopy(normalized_config.get("browser_config", {}))
+    browser_config["headless"] = bool(headless_enabled)
+    normalized_config["browser_config"] = browser_config
+    return normalized_config
+
+
 def build_parser_definition(config=None):
     return ReportDefinition(
         report_type="ozon_reports",
@@ -35,6 +57,14 @@ def build_parser_definition(config=None):
 
 def build_parser_runtime_context(save_to_file=False, output_format="json"):
     return ParserRuntimeContext(
+        save_to_file=save_to_file,
+        output_format=output_format,
+    )
+
+
+def build_parser_runtime_context_with_headless(headless, save_to_file=False, output_format="json"):
+    return ParserRuntimeContext(
+        headless=bool(headless),
         save_to_file=save_to_file,
         output_format=output_format,
     )
@@ -101,6 +131,50 @@ def build_empty_batch_result():
     }
 
 
+def is_headless_requested(parser_config):
+    browser_config = parser_config.get("browser_config", {})
+    return bool(browser_config.get("headless", parser_config.get("HEADLESS", False)))
+
+
+def is_session_level_error(error_text):
+    normalized_error = str(error_text or "").lower()
+    return any(signature in normalized_error for signature in SESSION_LEVEL_ERROR_SIGNATURES)
+
+
+def batch_result_contains_session_failure(batch_result):
+    for result_by_date in (batch_result or {}).get("results_by_date", {}).values():
+        if result_by_date.get("success"):
+            continue
+        if is_session_level_error(result_by_date.get("error")):
+            return True
+    return False
+
+
+def should_retry_batch_in_visible_browser(*, batch_result, parser_config):
+    return is_headless_requested(parser_config) and batch_result_contains_session_failure(batch_result)
+
+
+def execute_legacy_batch_once(*, parser_config, execution_dates, save_to_file, output_format, logger):
+    parser = MultiStepOzonParser(parser_config, logger=logger)
+    return parser.run_parser_batch(
+        execution_dates=execution_dates,
+        save_to_file=save_to_file,
+        output_format=output_format,
+    )
+
+
+def execute_new_batch_once(*, parser_config, normalized_jobs, save_to_file, output_format, logger):
+    definition = build_parser_definition(config=parser_config)
+    runtime_context = build_parser_runtime_context_with_headless(
+        headless=is_headless_requested(parser_config),
+        save_to_file=save_to_file,
+        output_format=output_format,
+    )
+    parser = MultiStepOzonParser(deepcopy(definition.config), logger=logger)
+    job_results = parser.run_jobs_for_pvz(jobs=normalized_jobs, definition=definition, runtime=runtime_context)
+    return convert_job_results_to_batch_result(job_results)
+
+
 def execute_parser_internal(
     *,
     parser_api="legacy",
@@ -147,22 +221,52 @@ def execute_parser_internal(
 
     if parser_api == "new":
         logger.info(f"Запуск batch-парсинга Ozon через internal executor и job API. Количество дат: {len(normalized_dates)}")
-        definition = build_parser_definition(config=apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id))
-        runtime_context = build_parser_runtime_context(save_to_file=save_to_file, output_format=output_format)
-        parser = MultiStepOzonParser(deepcopy(definition.config), logger=logger)
-        job_results = parser.run_jobs_for_pvz(jobs=normalized_jobs, definition=definition, runtime=runtime_context)
-        result = convert_job_results_to_batch_result(job_results)
+        parser_config = apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id)
+        result = execute_new_batch_once(
+            parser_config=parser_config,
+            normalized_jobs=normalized_jobs,
+            save_to_file=save_to_file,
+            output_format=output_format,
+            logger=logger,
+        )
+        if should_retry_batch_in_visible_browser(batch_result=result, parser_config=parser_config):
+            retry_config = apply_headless_override_to_parser_config(parser_config, headless_enabled=False)
+            logger.warning(
+                f"SESSION_LEVEL_FAILURE_RETRY: обнаружена деградация Selenium-сессии в headless batch-run, "
+                f"повторяем PVZ-batch {pvz_id} в visible Edge"
+            )
+            result = execute_new_batch_once(
+                parser_config=retry_config,
+                normalized_jobs=normalized_jobs,
+                save_to_file=save_to_file,
+                output_format=output_format,
+                logger=logger,
+            )
         logger.info(f"Batch-парсинг через internal executor и job API завершен. Результат: {result}")
         return result
 
     logger.info(f"Запуск batch-парсинга Ozon через internal executor и legacy API. Количество дат: {len(normalized_dates)}")
     config = apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id)
-    parser = MultiStepOzonParser(config, logger=logger)
-    result = parser.run_parser_batch(
+    result = execute_legacy_batch_once(
+        parser_config=config,
         execution_dates=normalized_dates,
         save_to_file=save_to_file,
         output_format=output_format,
+        logger=logger,
     )
+    if should_retry_batch_in_visible_browser(batch_result=result, parser_config=config):
+        retry_config = apply_headless_override_to_parser_config(config, headless_enabled=False)
+        logger.warning(
+            f"SESSION_LEVEL_FAILURE_RETRY: обнаружена деградация Selenium-сессии в headless batch-run, "
+            f"повторяем PVZ-batch {pvz_id} в visible Edge"
+        )
+        result = execute_legacy_batch_once(
+            parser_config=retry_config,
+            execution_dates=normalized_dates,
+            save_to_file=save_to_file,
+            output_format=output_format,
+            logger=logger,
+        )
     logger.info(f"Batch-парсинг через internal executor и legacy API завершен. Результат: {result}")
     return result
 
