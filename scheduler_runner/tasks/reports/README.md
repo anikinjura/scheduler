@@ -12,22 +12,24 @@ Parser вынесен в отдельный dependency layer:
 - выбор execution scope по PVZ;
 - вызов parser facade;
 - batch upload;
-- notification flow.
+- notification flow;
+- failover coordination между коллегами через `KPI_FAILOVER_STATE`.
 
-## Точка входа
+## Точка Входа
 
 Основная точка входа:
 - [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
 
-## Границы ответственности
+## Границы Ответственности
 
 `tasks/reports`:
 - orchestration
 - coverage-check
 - upload contract
 - notification contract
-- CLI режимы single/backfill
+- CLI режимы `single/backfill`
 - pre-check доступных PVZ для fallback parsing по коллегам
+- coordination state и claim policy для failover
 
 `utils/parser`:
 - browser lifecycle
@@ -37,7 +39,7 @@ Parser вынесен в отдельный dependency layer:
 - available PVZ discovery
 - parser smoke/debug entrypoints
 
-## Режимы запуска
+## Режимы Запуска
 
 `reports_processor` поддерживает два режима:
 
@@ -92,36 +94,51 @@ Parser вынесен в отдельный dependency layer:
 - execution model может деградировать `multi -> single`, если discovery scope сузился до одного доступного объекта;
 - это нормальный и ожидаемый fallback.
 
-## Colleague Fallback
+## Failover Coordination
 
-В `reports_processor` уже встроен capability pre-check:
-- [`discover_available_pvz_scope(...)`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
-- [`resolve_accessible_pvz_ids(...)`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
+Failover coordination теперь разбит на два слоя:
 
-Что уже есть:
-- процессор умеет определить, какие PVZ доступны текущей Ozon account/session;
-- процессор не пытается запускать parser по недоступным коллегам;
-- при провале discovery используется safe fallback только на собственный configured PVZ.
+- capability layer
+  - определить, какие PVZ доступны текущей Ozon account/session;
+  - это делается через available PVZ discovery parser facade;
 
-Что пока еще открыто:
-- policy-arbitration между коллегами:
-  - кто именно должен подхватывать чужой объект;
-  - по каким правилам принимать решение о failover;
-  - как избегать гонок и дублирующего парсинга.
+- coordination layer
+  - согласовать, кто именно из доступных коллег берет failed дату;
+  - это делается через worksheet `KPI_FAILOVER_STATE`.
 
-Этот слой координации пока не реализован.  
-Сейчас подготовлен только фундамент: безопасное определение доступного execution scope.
+Текущая реализация:
+- state worksheet: [`config/scripts/kpi_failover_state_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_failover_state_google_sheets_config.py)
+- state helpers: [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
+- detailed runbook: [`FAILOVER_COORDINATION.md`](C:/tools/scheduler/scheduler_runner/tasks/reports/FAILOVER_COORDINATION.md)
 
-## Основные модули
+Что уже работает:
+- owner пишет `owner_pending / owner_success / owner_failed` по missing dates своего PVZ;
+- processor может сделать один bounded failover pass по доступным коллегам;
+- claim по умолчанию идет через Google Apps Script Web App под `LockService`;
+- перед upload recovery path делает повторный coverage-check и исключает уже закрытые даты.
+
+Текущие ограничения:
+- автоматический coordination flow пока `opt-in` через `--enable_failover_coordination`;
+- automatic failover сейчас ограничен обычным single-PVZ backfill path без явного `--pvz`;
+- grouped manual multi-PVZ path и automatic failover policy пока не смешиваются;
+- окончательная arbitration policy между несколькими коллегами еще может эволюционировать.
+
+## Основные Модули
 
 - [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
   - основной orchestration script
+- [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
+  - coordination state helpers и claim backend switch
 - [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
-  - runtime и scheduler config для task
+  - runtime, scheduler и failover config
 - [`config/scripts/kpi_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_google_sheets_config.py)
-  - Google Sheets schema/connection config
+  - KPI data sheet schema/connection config
+- [`config/scripts/kpi_failover_state_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_failover_state_google_sheets_config.py)
+  - failover state worksheet schema/connection config
 - [`tests/test_reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/test_reports_processor.py)
   - unit coverage orchestration logic
+- [`tests/test_failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/test_failover_state.py)
+  - unit coverage failover state helpers
 
 ## CLI
 
@@ -149,7 +166,13 @@ Backfill по нескольким PVZ:
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --mode backfill --pvz "ЧЕБОКСАРЫ_144" --pvz "ЧЕБОКСАРЫ_182" --date_from 2026-03-04 --date_to 2026-03-10
 ```
 
-## Ожидаемое поведение
+Single-PVZ backfill с automatic failover coordination:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --backfill_days 7 --enable_failover_coordination
+```
+
+## Ожидаемое Поведение
 
 - `single`
   - browser/session открывается под parser package для одной даты
@@ -159,25 +182,30 @@ Backfill по нескольким PVZ:
   - parser reuse идет по модели `1 session per PVZ`
   - перед запуском выполняется pre-check доступных коллег
   - недоступные PVZ отбрасываются до parser run
+- `backfill + failover coordination`
+  - owner sync-ит свои failed dates в `KPI_FAILOVER_STATE`
+  - processor делает bounded claim pass по доступным коллегам
+  - claim backend по умолчанию `apps_script`
 
 ## Логи
 
-Сервисные logger-и разделены по ролям:
+Сервисные logger-ы разделены по ролям:
 - `Processor`
 - `Parser`
 - `Uploader`
 - `Notification`
+- `FailoverState`
 
 Parser runtime и его артефакты живут в parser package logging area:
 - `logs/reports_domain/Parser/`
 - `logs/reports_domain/Parser/artifacts/`
 
-## Проверка изменений
+## Проверка Изменений
 
 Основные unit-тесты orchestration-слоя:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py -q
+.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py -q
 ```
 
 Смежная parser/report suite:
@@ -186,8 +214,14 @@ Parser runtime и его артефакты живут в parser package logging
 .venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_parser.py scheduler_runner\utils\parser\core\tests\test_base_report_parser.py scheduler_runner\utils\parser\core\tests\test_ozon_report_parser.py scheduler_runner\tasks\reports\tests\test_reports_processor.py -q
 ```
 
-При необходимости реальный smoke coverage-check:
+Реальный smoke coverage-check:
 
 ```powershell
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.test_coverage_check_real --pvz "ЧЕБОКСАРЫ_340" --days 7 --json
+```
+
+Реальный smoke claim через Apps Script backend:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_claim_smoke --claim_backend apps_script --pretty
 ```

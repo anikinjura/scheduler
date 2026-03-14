@@ -60,6 +60,140 @@ class TestReportsProcessor(unittest.TestCase):
             ("PVZ2", "2026-03-03"),
         ])
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.mark_failover_state")
+    def test_sync_owner_failover_state_from_batch_result_marks_success_and_failures(self, mock_mark_failover_state):
+        reports_processor.sync_owner_failover_state_from_batch_result(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01", "2026-03-02"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                    "2026-03-02": {"success": False, "error": "parse_failed"},
+                }
+            },
+            logger=Mock(),
+            source_run_id="run-1",
+        )
+
+        statuses = [call.kwargs["status"] for call in mock_mark_failover_state.call_args_list]
+        self.assertEqual(
+            statuses,
+            [
+                reports_processor.STATUS_OWNER_PENDING,
+                reports_processor.STATUS_OWNER_PENDING,
+                reports_processor.STATUS_OWNER_SUCCESS,
+                reports_processor.STATUS_OWNER_FAILED,
+            ],
+        )
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.list_failover_state_rows")
+    def test_collect_claimable_failover_rows_filters_inaccessible_and_own_pvz(self, mock_list_failover_state_rows):
+        mock_list_failover_state_rows.return_value = [
+            {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ1", "owner_pvz": "PVZ1", "status": reports_processor.STATUS_OWNER_FAILED},
+            {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_OWNER_FAILED},
+            {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ3", "owner_pvz": "PVZ3", "status": reports_processor.STATUS_OWNER_FAILED},
+        ]
+
+        result = reports_processor.collect_claimable_failover_rows(
+            accessible_pvz_ids=["PVZ1", "PVZ2"],
+            configured_pvz_id="PVZ1",
+            max_claims=10,
+            logger=Mock(),
+        )
+
+        self.assertEqual(result, [
+            {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_OWNER_FAILED},
+        ])
+
+    def test_build_filtered_batch_result_keeps_only_requested_dates(self):
+        result = reports_processor.build_filtered_batch_result(
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                    "2026-03-02": {"success": False, "error": "boom"},
+                }
+            },
+            execution_dates=["2026-03-02"],
+        )
+
+        self.assertEqual(result["successful_dates"], [])
+        self.assertEqual(result["failed_dates"], ["2026-03-02"])
+        self.assertEqual(sorted(result["results_by_date"].keys()), ["2026-03-02"])
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.mark_failover_state")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    def test_run_claimed_failover_backfill_skips_upload_for_already_covered_dates(
+        self,
+        mock_invoke_parser_for_pvz,
+        mock_detect_missing_report_dates,
+        mock_run_upload_batch_microservice,
+        mock_mark_failover_state,
+    ):
+        mock_invoke_parser_for_pvz.return_value = {
+            "results_by_date": {
+                "2026-03-01": {"success": True, "data": {"execution_date": "2026-03-01"}},
+            }
+        }
+        mock_detect_missing_report_dates.return_value = {
+            "success": True,
+            "missing_dates": [],
+        }
+
+        result = reports_processor.run_claimed_failover_backfill(
+            claimed_rows=[{"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2"}],
+            parser_api="legacy",
+            parser_logger=Mock(),
+            failover_logger=Mock(),
+            claimer_pvz="PVZ1",
+            source_run_id="run-1",
+        )
+
+        mock_run_upload_batch_microservice.assert_not_called()
+        self.assertEqual(result["PVZ2"]["recoverable_dates"], [])
+        self.assertEqual(result["PVZ2"]["upload_result"]["uploaded_records"], 0)
+        self.assertEqual(mock_mark_failover_state.call_args.kwargs["last_error"], "skipped_upload_already_covered")
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.mark_failover_state")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    def test_run_claimed_failover_backfill_uploads_only_still_missing_dates(
+        self,
+        mock_invoke_parser_for_pvz,
+        mock_detect_missing_report_dates,
+        mock_run_upload_batch_microservice,
+        mock_mark_failover_state,
+    ):
+        mock_invoke_parser_for_pvz.return_value = {
+            "results_by_date": {
+                "2026-03-01": {"success": True, "data": {"execution_date": "2026-03-01"}},
+                "2026-03-02": {"success": True, "data": {"execution_date": "2026-03-02"}},
+            }
+        }
+        mock_detect_missing_report_dates.return_value = {
+            "success": True,
+            "missing_dates": ["2026-03-02"],
+        }
+        mock_run_upload_batch_microservice.return_value = {"success": True, "uploaded_records": 1}
+
+        result = reports_processor.run_claimed_failover_backfill(
+            claimed_rows=[
+                {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2"},
+                {"Р”Р°С‚Р°": "2026-03-02", "target_pvz": "PVZ2", "owner_pvz": "PVZ2"},
+            ],
+            parser_api="legacy",
+            parser_logger=Mock(),
+            failover_logger=Mock(),
+            claimer_pvz="PVZ1",
+            source_run_id="run-1",
+        )
+
+        uploaded_batch_result = mock_run_upload_batch_microservice.call_args.args[0]
+        self.assertEqual(sorted(uploaded_batch_result["results_by_date"].keys()), ["2026-03-02"])
+        self.assertEqual(result["PVZ2"]["recoverable_dates"], ["2026-03-02"])
+
     def test_execute_parser_jobs_for_pvz_keeps_compatible_batch_result_shape(self):
         jobs = reports_processor.build_jobs_for_pvz("PVZ1", ["2026-03-01"])
         with patch("scheduler_runner.utils.parser.parser_invocation.execute_parser_internal") as mock_execute_internal:
@@ -560,6 +694,56 @@ class TestReportsProcessor(unittest.TestCase):
         )
         mock_run_upload_batch_microservice.assert_called_once()
         mock_send_notification_microservice.assert_called_once()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
+    @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")
+    @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("argparse.ArgumentParser.parse_args")
+    def test_main_backfill_with_failover_coordination_syncs_owner_state_and_runs_coordination_pass(
+        self,
+        mock_parse_args,
+        mock_detect_missing_report_dates,
+        mock_invoke_parser_for_pvz,
+        mock_run_upload_batch_microservice,
+        mock_prepare_batch_notification_data,
+        mock_format_batch_notification_message,
+        mock_send_notification_microservice,
+        mock_sync_owner_failover_state_from_batch_result,
+        mock_run_failover_coordination_pass,
+    ):
+        mock_parse_args.return_value = Namespace(
+            execution_date=None,
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            backfill_days=7,
+            mode="backfill",
+            max_missing_dates=7,
+            parser_api="legacy",
+            pvz=None,
+            detailed_logs=False,
+            enable_failover_coordination=True,
+        )
+        mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
+        mock_invoke_parser_for_pvz.return_value = {
+            "results_by_date": {"2026-03-01": {"success": True, "data": {}}},
+            "successful_dates": ["2026-03-01"],
+            "failed_dates": [],
+        }
+        mock_run_upload_batch_microservice.return_value = {"success": True}
+        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
+        mock_format_batch_notification_message.return_value = "ok"
+
+        reports_processor.main()
+
+        mock_sync_owner_failover_state_from_batch_result.assert_called_once()
+        self.assertEqual(mock_sync_owner_failover_state_from_batch_result.call_args.kwargs["owner_pvz"], reports_processor.PVZ_ID)
+        self.assertEqual(mock_sync_owner_failover_state_from_batch_result.call_args.kwargs["missing_dates"], ["2026-03-01"])
+        mock_run_failover_coordination_pass.assert_called_once()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")

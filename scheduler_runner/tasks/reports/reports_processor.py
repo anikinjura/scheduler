@@ -21,6 +21,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from config.base_config import PVZ_ID
+from scheduler_runner.tasks.reports.failover_state import (
+    STATUS_CLAIM_EXPIRED,
+    STATUS_FAILOVER_FAILED,
+    STATUS_FAILOVER_SUCCESS,
+    STATUS_OWNER_FAILED,
+    STATUS_OWNER_PENDING,
+    STATUS_OWNER_SUCCESS,
+    create_failover_state_logger,
+    list_failover_state_rows,
+    mark_failover_state,
+    try_claim_failover,
+)
 from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.parser import (
@@ -121,6 +133,309 @@ def create_notification_logger():
 
 
 
+
+
+def build_processor_run_id(pvz_id=PVZ_ID, started_at=None):
+    started_at = started_at or datetime.now()
+    return f"{started_at.strftime('%Y%m%d%H%M%S')}|{pvz_id}"
+
+
+def extract_batch_failures(batch_result=None):
+    failures = {}
+    for execution_date, date_result in (batch_result or {}).get("results_by_date", {}).items():
+        if date_result.get("success", False):
+            continue
+        failures[execution_date] = date_result.get("error", "parse_failed")
+    return failures
+
+
+def build_filtered_batch_result(batch_result=None, execution_dates=None):
+    requested_dates = set(execution_dates or [])
+    filtered_results_by_date = {
+        execution_date: date_result
+        for execution_date, date_result in (batch_result or {}).get("results_by_date", {}).items()
+        if execution_date in requested_dates
+    }
+    successful_dates = [
+        execution_date
+        for execution_date, date_result in filtered_results_by_date.items()
+        if date_result.get("success", False)
+    ]
+    failed_dates = [
+        execution_date
+        for execution_date, date_result in filtered_results_by_date.items()
+        if not date_result.get("success", False)
+    ]
+    return {
+        "success": not failed_dates,
+        "mode": (batch_result or {}).get("mode", "batch"),
+        "total_dates": len(filtered_results_by_date),
+        "successful_dates": successful_dates,
+        "failed_dates": failed_dates,
+        "results_by_date": filtered_results_by_date,
+    }
+
+
+def mark_dates_with_owner_status(execution_dates, owner_pvz, status, logger=None, source_run_id=""):
+    logger = logger or create_failover_state_logger()
+    results = []
+    for execution_date in execution_dates or []:
+        results.append(
+            mark_failover_state(
+                execution_date=execution_date,
+                target_pvz=owner_pvz,
+                owner_pvz=owner_pvz,
+                status=status,
+                source_run_id=source_run_id,
+                logger=logger,
+            )
+        )
+    return results
+
+
+def sync_owner_failover_state_from_batch_result(
+    *,
+    owner_pvz,
+    missing_dates,
+    batch_result,
+    logger=None,
+    source_run_id="",
+):
+    logger = logger or create_failover_state_logger()
+    if missing_dates:
+        mark_dates_with_owner_status(
+            execution_dates=missing_dates,
+            owner_pvz=owner_pvz,
+            status=STATUS_OWNER_PENDING,
+            logger=logger,
+            source_run_id=source_run_id,
+        )
+
+    results = []
+    failed_by_date = extract_batch_failures(batch_result)
+    successful_dates = []
+    failed_dates = []
+    for execution_date in missing_dates or []:
+        if execution_date in failed_by_date:
+            failed_dates.append(execution_date)
+            results.append(
+                mark_failover_state(
+                    execution_date=execution_date,
+                    target_pvz=owner_pvz,
+                    owner_pvz=owner_pvz,
+                    status=STATUS_OWNER_FAILED,
+                    source_run_id=source_run_id,
+                    last_error=failed_by_date[execution_date],
+                    logger=logger,
+                )
+            )
+            continue
+
+        successful_dates.append(execution_date)
+        results.append(
+            mark_failover_state(
+                execution_date=execution_date,
+                target_pvz=owner_pvz,
+                owner_pvz=owner_pvz,
+                status=STATUS_OWNER_SUCCESS,
+                source_run_id=source_run_id,
+                logger=logger,
+            )
+        )
+
+    return {
+        "successful_dates": successful_dates,
+        "failed_dates": failed_dates,
+        "results": results,
+    }
+
+
+def collect_claimable_failover_rows(
+    *,
+    accessible_pvz_ids,
+    configured_pvz_id=PVZ_ID,
+    max_claims=None,
+    logger=None,
+):
+    logger = logger or create_failover_state_logger()
+    normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
+    normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
+    rows = list_failover_state_rows(
+        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED],
+        logger=logger,
+    )
+
+    filtered_rows = []
+    for row in rows:
+        target_pvz = row.get("target_pvz")
+        if not target_pvz:
+            continue
+        normalized_target_pvz = normalize_pvz_id(target_pvz)
+        if normalized_target_pvz == normalized_configured_pvz_id:
+            continue
+        if normalized_target_pvz not in normalized_accessible:
+            continue
+        filtered_rows.append(row)
+
+    filtered_rows.sort(key=lambda row: (row.get("Р”Р°С‚Р°", ""), row.get("target_pvz", "")))
+    if max_claims:
+        filtered_rows = filtered_rows[:max_claims]
+    return filtered_rows
+
+
+def claim_failover_rows(
+    *,
+    candidate_rows,
+    claimer_pvz,
+    ttl_minutes,
+    source_run_id="",
+    logger=None,
+):
+    logger = logger or create_failover_state_logger()
+    claimed_rows = []
+    for row in candidate_rows or []:
+        claim_result = try_claim_failover(
+            execution_date=row.get("Р”Р°С‚Р°"),
+            target_pvz=row.get("target_pvz"),
+            owner_pvz=row.get("owner_pvz") or row.get("target_pvz"),
+            claimer_pvz=claimer_pvz,
+            ttl_minutes=ttl_minutes,
+            source_run_id=source_run_id,
+            logger=logger,
+        )
+        if claim_result.get("claimed", False):
+            claimed_rows.append(row)
+    return claimed_rows
+
+
+def run_claimed_failover_backfill(
+    *,
+    claimed_rows,
+    parser_api,
+    parser_logger=None,
+    failover_logger=None,
+    claimer_pvz=PVZ_ID,
+    source_run_id="",
+):
+    parser_logger = parser_logger or create_parser_logger()
+    failover_logger = failover_logger or create_failover_state_logger()
+    claimed_dates_by_pvz = {}
+    owner_by_key = {}
+    for row in claimed_rows or []:
+        target_pvz = row["target_pvz"]
+        execution_date = row["Р”Р°С‚Р°"]
+        claimed_dates_by_pvz.setdefault(target_pvz, []).append(execution_date)
+        owner_by_key[(target_pvz, execution_date)] = row.get("owner_pvz") or target_pvz
+
+    execution_results = {}
+    for target_pvz, execution_dates in claimed_dates_by_pvz.items():
+        unique_dates = sorted(set(execution_dates))
+        jobs = build_jobs_for_pvz(pvz_id=target_pvz, execution_dates=unique_dates)
+        batch_result = invoke_parser_for_pvz(
+            parser_api=parser_api,
+            jobs=jobs,
+            logger=parser_logger,
+        )
+        coverage_result = detect_missing_report_dates(
+            date_from=min(unique_dates),
+            date_to=max(unique_dates),
+            logger=create_uploader_logger(),
+            max_missing_dates=len(unique_dates),
+            pvz_id=target_pvz,
+        )
+        recoverable_dates = set(unique_dates)
+        if coverage_result.get("success", False):
+            recoverable_dates = set(coverage_result.get("missing_dates", [])) & set(unique_dates)
+        filtered_batch_result = build_filtered_batch_result(batch_result, recoverable_dates)
+        upload_result = (
+            run_upload_batch_microservice(filtered_batch_result)
+            if recoverable_dates
+            else {"success": True, "uploaded_records": 0, "skipped_as_already_covered": True}
+        )
+        failed_by_date = extract_batch_failures(batch_result)
+
+        for execution_date in unique_dates:
+            common_kwargs = {
+                "execution_date": execution_date,
+                "target_pvz": target_pvz,
+                "owner_pvz": owner_by_key[(target_pvz, execution_date)],
+                "claimed_by": claimer_pvz,
+                "source_run_id": source_run_id,
+                "logger": failover_logger,
+            }
+            if execution_date in failed_by_date:
+                mark_failover_state(
+                    status=STATUS_FAILOVER_FAILED,
+                    last_error=failed_by_date[execution_date],
+                    **common_kwargs,
+                )
+            elif execution_date not in recoverable_dates:
+                mark_failover_state(
+                    status=STATUS_FAILOVER_SUCCESS,
+                    last_error="skipped_upload_already_covered",
+                    **common_kwargs,
+                )
+            else:
+                mark_failover_state(
+                    status=STATUS_FAILOVER_SUCCESS,
+                    **common_kwargs,
+                )
+
+        execution_results[target_pvz] = {
+            "execution_dates": unique_dates,
+            "batch_result": batch_result,
+            "filtered_batch_result": filtered_batch_result,
+            "coverage_result": coverage_result,
+            "recoverable_dates": sorted(recoverable_dates),
+            "upload_result": upload_result,
+        }
+
+    return execution_results
+
+
+def run_failover_coordination_pass(
+    *,
+    configured_pvz_id=PVZ_ID,
+    parser_api,
+    parser_logger=None,
+    processor_logger=None,
+    source_run_id="",
+):
+    processor_logger = processor_logger or configure_logger(user="reports_domain", task_name="Processor")
+    failover_logger = create_failover_state_logger()
+    discovery_scope = discover_available_pvz_scope(
+        configured_pvz_id=configured_pvz_id,
+        logger=processor_logger,
+        parser_logger=parser_logger,
+    )
+    candidate_rows = collect_claimable_failover_rows(
+        accessible_pvz_ids=discovery_scope.get("available_pvz", []),
+        configured_pvz_id=configured_pvz_id,
+        max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
+        logger=failover_logger,
+    )
+    claimed_rows = claim_failover_rows(
+        candidate_rows=candidate_rows,
+        claimer_pvz=configured_pvz_id,
+        ttl_minutes=BACKFILL_CONFIG.get("failover_claim_ttl_minutes", 15),
+        source_run_id=source_run_id,
+        logger=failover_logger,
+    )
+    if not claimed_rows:
+        processor_logger.info("Failover coordination: claimable colleague rows not found")
+        return {}
+
+    processor_logger.info(
+        f"Failover coordination: claimed_rows={len(claimed_rows)}, targets={sorted(set(row['target_pvz'] for row in claimed_rows))}"
+    )
+    return run_claimed_failover_backfill(
+        claimed_rows=claimed_rows,
+        parser_api=parser_api,
+        parser_logger=parser_logger,
+        failover_logger=failover_logger,
+        claimer_pvz=configured_pvz_id,
+        source_run_id=source_run_id,
+    )
 
 
 def build_jobs_from_missing_dates_by_pvz(missing_dates_by_pvz, definition=None, extra_params_by_pvz=None):
@@ -715,11 +1030,23 @@ def main():
         help="Путь вызова parser API",
     )
 
+    parser.add_argument(
+        "--enable_failover_coordination",
+        action="store_true",
+        default=BACKFILL_CONFIG.get("enable_failover_coordination", False),
+        help="Enable coordination pass via KPI_FAILOVER_STATE worksheet",
+    )
     parser.add_argument("--pvz", action="append", default=None, help="PVZ for backfill; may be passed multiple times")
     args = parser.parse_args()
+    args.enable_failover_coordination = getattr(
+        args,
+        "enable_failover_coordination",
+        BACKFILL_CONFIG.get("enable_failover_coordination", False),
+    )
     processor_logger = configure_logger(user="reports_domain", task_name="Processor", detailed=args.detailed_logs)
     parser_logger = create_parser_logger()
     effective_mode = args.mode or ("single" if args.execution_date else "backfill")
+    source_run_id = build_processor_run_id(PVZ_ID)
 
     try:
         processor_logger.info(f"Запуск reports_processor в режиме: {effective_mode}")
@@ -761,6 +1088,14 @@ def main():
             resolved_pvz_ids = access_scope.get("accessible_pvz_ids", [])
             if not resolved_pvz_ids:
                 processor_logger.info("Backfill остановлен: среди запрошенных PVZ нет доступных для текущей учетной записи")
+                if args.enable_failover_coordination and not args.pvz and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID):
+                    run_failover_coordination_pass(
+                        configured_pvz_id=PVZ_ID,
+                        parser_api=args.parser_api,
+                        parser_logger=parser_logger,
+                        processor_logger=processor_logger,
+                        source_run_id=source_run_id,
+                    )
                 return
             if len(resolved_pvz_ids) > 1:
                 coverage_result = detect_missing_report_dates_by_pvz(
@@ -846,6 +1181,24 @@ def main():
             )
             notification_message = format_batch_notification_message(notification_data)
             send_notification_microservice(notification_message, logger=create_notification_logger())
+
+            if args.enable_failover_coordination and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID):
+                sync_owner_failover_state_from_batch_result(
+                    owner_pvz=pvz_id,
+                    missing_dates=missing_dates,
+                    batch_result=batch_result,
+                    logger=create_failover_state_logger(),
+                    source_run_id=source_run_id,
+                )
+
+            if args.enable_failover_coordination and not args.pvz and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID):
+                run_failover_coordination_pass(
+                    configured_pvz_id=PVZ_ID,
+                    parser_api=args.parser_api,
+                    parser_logger=parser_logger,
+                    processor_logger=processor_logger,
+                    source_run_id=source_run_id,
+                )
 
     except Exception as e:
         processor_logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)

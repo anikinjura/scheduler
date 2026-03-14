@@ -62,4 +62,12 @@ REPORTS_PATHS = {
     'GOOGLE_SHEETS_CREDENTIALS': GOOGLE_SHEETS_CREDENTIALS,
     'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
     'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+    'FAILOVER_APPS_SCRIPT_URL': os.environ.get(
+        "FAILOVER_APPS_SCRIPT_URL",
+        "https://script.google.com/macros/s/AKfycbzAu2cv4PhON28JmWOM9uM4TTnI9llOPIkIhq5JqeNq_W0iHdKj2H9Fbw1Veeqng-YC0Q/exec",
+    ),
+    'FAILOVER_SHARED_SECRET': os.environ.get(
+        "FAILOVER_SHARED_SECRET",
+        "3f2e8f5b7f8d4e9a9b2c1d6e7f8a1b3c",
+    ),
 }
