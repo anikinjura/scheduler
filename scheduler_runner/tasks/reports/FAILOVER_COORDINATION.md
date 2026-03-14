@@ -66,6 +66,7 @@ Terminal statuses:
 4. если включен `--enable_failover_coordination`, processor делает один bounded failover pass:
    - определяет доступных коллег через parser discovery;
    - читает claimable rows из `KPI_FAILOVER_STATE`;
+   - фильтрует их через policy layer;
    - пытается claim-ить их;
    - запускает parser за доступные claimed target PVZ;
    - перед upload делает повторный coverage-check;
@@ -93,6 +94,46 @@ Override через env:
 - `FAILOVER_APPS_SCRIPT_URL`
 - `FAILOVER_SHARED_SECRET`
 
+## Policy Layer
+
+Policy layer живет отдельно от claim backend:
+- [`failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_policy.py)
+
+Его задача:
+- решать, имеет ли текущий объект право пытаться claim-ить конкретную failed row сейчас;
+- не допускать лишних повторных попыток;
+- обеспечить детерминированную arbitration policy между коллегами.
+
+Текущая policy поддерживает:
+- reject own target;
+- reject not accessible target;
+- enforce `max_attempts_per_date`;
+- explicit `priority_map`;
+- rank-based delay.
+
+Config живет в:
+- [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
+
+Основные policy keys:
+- `enabled`
+- `priority_map`
+- `default_rank_delay_minutes`
+- `max_attempts_per_date`
+- `max_claims_per_run`
+- `allow_unlisted_fallback`
+
+Текущий pilot policy map:
+- `ЧЕБОКСАРЫ_143 -> [ЧЕБОКСАРЫ_144]`
+- `ЧЕБОКСАРЫ_182 -> [ЧЕБОКСАРЫ_144]`
+- `ЧЕБОКСАРЫ_144 -> [ЧЕБОКСАРЫ_182, ЧЕБОКСАРЫ_143]`
+- `СОСНОВКА_10 -> [ЧЕБОКСАРЫ_144]`
+- `ЧЕБОКСАРЫ_340 -> []`
+
+Практический смысл текущей pilot map:
+- `ЧЕБОКСАРЫ_144` выступает primary recovery buddy для `ЧЕБОКСАРЫ_143`, `ЧЕБОКСАРЫ_182` и `СОСНОВКА_10`;
+- recovery для `ЧЕБОКСАРЫ_144` идет по rank order: сначала `ЧЕБОКСАРЫ_182`, затем `ЧЕБОКСАРЫ_143` после delay;
+- `ЧЕБОКСАРЫ_340` policy-aware слоем считается изолированным target через явное пустое правило `[]`.
+
 ## Google Apps Script
 
 Claim Web App нужен для того, чтобы вынести race-sensitive операцию `read -> modify -> write` под `LockService`.
@@ -119,6 +160,7 @@ Deployment:
 
 Manual smoke-script:
 - [`tests/run_failover_claim_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_claim_smoke.py)
+- [`tests/run_failover_policy_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_policy_smoke.py)
 
 Команда:
 
@@ -143,6 +185,26 @@ Manual smoke-script:
   - `claimed_by = <claimer_pvz>`
   - `source_run_id = smoke-claim-run`
 
+Synthetic policy-aware smoke:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_policy_smoke --claim_backend apps_script --pretty
+```
+
+Что делает policy smoke:
+- seed-ит синтетические строки в `KPI_FAILOVER_STATE`;
+- прогоняет policy eligibility для текущего `claimer_pvz`;
+- claim-ит только строки, которые прошли policy filter;
+- печатает decisions и claim results в JSON.
+
+Для чего нужен:
+- проверить `priority_map`, `own_target`, `isolated target`, `max_attempts` и terminal-state логику без реального multi-object запуска;
+- использовать development machine, где текущий объект имитируется через `PVZ_ID` из `pvz_config.ini` и нет возможности реально поднять несколько независимых objects одновременно.
+
+Практический нюанс:
+- это synthetic сценарий, а не реальный distributed e2e;
+- при частом повторении может упираться в Google Sheets quota по `read requests per minute per user`, поэтому его стоит запускать точечно.
+
 ## API/Quota Discipline
 
 Квоты Google нужно экономить, поэтому coordination не должен быть high-frequency.
@@ -166,11 +228,13 @@ Manual smoke-script:
 - полная arbitration policy между несколькими коллегами еще может меняться;
 - grouped manual multi-PVZ path пока не смешан с automatic failover coordination;
 - state update paths кроме claim пока остаются на Python-side через Google Sheets API.
+- `priority_map` уже заполнен pilot-матрицей для e2e и controlled failover-прогонов, но это еще не финальная business policy для всех объектов;
+- текущая карта строится на подтвержденных discovery-связях и операционных гипотезах, поэтому требует дальнейшей валидации на реальных recovery-сценариях.
 
 ## Проверка Кода
 
 Unit-tests:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py -q
+.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py scheduler_runner\tasks\reports\tests\test_failover_policy.py -q
 ```

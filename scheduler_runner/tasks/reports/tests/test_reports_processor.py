@@ -105,6 +105,29 @@ class TestReportsProcessor(unittest.TestCase):
             {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_OWNER_FAILED},
         ])
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.filter_claimable_rows_by_policy")
+    @patch("scheduler_runner.tasks.reports.reports_processor.list_failover_state_rows")
+    def test_collect_claimable_failover_rows_uses_policy_filter_when_enabled(
+        self,
+        mock_list_failover_state_rows,
+        mock_filter_claimable_rows_by_policy,
+    ):
+        mock_list_failover_state_rows.return_value = [
+            {"Дата": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_FAILOVER_FAILED},
+        ]
+        mock_filter_claimable_rows_by_policy.return_value = mock_list_failover_state_rows.return_value
+
+        with patch.dict(reports_processor.FAILOVER_POLICY_CONFIG, {"enabled": True}, clear=False):
+            result = reports_processor.collect_claimable_failover_rows(
+                accessible_pvz_ids=["PVZ2"],
+                configured_pvz_id="PVZ1",
+                max_claims=3,
+                logger=Mock(),
+            )
+
+        self.assertEqual(result, mock_list_failover_state_rows.return_value)
+        mock_filter_claimable_rows_by_policy.assert_called_once()
+
     def test_build_filtered_batch_result_keeps_only_requested_dates(self):
         result = reports_processor.build_filtered_batch_result(
             batch_result={

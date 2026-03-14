@@ -33,8 +33,9 @@ from scheduler_runner.tasks.reports.failover_state import (
     mark_failover_state,
     try_claim_failover,
 )
+from scheduler_runner.tasks.reports.failover_policy import filter_claimable_rows_by_policy
 from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
 from scheduler_runner.utils.parser import (
     build_parser_definition,
     build_jobs_for_pvz,
@@ -258,29 +259,35 @@ def collect_claimable_failover_rows(
     logger=None,
 ):
     logger = logger or create_failover_state_logger()
-    normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
-    normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
     rows = list_failover_state_rows(
-        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED],
+        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED],
         logger=logger,
     )
+    if not FAILOVER_POLICY_CONFIG.get("enabled", True):
+        filtered_rows = []
+        normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
+        normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
+        for row in rows:
+            target_pvz = row.get("target_pvz")
+            if not target_pvz:
+                continue
+            normalized_target_pvz = normalize_pvz_id(target_pvz)
+            if normalized_target_pvz == normalized_configured_pvz_id:
+                continue
+            if normalized_target_pvz not in normalized_accessible:
+                continue
+            filtered_rows.append(row)
+        filtered_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
+        if max_claims:
+            filtered_rows = filtered_rows[:max_claims]
+        return filtered_rows
 
-    filtered_rows = []
-    for row in rows:
-        target_pvz = row.get("target_pvz")
-        if not target_pvz:
-            continue
-        normalized_target_pvz = normalize_pvz_id(target_pvz)
-        if normalized_target_pvz == normalized_configured_pvz_id:
-            continue
-        if normalized_target_pvz not in normalized_accessible:
-            continue
-        filtered_rows.append(row)
-
-    filtered_rows.sort(key=lambda row: (row.get("Р”Р°С‚Р°", ""), row.get("target_pvz", "")))
-    if max_claims:
-        filtered_rows = filtered_rows[:max_claims]
-    return filtered_rows
+    return filter_claimable_rows_by_policy(
+        rows=rows,
+        configured_pvz_id=configured_pvz_id,
+        available_pvz=accessible_pvz_ids,
+        max_claims=max_claims,
+    )
 
 
 def claim_failover_rows(

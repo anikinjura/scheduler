@@ -109,6 +109,7 @@ Failover coordination теперь разбит на два слоя:
 Текущая реализация:
 - state worksheet: [`config/scripts/kpi_failover_state_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_failover_state_google_sheets_config.py)
 - state helpers: [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
+- policy layer: [`failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_policy.py)
 - detailed runbook: [`FAILOVER_COORDINATION.md`](C:/tools/scheduler/scheduler_runner/tasks/reports/FAILOVER_COORDINATION.md)
 
 Что уже работает:
@@ -116,12 +117,25 @@ Failover coordination теперь разбит на два слоя:
 - processor может сделать один bounded failover pass по доступным коллегам;
 - claim по умолчанию идет через Google Apps Script Web App под `LockService`;
 - перед upload recovery path делает повторный coverage-check и исключает уже закрытые даты.
+- policy-aware filtering уже встроен в claimable rows selection:
+  - reject own target
+  - reject not accessible target
+  - enforce `max_attempts_per_date`
+  - support `priority_map`
+  - support rank-based delay
 
 Текущие ограничения:
 - автоматический coordination flow пока `opt-in` через `--enable_failover_coordination`;
 - automatic failover сейчас ограничен обычным single-PVZ backfill path без явного `--pvz`;
 - grouped manual multi-PVZ path и automatic failover policy пока не смешиваются;
-- окончательная arbitration policy между несколькими коллегами еще может эволюционировать.
+- pilot `priority_map` уже заполнен для `ЧЕБОКСАРЫ_143`, `ЧЕБОКСАРЫ_144`, `ЧЕБОКСАРЫ_182`, `СОСНОВКА_10`;
+- текущая pilot map:
+  - `ЧЕБОКСАРЫ_143 -> [ЧЕБОКСАРЫ_144]`
+  - `ЧЕБОКСАРЫ_182 -> [ЧЕБОКСАРЫ_144]`
+  - `ЧЕБОКСАРЫ_144 -> [ЧЕБОКСАРЫ_182, ЧЕБОКСАРЫ_143]`
+  - `СОСНОВКА_10 -> [ЧЕБОКСАРЫ_144]`
+- `ЧЕБОКСАРЫ_340` в pilot map остается изолированным через явное пустое правило `[]`;
+- карта пока pilot-level и может быть расширена после дополнительных discovery/e2e прогонов и реальных recovery кейсов.
 
 ## Основные Модули
 
@@ -129,8 +143,10 @@ Failover coordination теперь разбит на два слоя:
   - основной orchestration script
 - [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
   - coordination state helpers и claim backend switch
+- [`failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_policy.py)
+  - policy-aware filtering и arbitration helpers
 - [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
-  - runtime, scheduler и failover config
+  - runtime, scheduler, failover и policy config
 - [`config/scripts/kpi_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_google_sheets_config.py)
   - KPI data sheet schema/connection config
 - [`config/scripts/kpi_failover_state_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_failover_state_google_sheets_config.py)
@@ -139,6 +155,8 @@ Failover coordination теперь разбит на два слоя:
   - unit coverage orchestration logic
 - [`tests/test_failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/test_failover_state.py)
   - unit coverage failover state helpers
+- [`tests/test_failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/test_failover_policy.py)
+  - unit coverage arbitration policy
 
 ## CLI
 
@@ -186,6 +204,7 @@ Single-PVZ backfill с automatic failover coordination:
   - owner sync-ит свои failed dates в `KPI_FAILOVER_STATE`
   - processor делает bounded claim pass по доступным коллегам
   - claim backend по умолчанию `apps_script`
+  - arbitration идет через policy layer, если включен `FAILOVER_POLICY_CONFIG["enabled"]`
 
 ## Логи
 
@@ -205,7 +224,7 @@ Parser runtime и его артефакты живут в parser package logging
 Основные unit-тесты orchestration-слоя:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py -q
+.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py scheduler_runner\tasks\reports\tests\test_failover_policy.py -q
 ```
 
 Смежная parser/report suite:

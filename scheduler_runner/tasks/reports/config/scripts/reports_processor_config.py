@@ -23,6 +23,21 @@ BACKFILL_CONFIG = {
     "failover_apps_script_timeout_seconds": 15,
 }
 
+FAILOVER_POLICY_CONFIG = {
+    "enabled": True,
+    "priority_map": {
+        "ЧЕБОКСАРЫ_143": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_182": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_144": ["ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_143"],
+        "СОСНОВКА_10": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_340": [],
+    },
+    "default_rank_delay_minutes": 10,
+    "max_attempts_per_date": 3,
+    "max_claims_per_run": 3,
+    "allow_unlisted_fallback": False,
+}
+
 SCHEDULE = [
     {
         "name": "ReportsProcessor",
