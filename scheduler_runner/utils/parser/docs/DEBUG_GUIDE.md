@@ -956,8 +956,8 @@ grep -r "⚠️" .\logs\reports_domain\Parser\
 
 ### 1. Включите подробное логирование
 
-```bash
-python scheduler_runner/tasks/reports/reports_processor.py --detailed_logs
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.utils.parser.tests.run_single_date_smoke --pvz "ЧЕБОКСАРЫ_144" --execution_date 2026-03-13 --pretty
 ```
 
 ### 2. Сохраняйте артефакты

@@ -1,109 +1,143 @@
-﻿# Parser Docs
+# Parser Package
 
-Документация в этой директории описывает Selenium-парсер отчетов Ozon ПВЗ,
-который используется в поддомене `scheduler_runner.tasks.reports`.
+`utils/parser` - изолированный Selenium-based parser package для работы с web-интерфейсами Ozon ПВЗ.
 
-Канонический runtime-путь parser-пакета после переноса:
-`scheduler_runner/utils/parser/`.
+Пакет проектируется как самостоятельный runtime-модуль:
+- без жесткой привязки к конкретному orchestration-слою;
+- с собственными facade entrypoints;
+- с собственными `configs/`, `core/`, `implementations/`, `tests/` и `docs/`.
 
-Канонический путь документации parser-пакета после переноса:
-`scheduler_runner/utils/parser/docs/`.
+Документация в этой директории должна описывать сам package, а не внешний consumer.
 
-Старый путь `scheduler_runner/tasks/reports/parser/` больше не является
-основным runtime-пакетом. Старый docs-путь
-`scheduler_runner/tasks/reports/parser/docs/` должен рассматриваться только как
-legacy redirect marker.
+## Структура пакета
 
-## Архитектура
+```text
+utils/parser/
+  core/
+    base_parser.py
+    base_report_parser.py
+    ozon_report_parser.py
+  implementations/
+    multi_step_ozon_parser.py
+    ozon_available_pvz_parser.py
+  configs/
+    base_configs/
+    implementations/
+  parser_invocation.py
+  tests/
+  docs/
+```
 
-Базовая иерархия классов:
+## Runtime-модель
+
+Основная иерархия классов:
 
 ```text
 BaseParser
   -> BaseReportParser
     -> OzonReportParser
       -> MultiStepOzonParser
+      -> OzonAvailablePvzParser
 ```
 
-Основные каталоги:
+Роли слоев:
 
-- [core/](/C:/tools/scheduler/scheduler_runner/utils/parser/core/) -
-  базовые классы и общая логика выполнения.
-- [implementations/](/C:/tools/scheduler/scheduler_runner/utils/parser/implementations/) -
-  конкретные реализации парсеров.
-- [configs/](/C:/tools/scheduler/scheduler_runner/utils/parser/configs/) -
-  селекторы, URL-фильтры и runtime-конфигурация.
-- [docs/](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/) -
-  документация по ключевым методам и debug-сценариям.
+- `BaseParser` - browser lifecycle, Selenium utilities, element interactions, debug artifacts.
+- `BaseReportParser` - single-date, batch и job-based execution model, report formatting, file output.
+- `OzonReportParser` - Ozon-specific navigation, PVZ selection, overlay handling, available PVZ discovery helpers.
+- `implementations/` - concrete runtime implementations с готовым output contract.
+- `parser_invocation.py` - package facade для внешнего вызова parser-а без знания деталей классов.
 
-## Режимы запуска
+## Текущие реализации
 
-В [base_report_parser.py](/C:/tools/scheduler/scheduler_runner/utils/parser/core/base_report_parser.py)
-поддерживаются два сценария:
+### MultiStepOzonParser
 
-- `run_parser(...)` - обработка одной даты.
-- `run_parser_batch(execution_dates, ...)` - обработка списка дат в одной browser
-  session.
+Основной parser отчетов Ozon ПВЗ.
 
-### Single-date flow
+Назначение:
+- сбор KPI/summary за одну дату;
+- batch-run по нескольким датам в одной browser session;
+- job-based execution для orchestration consumers.
 
-`run_parser(...)` выполняет полный lifecycle:
+### OzonAvailablePvzParser
 
-1. `setup_browser()`
-2. `login()`
-3. обработка одной даты
-4. `logout()`
-5. `close_browser()`
+Lightweight discovery implementation.
 
-Этот путь нужен для обратной совместимости и одиночных запусков.
+Назначение:
+- открыть Ozon с сохраненной browser session;
+- определить текущий PVZ;
+- собрать список PVZ, доступных данной учетной записи;
+- вернуть structured discovery result без report summary contract.
 
-### Batch flow
+## Facade API
 
-`run_parser_batch(...)` используется для backfill-сценария в
-[reports_processor.py](/C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py).
+Основные facade функции описаны в [ParserInvocation/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/ParserInvocation/README.md).
 
-Поведение batch-режима:
+Ключевые entrypoints:
 
-1. браузер открывается один раз;
-2. выполняется один `login()`;
-3. все даты обрабатываются последовательно в текущей session;
-4. после завершения выполняется один `logout()` и один `close_browser()`.
+- `invoke_parser_for_single_date(...)`
+- `invoke_parser_for_pvz(...)`
+- `invoke_parser_for_grouped_jobs(...)`
+- `invoke_available_pvz_discovery(...)`
 
-Это убирает дорогой цикл многократного открытия и закрытия браузера на каждую
-отсутствующую дату.
+## Execution Modes
 
-## Поведение при ошибках
+Package поддерживает четыре уровня запуска:
 
-- Ошибка одной даты в `run_parser_batch(...)` не должна ронять весь batch.
-- Неуспешная дата фиксируется в результирующей структуре как `success=False`.
-- Успешные даты продолжают обрабатываться и могут быть затем загружены в Google Sheets.
-- При fail-fast сценариях авторизации и навигации срабатывают существующие защитные
-  проверки `BaseReportParser`.
+1. single-date
+2. single-PVZ batch
+3. grouped jobs by PVZ
+4. available PVZ discovery
 
-## Связь с reports processor
+Подробности:
+- [BaseReportParser/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/BaseReportParser/README.md)
+- [OzonReportParser/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/OzonReportParser/README.md)
 
-Новый `backfill` режим процессора использует parser так:
+## Logging и артефакты
 
-1. coverage-check в Google Sheets определяет missing dates;
-2. parser получает только отсутствующие даты;
-3. parser возвращает список результатов по датам;
-4. в uploader уходят только успешные результаты.
+Parser package использует централизованный logger, но не зависит от конкретного orchestration consumer.
 
-Таким образом parser больше не отвечает за выбор дат для дозагрузки, а только за
-эффективную обработку уже подготовленного списка.
+По умолчанию:
+- логи parser-а пишутся в `logs/reports_domain/Parser/`
+- debug artifacts пишутся в `logs/reports_domain/Parser/artifacts/`
+- fallback artifacts могут использоваться только если logger отсутствует
 
-## Проверка
-
-Основные тесты parser-слоя:
+Перед чистыми e2e-прогонами рекомендуется очищать:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_report_parser.py -q
+Get-ChildItem logs\reports_domain\Parser -File | Remove-Item -Force
+Get-ChildItem logs\reports_domain\Parser\artifacts -File | Remove-Item -Force
 ```
 
-Для анализа инцидентов:
+## Smoke Entry Points
 
-- смотрите логи в `logs/reports_domain/Parser/`
-- сопоставляйте их с текущим кодом в `scheduler_runner/utils/parser/core/` и
-  `scheduler_runner/utils/parser/implementations/`
-- используйте [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md)
-  для известных проблем startup/auth/navigation
+В `tests/` лежат manual smoke scripts:
+
+- `run_single_date_smoke.py`
+- `run_single_pvz_batch_smoke.py`
+- `run_multi_pvz_multi_date_smoke.py`
+- `run_available_pvz_discovery_smoke.py`
+
+Они предназначены для ручного e2e/debug запуска и не должны восприниматься как unit-tests.
+
+## API Reference
+
+Актуальные индексы методов:
+
+- [BaseParser/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/BaseParser/README.md)
+- [BaseReportParser/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/BaseReportParser/README.md)
+- [OzonReportParser/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/OzonReportParser/README.md)
+- [Implementations/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/Implementations/README.md)
+- [ParserInvocation/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/ParserInvocation/README.md)
+
+Legacy per-method markdown files в поддиректориях сохранены как детальные заметки, но canonical overview должен поддерживаться именно через эти README/API index страницы.
+
+## Verification
+
+Минимальная проверка package:
+
+```powershell
+.venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_parser.py scheduler_runner\utils\parser\core\tests\test_base_report_parser.py scheduler_runner\utils\parser\core\tests\test_ozon_report_parser.py -q
+```
+
+Для live troubleshooting используйте [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md).

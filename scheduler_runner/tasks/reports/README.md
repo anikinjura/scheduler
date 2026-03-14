@@ -1,86 +1,193 @@
-﻿# Reports
+# Reports Task
 
-РџРѕРґРґРѕРјРµРЅ `scheduler_runner.tasks.reports` РѕС‚РІРµС‡Р°РµС‚ Р·Р° РїРѕР»СѓС‡РµРЅРёРµ РѕС‚С‡РµС‚РѕРІ Ozon РџР’Р—,
-РїРѕРґРіРѕС‚РѕРІРєСѓ РґР°РЅРЅС‹С… Рє Р·Р°РіСЂСѓР·РєРµ РІ Google Sheets Рё РѕС‚РїСЂР°РІРєСѓ РёС‚РѕРіРѕРІС‹С… СѓРІРµРґРѕРјР»РµРЅРёР№.
+`tasks/reports` - orchestration layer для получения KPI-отчетов Ozon ПВЗ, подготовки данных к загрузке и отправки итоговых уведомлений.
 
-## РўРµРєСѓС‰РёР№ СЃС†РµРЅР°СЂРёР№ РІС‹РїРѕР»РЅРµРЅРёСЏ
+Это не parser package.  
+Parser вынесен в отдельный dependency layer:
+- runtime: [`utils/parser/`](C:/tools/scheduler/scheduler_runner/utils/parser)
+- docs: [`utils/parser/docs/`](C:/tools/scheduler/scheduler_runner/utils/parser/docs)
 
-РћСЃРЅРѕРІРЅР°СЏ С‚РѕС‡РєР° РІС…РѕРґР°: [reports_processor.py](/C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py).
+Задача `reports` отвечает за:
+- определение missing dates в Google Sheets;
+- выбор execution scope по PVZ;
+- вызов parser facade;
+- batch upload;
+- notification flow.
 
-РџСЂРѕС†РµСЃСЃРѕСЂ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РґРІР° СЂРµР¶РёРјР°:
+## Точка входа
 
-- `single` - СЃС‚Р°СЂС‹Р№ СЂРµР¶РёРј РѕР±СЂР°Р±РѕС‚РєРё РѕРґРЅРѕР№ РґР°С‚С‹.
-- `backfill` - РЅРѕРІС‹Р№ СЂРµР¶РёРј `coverage-check -> batch parse -> batch upload -> batch notify`.
+Основная точка входа:
+- [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
 
-РџРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РїСЂРѕС†РµСЃСЃРѕСЂ РёСЃРїРѕР»СЊР·СѓРµС‚ `backfill`, РµСЃР»Рё СЏРІРЅРѕ РЅРµ РїРµСЂРµРґР°РЅР° `execution_date`.
+## Границы ответственности
 
-## Backfill flow
+`tasks/reports`:
+- orchestration
+- coverage-check
+- upload contract
+- notification contract
+- CLI режимы single/backfill
+- pre-check доступных PVZ для fallback parsing по коллегам
 
-РќРѕРІС‹Р№ СЃС†РµРЅР°СЂРёР№ СЂР°Р±РѕС‚Р°РµС‚ С‚Р°Рє:
+`utils/parser`:
+- browser lifecycle
+- Selenium runtime
+- parsing/report extraction
+- PVZ switching
+- available PVZ discovery
+- parser smoke/debug entrypoints
 
-1. Р¤РѕСЂРјРёСЂСѓРµС‚СЃСЏ РґРёР°РїР°Р·РѕРЅ РґР°С‚ РґР»СЏ РїСЂРѕРІРµСЂРєРё РїРѕРєСЂС‹С‚РёСЏ.
-2. Р§РµСЂРµР· `scheduler_runner.utils.uploader.check_missing_items(...)` РѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ,
-   РєР°РєРёС… Р·Р°РїРёСЃРµР№ РЅРµ С…РІР°С‚Р°РµС‚ РІ Google Sheets РґР»СЏ РїР°СЂС‹ РєР»СЋС‡РµР№ `Р”Р°С‚Р° + РџР’Р—`.
-3. Р•СЃР»Рё РїСЂРѕРїСѓСЃРєРѕРІ РЅРµС‚, РїР°СЂСЃРµСЂ Рё Р·Р°РіСЂСѓР·С‡РёРє РЅРµ Р·Р°РїСѓСЃРєР°СЋС‚СЃСЏ.
-4. Р•СЃР»Рё РїСЂРѕРїСѓСЃРєРё РµСЃС‚СЊ, РїР°СЂСЃРµСЂ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚ РІСЃРµ РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РёРµ РґР°С‚С‹ РІ РѕРґРЅРѕР№ browser
-   session.
-5. РЈСЃРїРµС€РЅРѕ РїРѕР»СѓС‡РµРЅРЅС‹Рµ Р·Р°РїРёСЃРё Р·Р°РіСЂСѓР¶Р°СЋС‚СЃСЏ РѕРґРЅРёРј batch-РІС‹Р·РѕРІРѕРј uploader.
-6. РћС‚РїСЂР°РІР»СЏРµС‚СЃСЏ Р°РіСЂРµРіРёСЂРѕРІР°РЅРЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ РїРѕ РІСЃРµРјСѓ РїСЂРѕРіРѕРЅСѓ.
+## Режимы запуска
 
-РўР°РєРѕР№ РїРѕРґС…РѕРґ РёСЃРєР»СЋС‡Р°РµС‚ РјРЅРѕРіРѕРєСЂР°С‚РЅС‹Р№ С†РёРєР» `open browser -> parse -> close browser`
-РґР»СЏ РєР°Р¶РґРѕР№ РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РµР№ РґР°С‚С‹.
+`reports_processor` поддерживает два режима:
 
-## РћСЃРЅРѕРІРЅС‹Рµ РјРѕРґСѓР»Рё
+- `single`
+  - один PVZ
+  - одна дата
+  - legacy-compatible flow
 
-- [reports_processor.py](/C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py) -
-  orchestration parsing/upload/notification.
-- [scheduler_runner/utils/parser/](/C:/tools/scheduler/scheduler_runner/utils/parser/) -
-  РєР°РЅРѕРЅРёС‡РµСЃРєРёР№ runtime-РїР°РєРµС‚ Selenium-РїР°СЂСЃРµСЂР°, parser facade Рё batch-РѕР±СЂР°Р±РѕС‚РєРё РґР°С‚.
-- [scheduler_runner/utils/parser/docs/](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/) -
-  канонический docs-root parser-пакета.
-- старый путь `scheduler_runner/tasks/reports/parser/` удален из основного дерева и больше не должен использоваться как runtime/docs package.
-- [config/scripts/reports_processor_config.py](/C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py) -
-  СЂР°СЃРїРёСЃР°РЅРёРµ Рё РЅР°СЃС‚СЂРѕР№РєРё backfill.
-- [config/scripts/kpi_google_sheets_config.py](/C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_google_sheets_config.py) -
-  РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ РїРѕРґРєР»СЋС‡РµРЅРёСЏ Рё СЃС…РµРјС‹ Google Sheets.
+- `backfill`
+  - диапазон дат
+  - один или несколько PVZ
+  - coverage-check -> parsing -> upload -> notification
+
+Если явно не передан `--mode`, то:
+- при наличии `--execution_date` используется `single`
+- иначе используется `backfill`
+
+## Single Flow
+
+`single` режим делает:
+
+1. вызывает parser facade на одну дату;
+2. при успешном parse готовит upload payload;
+3. вызывает uploader;
+4. отправляет notification.
+
+Этот путь сохраняется для обратной совместимости и точечных запусков.
+
+## Backfill Flow
+
+`backfill` режим делает:
+
+1. вычисляет `date_from/date_to`;
+2. проверяет покрытие Google Sheets по ключу `Дата + ПВЗ`;
+3. строит список missing dates;
+4. вызывает parser только для отсутствующих данных;
+5. загружает только успешные результаты;
+6. отправляет агрегированное уведомление по прогону.
+
+## Multi-PVZ Flow
+
+Для backfill по нескольким PVZ текущий flow такой:
+
+1. нормализуется запрошенный список PVZ;
+2. если среди запроса есть коллеги, запускается available PVZ discovery текущей учеткой;
+3. недоступные коллеги исключаются до parsing stage;
+4. оставшийся scope идет либо:
+   - в grouped multi-PVZ path, если доступных PVZ больше одного;
+   - в single-PVZ backfill path, если после фильтра остался один PVZ.
+
+Это важное текущее поведение:
+- execution model может деградировать `multi -> single`, если discovery scope сузился до одного доступного объекта;
+- это нормальный и ожидаемый fallback.
+
+## Colleague Fallback
+
+В `reports_processor` уже встроен capability pre-check:
+- [`discover_available_pvz_scope(...)`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
+- [`resolve_accessible_pvz_ids(...)`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
+
+Что уже есть:
+- процессор умеет определить, какие PVZ доступны текущей Ozon account/session;
+- процессор не пытается запускать parser по недоступным коллегам;
+- при провале discovery используется safe fallback только на собственный configured PVZ.
+
+Что пока еще открыто:
+- policy-arbitration между коллегами:
+  - кто именно должен подхватывать чужой объект;
+  - по каким правилам принимать решение о failover;
+  - как избегать гонок и дублирующего парсинга.
+
+Этот слой координации пока не реализован.  
+Сейчас подготовлен только фундамент: безопасное определение доступного execution scope.
+
+## Основные модули
+
+- [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
+  - основной orchestration script
+- [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
+  - runtime и scheduler config для task
+- [`config/scripts/kpi_google_sheets_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/kpi_google_sheets_config.py)
+  - Google Sheets schema/connection config
+- [`tests/test_reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/test_reports_processor.py)
+  - unit coverage orchestration logic
 
 ## CLI
 
-РџСЂРёРјРµСЂС‹ Р·Р°РїСѓСЃРєР° РёР· РІРёСЂС‚СѓР°Р»СЊРЅРѕРіРѕ РѕРєСЂСѓР¶РµРЅРёСЏ:
+Single date:
 
 ```powershell
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --execution_date 2026-03-10
 ```
 
+Single-PVZ backfill:
+
 ```powershell
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --backfill_days 7
 ```
+
+Backfill по явному диапазону:
 
 ```powershell
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --date_from 2026-03-04 --date_to 2026-03-10
 ```
 
-## РћР¶РёРґР°РµРјРѕРµ РїРѕРІРµРґРµРЅРёРµ
-
-- Р”Р»СЏ `single` СЂРµР¶РёРјР° Р±СЂР°СѓР·РµСЂ РѕС‚РєСЂС‹РІР°РµС‚СЃСЏ, РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚ РѕРґРЅСѓ РґР°С‚Сѓ Рё Р·Р°РєСЂС‹РІР°РµС‚СЃСЏ.
-- Р”Р»СЏ `backfill` СЂРµР¶РёРјР° Р±СЂР°СѓР·РµСЂ РѕС‚РєСЂС‹РІР°РµС‚СЃСЏ РѕРґРёРЅ СЂР°Р· РЅР° РІРµСЃСЊ РЅР°Р±РѕСЂ missing dates.
-- Р’ Р·Р°РіСЂСѓР·РєСѓ СѓС…РѕРґСЏС‚ С‚РѕР»СЊРєРѕ СѓСЃРїРµС€РЅРѕ СЃРїР°СЂСЃРµРЅРЅС‹Рµ РґР°С‚С‹.
-- РЈРІРµРґРѕРјР»РµРЅРёРµ СЃРѕРґРµСЂР¶РёС‚ Р°РіСЂРµРіРёСЂРѕРІР°РЅРЅСѓСЋ СЃС‚Р°С‚РёСЃС‚РёРєСѓ: РґРёР°РїР°Р·РѕРЅ, missing dates,
-  СѓСЃРїРµС€РЅС‹Рµ Рё РЅРµСѓСЃРїРµС€РЅС‹Рµ РґР°С‚С‹.
-
-## РџСЂРѕРІРµСЂРєР° РёР·РјРµРЅРµРЅРёР№
-
-Р›РѕРєР°Р»СЊРЅС‹Рµ unit-С‚РµСЃС‚С‹:
+Backfill по нескольким PVZ:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_report_parser.py scheduler_runner\tasks\reports\tests\test_reports_processor.py -q
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.reports_processor --mode backfill --pvz "ЧЕБОКСАРЫ_144" --pvz "ЧЕБОКСАРЫ_182" --date_from 2026-03-04 --date_to 2026-03-10
 ```
 
-РџСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё СЂРµР°Р»СЊРЅС‹Р№ smoke-check:
+## Ожидаемое поведение
+
+- `single`
+  - browser/session открывается под parser package для одной даты
+- `backfill`, `1 PVZ`
+  - один browser lifecycle на набор missing dates этого PVZ
+- `backfill`, `N PVZ`
+  - parser reuse идет по модели `1 session per PVZ`
+  - перед запуском выполняется pre-check доступных коллег
+  - недоступные PVZ отбрасываются до parser run
+
+## Логи
+
+Сервисные logger-и разделены по ролям:
+- `Processor`
+- `Parser`
+- `Uploader`
+- `Notification`
+
+Parser runtime и его артефакты живут в parser package logging area:
+- `logs/reports_domain/Parser/`
+- `logs/reports_domain/Parser/artifacts/`
+
+## Проверка изменений
+
+Основные unit-тесты orchestration-слоя:
 
 ```powershell
-.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.test_coverage_check_real --pvz "Р§Р•Р‘РћРљРЎРђР Р«_340" --days 7 --json
+.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py -q
 ```
 
+Смежная parser/report suite:
 
+```powershell
+.venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_parser.py scheduler_runner\utils\parser\core\tests\test_base_report_parser.py scheduler_runner\utils\parser\core\tests\test_ozon_report_parser.py scheduler_runner\tasks\reports\tests\test_reports_processor.py -q
+```
 
+При необходимости реальный smoke coverage-check:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.test_coverage_check_real --pvz "ЧЕБОКСАРЫ_340" --days 7 --json
+```
