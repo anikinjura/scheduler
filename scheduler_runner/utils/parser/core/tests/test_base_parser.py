@@ -1,10 +1,10 @@
-﻿"""
-РўРµСЃС‚С‹ РґР»СЏ BaseParser СЃ СѓС‡РµС‚РѕРј РёР·РјРµРЅРµРЅРёР№ РІ РІРµСЂСЃРёРё 3.0.0
+"""
+Тесты для BaseParser с учетом изменений в версии 3.0.0
 
-Р’ РІРµСЂСЃРёРё 3.0.0 Р±С‹Р»Рё РІРЅРµСЃРµРЅС‹ РёР·РјРµРЅРµРЅРёСЏ:
-- РњРµС‚РѕРґ select_option_from_dropdown РїРµСЂРµРёРјРµРЅРѕРІР°РЅ РІ _select_option_from_dropdown
-- РњРµС‚РѕРґ set_element_value С‚РµРїРµСЂСЊ РёСЃРїРѕР»СЊР·СѓРµС‚ _select_option_from_dropdown РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ РІС‹РїР°РґР°СЋС‰РёРјРё СЃРїРёСЃРєР°РјРё
-- РћР±РЅРѕРІР»РµРЅС‹ С‚РµСЃС‚С‹ РґР»СЏ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РЅРѕРІРѕРіРѕ РјРµС‚РѕРґР° _select_option_from_dropdown
+В версии 3.0.0 были внесены изменения:
+- Метод select_option_from_dropdown переименован в _select_option_from_dropdown
+- Метод set_element_value теперь использует _select_option_from_dropdown для работы с выпадающими списками
+- Обновлены тесты для использования нового метода _select_option_from_dropdown
 """
 import unittest
 from unittest.mock import Mock, patch, MagicMock
@@ -18,30 +18,30 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 
 class TestConcreteParser(BaseParser):
-    """РўРµСЃС‚РѕРІС‹Р№ РґРѕС‡РµСЂРЅРёР№ РєР»Р°СЃСЃ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ BaseParser"""
+    """Тестовый дочерний класс для тестирования BaseParser"""
 
     def login(self):
-        """Р РµР°Р»РёР·Р°С†РёСЏ Р°Р±СЃС‚СЂР°РєС‚РЅРѕРіРѕ РјРµС‚РѕРґР° login"""
+        """Реализация абстрактного метода login"""
         pass
 
     def navigate_to_target(self):
-        """Р РµР°Р»РёР·Р°С†РёСЏ Р°Р±СЃС‚СЂР°РєС‚РЅРѕРіРѕ РјРµС‚РѕРґР° navigate_to_target"""
+        """Реализация абстрактного метода navigate_to_target"""
         pass
 
     def extract_data(self):
-        """Р РµР°Р»РёР·Р°С†РёСЏ Р°Р±СЃС‚СЂР°РєС‚РЅРѕРіРѕ РјРµС‚РѕРґР° extract_data"""
+        """Реализация абстрактного метода extract_data"""
         return {}
 
     def logout(self):
-        """Р РµР°Р»РёР·Р°С†РёСЏ Р°Р±СЃС‚СЂР°РєС‚РЅРѕРіРѕ РјРµС‚РѕРґР° logout"""
+        """Реализация абстрактного метода logout"""
         pass
 
 
 class TestBaseParser(unittest.TestCase):
-    """РўРµСЃС‚С‹ РґР»СЏ РЅРѕРІРѕРіРѕ BaseParser"""
+    """Тесты для нового BaseParser"""
 
     def setUp(self):
-        """РќР°СЃС‚СЂРѕР№РєР° С‚РµСЃС‚Р°"""
+        """Настройка теста"""
         self.config = {
             'EDGE_USER_DATA_DIR': 'test_data_dir',
             'HEADLESS': True,
@@ -65,29 +65,31 @@ class TestBaseParser(unittest.TestCase):
         self.parser = TestConcreteParser(self.config)
 
     def test_init(self):
-        """РўРµСЃС‚ РёРЅРёС†РёР°Р»РёР·Р°С†РёРё"""
+        """Тест инициализации"""
         self.assertEqual(self.parser.config, self.config)
         self.assertIsNone(self.parser.driver)
         self.assertIsNotNone(self.parser.logger)
 
     def test_get_current_user(self):
-        """РўРµСЃС‚ РїРѕР»СѓС‡РµРЅРёСЏ С‚РµРєСѓС‰РµРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ"""
-        with patch('os.getlogin', return_value='test_user'):
+        """Тест получения текущего пользователя"""
+        with patch.dict(os.environ, {'USERNAME': 'test_user'}, clear=False):
             result = self.parser._get_current_user()
             self.assertEqual(result, 'test_user')
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.BaseParser._resolve_existing_edge_user_data_dir', return_value=None)
     @patch('scheduler_runner.utils.parser.core.base_parser.os.getlogin')
-    def test_get_default_browser_user_data_dir(self, mock_getlogin):
-        """РўРµСЃС‚ РїРѕР»СѓС‡РµРЅРёСЏ РїСѓС‚Рё Рє РґР°РЅРЅС‹Рј Р±СЂР°СѓР·РµСЂР°"""
+    def test_get_default_browser_user_data_dir(self, mock_getlogin, mock_resolve_existing_dir):
+        """Тест получения пути к данным браузера"""
         mock_getlogin.return_value = 'test_user'
 
-        # РўРµСЃС‚ СЃ СѓРєР°Р·Р°РЅРЅС‹Рј РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј
+        # Тест с указанным пользователем
         result = self.parser._get_default_browser_user_data_dir('custom_user')
         expected = "C:/Users/custom_user/AppData/Local/Microsoft/Edge/User Data"
         self.assertEqual(result, expected)
 
-        # РўРµСЃС‚ СЃ С‚РµРєСѓС‰РёРј РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј
-        result_with_current = self.parser._get_default_browser_user_data_dir()
+        # Тест с текущим пользователем
+        with patch.dict(os.environ, {}, clear=True):
+            result_with_current = self.parser._get_default_browser_user_data_dir()
         expected_with_current = "C:/Users/test_user/AppData/Local/Microsoft/Edge/User Data"
         self.assertEqual(result_with_current, expected_with_current)
 
@@ -95,12 +97,12 @@ class TestBaseParser(unittest.TestCase):
     @patch('scheduler_runner.utils.parser.core.base_parser.os.path.exists', return_value=True)
     @patch('scheduler_runner.utils.parser.core.base_parser.BaseParser._get_default_browser_user_data_dir', return_value='C:/tmp/edge-profile')
     def test_setup_browser(self, mock_get_default_path, mock_exists, mock_webdriver):
-        """РўРµСЃС‚ РЅР°СЃС‚СЂРѕР№РєРё Р±СЂР°СѓР·РµСЂР°"""
+        """Тест настройки браузера"""
         mock_driver = Mock()
         mock_driver.session_id = "test_session_id_12345"
         mock_webdriver.return_value = mock_driver
 
-        # Mock-РёРј РјРµС‚РѕРґ _terminate_browser_processes Сѓ СЌРєР·РµРјРїР»СЏСЂР°
+        # Mock-им метод _terminate_browser_processes у экземпляра
         self.parser._terminate_browser_processes = Mock()
 
         result = self.parser.setup_browser()
@@ -117,12 +119,12 @@ class TestBaseParser(unittest.TestCase):
     def test_setup_browser_fallback_to_non_headless_on_startup_crash(
         self, mock_get_default_path, mock_exists, mock_sleep, mock_webdriver
     ):
-        """РўРµСЃС‚ Р°РІР°СЂРёР№РЅРѕРіРѕ РѕР±С…РѕРґР°: РїРѕСЃР»Рµ РєСЂР°С€Р° РІ headless РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ fallback headless=False."""
+        """Тест аварийного обхода: после краша в headless выполняется fallback headless=False."""
         crash_error = Exception("Microsoft Edge failed to start: crashed. DevToolsActivePort file doesn't exist")
         fallback_driver = Mock()
         fallback_driver.session_id = "fallback_session_id_12345"
 
-        # 3 С„РµР№Р»Р° primary + 1 СѓСЃРїРµС€РЅС‹Р№ Р·Р°РїСѓСЃРє fallback.
+        # 3 фейла primary + 1 успешный запуск fallback.
         mock_webdriver.side_effect = [crash_error, crash_error, crash_error, fallback_driver]
 
         self.parser._terminate_browser_processes = Mock()
@@ -134,7 +136,7 @@ class TestBaseParser(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(self.parser.driver, fallback_driver)
-        # РћРґРёРЅ РІС‹Р·РѕРІ РґРѕ primary + РѕРґРёРЅ РїРµСЂРµРґ fallback.
+        # Один вызов до primary + один перед fallback.
         self.assertEqual(self.parser._terminate_browser_processes.call_count, 2)
         self.assertEqual(mock_webdriver.call_count, 4)
 
@@ -145,7 +147,7 @@ class TestBaseParser(unittest.TestCase):
     def test_setup_browser_no_fallback_for_non_signature_error(
         self, mock_get_default_path, mock_exists, mock_sleep, mock_webdriver
     ):
-        """РўРµСЃС‚: fallback РЅРµ СЃСЂР°Р±Р°С‚С‹РІР°РµС‚, РµСЃР»Рё РѕС€РёР±РєР° РЅРµ СЃРѕРґРµСЂР¶РёС‚ СЃРёРіРЅР°С‚СѓСЂСѓ startup crash."""
+        """Тест: fallback не срабатывает, если ошибка не содержит сигнатуру startup crash."""
         generic_error = Exception("Random webdriver error")
         mock_webdriver.side_effect = [generic_error, generic_error, generic_error]
 
@@ -156,12 +158,12 @@ class TestBaseParser(unittest.TestCase):
         result = self.parser.setup_browser()
 
         self.assertFalse(result)
-        # РўРѕР»СЊРєРѕ РїРµСЂРІРёС‡РЅС‹Р№ РІС‹Р·РѕРІ, fallback Р·Р°РїСѓСЃРєР°С‚СЊСЃСЏ РЅРµ РґРѕР»Р¶РµРЅ.
+        # Только первичный вызов, fallback запускаться не должен.
         self.assertEqual(self.parser._terminate_browser_processes.call_count, 1)
         self.assertEqual(mock_webdriver.call_count, 3)
 
     def test_close_browser(self):
-        """РўРµСЃС‚ Р·Р°РєСЂС‹С‚РёСЏ Р±СЂР°СѓР·РµСЂР°"""
+        """Тест закрытия браузера"""
         mock_driver = Mock()
         self.parser.driver = mock_driver
 
@@ -171,15 +173,15 @@ class TestBaseParser(unittest.TestCase):
         self.assertIsNone(self.parser.driver)
 
     def test_close_browser_without_driver(self):
-        """РўРµСЃС‚ Р·Р°РєСЂС‹С‚РёСЏ Р±СЂР°СѓР·РµСЂР° Р±РµР· РґСЂР°Р№РІРµСЂР°"""
-        # РќРµ РґРѕР»Р¶РЅРѕ РІС‹Р·РІР°С‚СЊ РѕС€РёР±РєСѓ
+        """Тест закрытия браузера без драйвера"""
+        # Не должно вызвать ошибку
         self.parser.close_browser()
         self.assertIsNone(self.parser.driver)
 
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
     def test_terminate_browser_processes(self, mock_sleep, mock_subprocess_run):
-        """РўРµСЃС‚ Р·Р°РІРµСЂС€РµРЅРёСЏ РїСЂРѕС†РµСЃСЃРѕРІ Р±СЂР°СѓР·РµСЂР°"""
+        """Тест завершения процессов браузера"""
         mock_subprocess_run.return_value = Mock()
 
         self.parser._terminate_browser_processes()
@@ -195,10 +197,10 @@ class TestBaseParser(unittest.TestCase):
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
     def test_terminate_browser_processes_with_custom_executable(self, mock_subprocess_run, mock_sleep):
-        """РўРµСЃС‚ Р·Р°РІРµСЂС€РµРЅРёСЏ РїСЂРѕС†РµСЃСЃРѕРІ Р±СЂР°СѓР·РµСЂР° СЃ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёРј РёСЃРїРѕР»РЅСЏРµРјС‹Рј С„Р°Р№Р»РѕРј"""
+        """Тест завершения процессов браузера с пользовательским исполняемым файлом"""
         mock_subprocess_run.return_value = Mock()
 
-        # РР·РјРµРЅРёРј РєРѕРЅС„РёРі РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ РґСЂСѓРіРѕРіРѕ РёСЃРїРѕР»РЅСЏРµРјРѕРіРѕ С„Р°Р№Р»Р°
+        # Изменим конфиг для тестирования другого исполняемого файла
         self.parser.config['BROWSER_EXECUTABLE'] = 'chrome.exe'
 
         self.parser._terminate_browser_processes()
@@ -214,20 +216,20 @@ class TestBaseParser(unittest.TestCase):
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
     def test_terminate_browser_processes_exception(self, mock_subprocess_run, mock_sleep):
-        """РўРµСЃС‚ Р·Р°РІРµСЂС€РµРЅРёСЏ РїСЂРѕС†РµСЃСЃРѕРІ Р±СЂР°СѓР·РµСЂР° СЃ РёСЃРєР»СЋС‡РµРЅРёРµРј"""
+        """Тест завершения процессов браузера с исключением"""
         mock_subprocess_run.side_effect = Exception("Test exception")
 
-        # РќРµ РґРѕР»Р¶РЅРѕ РІС‹Р·РІР°С‚СЊ РѕС€РёР±РєСѓ
+        # Не должно вызвать ошибку
         self.parser._terminate_browser_processes()
 
         mock_subprocess_run.assert_called_once()
-        # sleep РЅРµ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РІС‹Р·РІР°РЅ, РµСЃР»Рё subprocess.run Р±СЂРѕСЃР°РµС‚ РёСЃРєР»СЋС‡РµРЅРёРµ
+        # sleep не должен быть вызван, если subprocess.run бросает исключение
         mock_sleep.assert_not_called()
 
     @patch('scheduler_runner.utils.parser.core.base_parser.WebDriverWait')
     @patch('scheduler_runner.utils.parser.core.base_parser.By')
     def test_click_element_with_wait(self, mock_by, mock_wait):
-        """РўРµСЃС‚ РєР»РёРєР° РїРѕ СЌР»РµРјРµРЅС‚Сѓ СЃ РѕР¶РёРґР°РЅРёРµРј"""
+        """Тест клика по элементу с ожиданием"""
         mock_element = Mock()
         mock_wait_instance = Mock()
         mock_wait_instance.until.return_value = mock_element
@@ -244,7 +246,7 @@ class TestBaseParser(unittest.TestCase):
 
     @patch('scheduler_runner.utils.parser.core.base_parser.By')
     def test_click_element_without_wait(self, mock_by):
-        """РўРµСЃС‚ РєР»РёРєР° РїРѕ СЌР»РµРјРµРЅС‚Сѓ Р±РµР· РѕР¶РёРґР°РЅРёСЏ"""
+        """Тест клика по элементу без ожидания"""
         mock_element = Mock()
 
         self.parser.driver = Mock()
@@ -257,9 +259,9 @@ class TestBaseParser(unittest.TestCase):
         self.assertTrue(result)
 
     def test_get_element_value_input(self):
-        """РўРµСЃС‚ РїРѕР»СѓС‡РµРЅРёСЏ Р·РЅР°С‡РµРЅРёСЏ СЌР»РµРјРµРЅС‚Р° С‚РёРїР° input"""
+        """Тест получения значения элемента типа input"""
         mock_element = Mock()
-        mock_element.get_attribute.return_value = "РўРµСЃС‚РѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ"
+        mock_element.get_attribute.return_value = "Тестовое значение"
         mock_element.text = ""
 
         self.parser.driver = Mock()
@@ -269,12 +271,12 @@ class TestBaseParser(unittest.TestCase):
 
         self.parser.driver.find_element.assert_called_once()
         mock_element.get_attribute.assert_called_once_with('value')
-        self.assertEqual(result, "РўРµСЃС‚РѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ")
+        self.assertEqual(result, "Тестовое значение")
 
     def test_get_element_value_div(self):
-        """РўРµСЃС‚ РїРѕР»СѓС‡РµРЅРёСЏ Р·РЅР°С‡РµРЅРёСЏ СЌР»РµРјРµРЅС‚Р° С‚РёРїР° div"""
+        """Тест получения значения элемента типа div"""
         mock_element = Mock()
-        mock_element.text = "РўРµРєСЃС‚ СЌР»РµРјРµРЅС‚Р°"
+        mock_element.text = "Текст элемента"
 
         self.parser.driver = Mock()
         self.parser.driver.find_element.return_value = mock_element
@@ -282,28 +284,28 @@ class TestBaseParser(unittest.TestCase):
         result = self.parser.get_element_value("//div[@id='test']", element_type='div')
 
         self.parser.driver.find_element.assert_called_once()
-        self.assertEqual(result, "РўРµРєСЃС‚ СЌР»РµРјРµРЅС‚Р°")
+        self.assertEqual(result, "Текст элемента")
 
     def test_set_element_value_input(self):
-        """РўРµСЃС‚ СѓСЃС‚Р°РЅРѕРІРєРё Р·РЅР°С‡РµРЅРёСЏ СЌР»РµРјРµРЅС‚Р° С‚РёРїР° input"""
+        """Тест установки значения элемента типа input"""
         mock_element = Mock()
-        # Р’РѕР·РІСЂР°С‰Р°РµРјРѕРµ Р·РЅР°С‡РµРЅРёРµ РґР»СЏ get_attribute('value') РґРѕР»Р¶РЅРѕ СЃРѕРІРїР°РґР°С‚СЊ СЃ СѓСЃС‚Р°РЅР°РІР»РёРІР°РµРјС‹Рј Р·РЅР°С‡РµРЅРёРµРј
-        mock_element.get_attribute.return_value = "РќРѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ"
+        # Возвращаемое значение для get_attribute('value') должно совпадать с устанавливаемым значением
+        mock_element.get_attribute.return_value = "Новое значение"
         mock_element.text = ""
 
         self.parser.driver = Mock()
         self.parser.driver.find_element.return_value = mock_element
 
-        result = self.parser.set_element_value("//input[@id='test']", "РќРѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ", element_type='input')
+        result = self.parser.set_element_value("//input[@id='test']", "Новое значение", element_type='input')
 
         self.parser.driver.find_element.assert_called_once()
         mock_element.clear.assert_called_once()
-        mock_element.send_keys.assert_called_once_with("РќРѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ")
+        mock_element.send_keys.assert_called_once_with("Новое значение")
         self.assertTrue(result)
 
     @patch('selenium.webdriver.support.ui.Select')
     def test_set_element_value_dropdown(self, mock_select_class):
-        """РўРµСЃС‚ СѓСЃС‚Р°РЅРѕРІРєРё Р·РЅР°С‡РµРЅРёСЏ СЌР»РµРјРµРЅС‚Р° С‚РёРїР° dropdown"""
+        """Тест установки значения элемента типа dropdown"""
         mock_element = Mock()
         mock_select = Mock()
 
@@ -321,11 +323,11 @@ class TestBaseParser(unittest.TestCase):
     @patch('scheduler_runner.utils.parser.core.base_parser.ActionChains')
     @patch('scheduler_runner.utils.parser.core.base_parser.By')
     def test_select_option_from_dropdown_exact_match(self, mock_by, mock_actions_class):
-        """РўРµСЃС‚ РјРµС‚РѕРґР° РІС‹Р±РѕСЂР° РѕРїС†РёРё РёР· РІС‹РїР°РґР°СЋС‰РµРіРѕ СЃРїРёСЃРєР° СЃ С‚РѕС‡РЅС‹Рј СЃРѕРІРїР°РґРµРЅРёРµРј"""
-        # РќР°СЃС‚СЂРѕР№РєР° mock-РѕР±СЉРµРєС‚РѕРІ
+        """Тест метода выбора опции из выпадающего списка с точным совпадением"""
+        # Настройка mock-объектов
         mock_dropdown = Mock()
         mock_option = Mock()
-        mock_option.text = "РўСЂРµР±СѓРµРјС‹Р№ РџР’Р—"
+        mock_option.text = "Требуемый ПВЗ"
         mock_option.get_attribute.return_value = None
 
         self.parser.driver = Mock()
@@ -333,23 +335,23 @@ class TestBaseParser(unittest.TestCase):
         self.parser.driver.find_elements.return_value = [mock_option]
 
         mock_action_chains_instance = Mock()
-        # РќР°СЃС‚СЂРѕР№РєР° С†РµРїРѕС‡РєРё РІС‹Р·РѕРІРѕРІ: move_to_element().click().perform()
+        # Настройка цепочки вызовов: move_to_element().click().perform()
         mock_action_chains_instance.move_to_element.return_value = mock_action_chains_instance
         mock_action_chains_instance.click.return_value = mock_action_chains_instance
         mock_actions_class.return_value = mock_action_chains_instance
 
-        # Р’С‹Р·РѕРІ С‚РµСЃС‚РёСЂСѓРµРјРѕРіРѕ РјРµС‚РѕРґР°
+        # Вызов тестируемого метода
         result = self.parser._select_option_from_dropdown(
             dropdown_selector="//select[@id='pvz']",
             option_selector="//option",
-            option_value="РўСЂРµР±СѓРµРјС‹Р№ РџР’Р—",
+            option_value="Требуемый ПВЗ",
             exact_match=True
         )
 
-        # РџСЂРѕРІРµСЂРєРё
+        # Проверки
         self.assertTrue(result)
-        # РњРµС‚РѕРґ _select_option_from_dropdown РІС‹Р·С‹РІР°РµС‚ find_element РЅРµСЃРєРѕР»СЊРєРѕ СЂР°Р·,
-        # РїРѕСЌС‚РѕРјСѓ РїСЂРѕРІРµСЂРёРј, С‡С‚Рѕ РѕРЅ Р±С‹Р» РІС‹Р·РІР°РЅ С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ СЂР°Р·
+        # Метод _select_option_from_dropdown вызывает find_element несколько раз,
+        # поэтому проверим, что он был вызван хотя бы один раз
         self.assertGreaterEqual(self.parser.driver.find_element.call_count, 1)
         self.parser.driver.find_elements.assert_called_once()
         mock_actions_class.assert_called_once_with(self.parser.driver)
@@ -360,42 +362,42 @@ class TestBaseParser(unittest.TestCase):
     @patch('scheduler_runner.utils.parser.core.base_parser.ActionChains')
     @patch('scheduler_runner.utils.parser.core.base_parser.By')
     def test_select_option_from_dropdown_no_match(self, mock_by, mock_actions):
-        """РўРµСЃС‚ РјРµС‚РѕРґР° РІС‹Р±РѕСЂР° РѕРїС†РёРё РёР· РІС‹РїР°РґР°СЋС‰РµРіРѕ СЃРїРёСЃРєР° Р±РµР· СЃРѕРІРїР°РґРµРЅРёР№"""
-        # РќР°СЃС‚СЂРѕР№РєР° mock-РѕР±СЉРµРєС‚РѕРІ
+        """Тест метода выбора опции из выпадающего списка без совпадений"""
+        # Настройка mock-объектов
         mock_dropdown = Mock()
         mock_option = Mock()
-        mock_option.text = "Р”СЂСѓРіРѕР№ РџР’Р—"
+        mock_option.text = "Другой ПВЗ"
         mock_option.get_attribute.return_value = None
 
         self.parser.driver = Mock()
         self.parser.driver.find_element.return_value = mock_dropdown
         self.parser.driver.find_elements.return_value = [mock_option]
 
-        # Р’С‹Р·РѕРІ С‚РµСЃС‚РёСЂСѓРµРјРѕРіРѕ РјРµС‚РѕРґР°
+        # Вызов тестируемого метода
         result = self.parser._select_option_from_dropdown(
             dropdown_selector="//select[@id='pvz']",
             option_selector="//option",
-            option_value="РўСЂРµР±СѓРµРјС‹Р№ РџР’Р—",
+            option_value="Требуемый ПВЗ",
             exact_match=True
         )
 
-        # РџСЂРѕРІРµСЂРєРё
+        # Проверки
         self.assertFalse(result)
-        # РњРµС‚РѕРґ _select_option_from_dropdown РІС‹Р·С‹РІР°РµС‚ find_element РЅРµСЃРєРѕР»СЊРєРѕ СЂР°Р·,
-        # РїРѕСЌС‚РѕРјСѓ РїСЂРѕРІРµСЂРёРј, С‡С‚Рѕ РѕРЅ Р±С‹Р» РІС‹Р·РІР°РЅ С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ СЂР°Р·
+        # Метод _select_option_from_dropdown вызывает find_element несколько раз,
+        # поэтому проверим, что он был вызван хотя бы один раз
         self.assertGreaterEqual(self.parser.driver.find_element.call_count, 1)
         self.parser.driver.find_elements.assert_called_once()
-        # ActionChains РЅРµ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РІС‹Р·РІР°РЅ, С‚Р°Рє РєР°Рє РѕРїС†РёСЏ РЅРµ РЅР°Р№РґРµРЅР°
+        # ActionChains не должен быть вызван, так как опция не найдена
         mock_actions.assert_not_called()
 
     @patch('scheduler_runner.utils.parser.core.base_parser.ActionChains')
     @patch('scheduler_runner.utils.parser.core.base_parser.By')
     def test_select_option_from_dropdown_partial_match(self, mock_by, mock_actions_class):
-        """РўРµСЃС‚ РјРµС‚РѕРґР° РІС‹Р±РѕСЂР° РѕРїС†РёРё РёР· РІС‹РїР°РґР°СЋС‰РµРіРѕ СЃРїРёСЃРєР° СЃ С‡Р°СЃС‚РёС‡РЅС‹Рј СЃРѕРІРїР°РґРµРЅРёРµРј"""
-        # РќР°СЃС‚СЂРѕР№РєР° mock-РѕР±СЉРµРєС‚РѕРІ
+        """Тест метода выбора опции из выпадающего списка с частичным совпадением"""
+        # Настройка mock-объектов
         mock_dropdown = Mock()
         mock_option = Mock()
-        mock_option.text = "РўСЂРµР±СѓРµРјС‹Р№ РџР’Р— - РњРѕСЃРєРІР°"
+        mock_option.text = "Требуемый ПВЗ - Москва"
         mock_option.get_attribute.return_value = None
 
         self.parser.driver = Mock()
@@ -403,23 +405,23 @@ class TestBaseParser(unittest.TestCase):
         self.parser.driver.find_elements.return_value = [mock_option]
 
         mock_action_chains_instance = Mock()
-        # РќР°СЃС‚СЂРѕР№РєР° С†РµРїРѕС‡РєРё РІС‹Р·РѕРІРѕРІ: move_to_element().click().perform()
+        # Настройка цепочки вызовов: move_to_element().click().perform()
         mock_action_chains_instance.move_to_element.return_value = mock_action_chains_instance
         mock_action_chains_instance.click.return_value = mock_action_chains_instance
         mock_actions_class.return_value = mock_action_chains_instance
 
-        # Р’С‹Р·РѕРІ С‚РµСЃС‚РёСЂСѓРµРјРѕРіРѕ РјРµС‚РѕРґР°
+        # Вызов тестируемого метода
         result = self.parser._select_option_from_dropdown(
             dropdown_selector="//select[@id='pvz']",
             option_selector="//option",
-            option_value="РўСЂРµР±СѓРµРјС‹Р№ РџР’Р—",
+            option_value="Требуемый ПВЗ",
             exact_match=False
         )
 
-        # РџСЂРѕРІРµСЂРєРё
+        # Проверки
         self.assertTrue(result)
-        # РњРµС‚РѕРґ _select_option_from_dropdown РІС‹Р·С‹РІР°РµС‚ find_element РЅРµСЃРєРѕР»СЊРєРѕ СЂР°Р·,
-        # РїРѕСЌС‚РѕРјСѓ РїСЂРѕРІРµСЂРёРј, С‡С‚Рѕ РѕРЅ Р±С‹Р» РІС‹Р·РІР°РЅ С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ СЂР°Р·
+        # Метод _select_option_from_dropdown вызывает find_element несколько раз,
+        # поэтому проверим, что он был вызван хотя бы один раз
         self.assertGreaterEqual(self.parser.driver.find_element.call_count, 1)
         self.parser.driver.find_elements.assert_called_once()
         mock_actions_class.assert_called_once_with(self.parser.driver)
@@ -428,8 +430,8 @@ class TestBaseParser(unittest.TestCase):
         mock_action_chains_instance.perform.assert_called_once()
 
     def test_run_parser_success(self):
-        """РўРµСЃС‚ РјРµС‚РѕРґР° Р·Р°РїСѓСЃРєР° РїР°СЂСЃРµСЂР° СЃ СѓСЃРїРµС€РЅС‹Рј РІС‹РїРѕР»РЅРµРЅРёРµРј"""
-        # Mock-РёРј РІСЃРµ Р°Р±СЃС‚СЂР°РєС‚РЅС‹Рµ РјРµС‚РѕРґС‹
+        """Тест метода запуска парсера с успешным выполнением"""
+        # Mock-им все абстрактные методы
         self.parser.setup_browser = Mock(return_value=True)
         self.parser.login = Mock(return_value=True)
         self.parser.navigate_to_target = Mock(return_value=True)
@@ -448,7 +450,7 @@ class TestBaseParser(unittest.TestCase):
         self.assertEqual(result, {'test': 'data'})
 
     def test_run_parser_setup_failure(self):
-        """РўРµСЃС‚ РјРµС‚РѕРґР° Р·Р°РїСѓСЃРєР° РїР°СЂСЃРµСЂР° СЃ РѕС€РёР±РєРѕР№ РЅР° СЌС‚Р°РїРµ РЅР°СЃС‚СЂРѕР№РєРё Р±СЂР°СѓР·РµСЂР°"""
+        """Тест метода запуска парсера с ошибкой на этапе настройки браузера"""
         self.parser.setup_browser = Mock(return_value=False)
 
         with self.assertRaises(Exception) as context:
@@ -459,108 +461,108 @@ class TestBaseParser(unittest.TestCase):
 
 
 class TestNewFunctionality(unittest.TestCase):
-    """РўРµСЃС‚С‹ РґР»СЏ РЅРѕРІС‹С… С„СѓРЅРєС†РёР№, РґРѕР±Р°РІР»РµРЅРЅС‹С… РІ РІРµСЂСЃРёРё 3.0.0"""
+    """Тесты для новых функций, добавленных в версии 3.0.0"""
 
     def setUp(self):
-        """РќР°СЃС‚СЂРѕР№РєР° С‚РµСЃС‚Р°"""
+        """Настройка теста"""
         from scheduler_runner.utils.parser.configs.base_configs.base_config import BASE_CONFIG
         self.config = BASE_CONFIG.copy()
         self.parser = TestConcreteParser(self.config)
 
     def test_set_element_value_with_dropdown(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° set_element_value СЃ РІС‹РїР°РґР°СЋС‰РёРј СЃРїРёСЃРєРѕРј"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚С‹ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ
+        """Тестирование метода set_element_value с выпадающим списком"""
+        # Создаем мок-объекты для тестирования
         mock_driver = Mock()
         mock_element = Mock()
 
-        # РњРѕРєР°РµРј РґСЂР°Р№РІРµСЂ
+        # Мокаем драйвер
         self.parser.driver = mock_driver
 
-        # РќР°СЃС‚СЂРѕР№РєР° РІРѕР·РІСЂР°С‰Р°РµРјРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ find_element
+        # Настройка возвращаемого значения для find_element
         mock_driver.find_element.return_value = mock_element
 
-        # РњРѕРєРёСЂСѓРµРј _select_option_from_dropdown, С‡С‚РѕР±С‹ РїСЂРѕРІРµСЂРёС‚СЊ, С‡С‚Рѕ РѕРЅ РІС‹Р·С‹РІР°РµС‚СЃСЏ
+        # Мокируем _select_option_from_dropdown, чтобы проверить, что он вызывается
         with patch.object(self.parser, '_select_option_from_dropdown', return_value=True) as mock_method:
-            # Р’С‹Р·С‹РІР°РµРј РјРµС‚РѕРґ set_element_value СЃ С‚РёРїРѕРј dropdown
+            # Вызываем метод set_element_value с типом dropdown
             result = self.parser.set_element_value("//select[@id='test']", "option_value", element_type="dropdown")
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ find_element Р±С‹Р» РІС‹Р·РІР°РЅ
+            # Проверяем, что find_element был вызван
             mock_driver.find_element.assert_called_once_with(By.XPATH, "//select[@id='test']")
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ _select_option_from_dropdown Р±С‹Р» РІС‹Р·РІР°РЅ СЃ РїСЂР°РІРёР»СЊРЅС‹РјРё РїР°СЂР°РјРµС‚СЂР°РјРё
+            # Проверяем, что _select_option_from_dropdown был вызван с правильными параметрами
             mock_method.assert_called_once_with(element=mock_element, option_value="option_value")
 
             self.assertTrue(result)
 
     def test_select_option_from_dropdown_with_element(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _select_option_from_dropdown СЃ РїРµСЂРµРґР°РЅРЅС‹Рј СЌР»РµРјРµРЅС‚РѕРј"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚С‹ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ
+        """Тестирование метода _select_option_from_dropdown с переданным элементом"""
+        # Создаем мок-объекты для тестирования
         mock_element = Mock()
         mock_select_instance = Mock()
 
-        # РњРѕРєРёСЂСѓРµРј Select, С‡С‚РѕР±С‹ РїСЂРѕРІРµСЂРёС‚СЊ, С‡С‚Рѕ РѕРЅ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РїСЂР°РІРёР»СЊРЅРѕ
+        # Мокируем Select, чтобы проверить, что он используется правильно
         with patch('selenium.webdriver.support.ui.Select', return_value=mock_select_instance):
-            # Р’С‹Р·С‹РІР°РµРј РјРµС‚РѕРґ _select_option_from_dropdown СЃ РїРµСЂРµРґР°РЅРЅС‹Рј СЌР»РµРјРµРЅС‚РѕРј
+            # Вызываем метод _select_option_from_dropdown с переданным элементом
             result = self.parser._select_option_from_dropdown(element=mock_element, option_value="option_value")
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ Select Р±С‹Р» РІС‹Р·РІР°РЅ СЃ РїСЂР°РІРёР»СЊРЅС‹Рј СЌР»РµРјРµРЅС‚РѕРј
+            # Проверяем, что Select был вызван с правильным элементом
             from selenium.webdriver.support.ui import Select
             Select.assert_called_once_with(mock_element)
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ select_by_value Р±С‹Р» РІС‹Р·РІР°РЅ СЃ РїСЂР°РІРёР»СЊРЅС‹Рј Р·РЅР°С‡РµРЅРёРµРј
+            # Проверяем, что select_by_value был вызван с правильным значением
             mock_select_instance.select_by_value.assert_called_once_with("option_value")
 
             self.assertTrue(result)
 
     def test_set_checkbox_state_checked(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _set_checkbox_state РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃРѕСЃС‚РѕСЏРЅРёСЏ 'РѕС‚РјРµС‡РµРЅ'"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚ РґР»СЏ СЌР»РµРјРµРЅС‚Р°
+        """Тестирование метода _set_checkbox_state для установки состояния 'отмечен'"""
+        # Создаем мок-объект для элемента
         mock_element = Mock()
-        # РќР°СЃС‚СЂРѕР№РєР° РІРѕР·РІСЂР°С‰Р°РµРјРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ is_selected
-        # РЎРЅР°С‡Р°Р»Р° РІРѕР·РІСЂР°С‰Р°РµС‚ False (РЅРµ РѕС‚РјРµС‡РµРЅ), РїРѕС‚РѕРј True (РѕС‚РјРµС‡РµРЅ РїРѕСЃР»Рµ РєР»РёРєР°)
+        # Настройка возвращаемого значения для is_selected
+        # Сначала возвращает False (не отмечен), потом True (отмечен после клика)
         mock_element.is_selected.side_effect = [False, True]
 
-        # Р’С‹Р·С‹РІР°РµРј РјРµС‚РѕРґ _set_checkbox_state РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃРѕСЃС‚РѕСЏРЅРёСЏ 'РѕС‚РјРµС‡РµРЅ'
+        # Вызываем метод _set_checkbox_state для установки состояния 'отмечен'
         result = self.parser._set_checkbox_state(mock_element, True)
 
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЌР»РµРјРµРЅС‚ Р±С‹Р» РєР»РёРєРЅСѓС‚ (РёР·РјРµРЅРёР»РѕСЃСЊ СЃРѕСЃС‚РѕСЏРЅРёРµ)
+        # Проверяем, что элемент был кликнут (изменилось состояние)
         mock_element.click.assert_called_once()
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЂРµР·СѓР»СЊС‚Р°С‚ СЂР°РІРµРЅ True (СѓСЃРїРµС€РЅРѕ СѓСЃС‚Р°РЅРѕРІР»РµРЅРѕ СЃРѕСЃС‚РѕСЏРЅРёРµ)
+        # Проверяем, что результат равен True (успешно установлено состояние)
         self.assertTrue(result)
 
     def test_set_checkbox_state_unchecked(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _set_checkbox_state РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃРѕСЃС‚РѕСЏРЅРёСЏ 'РЅРµ РѕС‚РјРµС‡РµРЅ'"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚ РґР»СЏ СЌР»РµРјРµРЅС‚Р°
+        """Тестирование метода _set_checkbox_state для установки состояния 'не отмечен'"""
+        # Создаем мок-объект для элемента
         mock_element = Mock()
-        # РќР°СЃС‚СЂРѕР№РєР° РІРѕР·РІСЂР°С‰Р°РµРјРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ is_selected
-        # РЎРЅР°С‡Р°Р»Р° РІРѕР·РІСЂР°С‰Р°РµС‚ True (РѕС‚РјРµС‡РµРЅ), РїРѕС‚РѕРј False (РЅРµ РѕС‚РјРµС‡РµРЅ РїРѕСЃР»Рµ РєР»РёРєР°)
+        # Настройка возвращаемого значения для is_selected
+        # Сначала возвращает True (отмечен), потом False (не отмечен после клика)
         mock_element.is_selected.side_effect = [True, False]
 
-        # Р’С‹Р·С‹РІР°РµРј РјРµС‚РѕРґ _set_checkbox_state РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃРѕСЃС‚РѕСЏРЅРёСЏ 'РЅРµ РѕС‚РјРµС‡РµРЅ'
+        # Вызываем метод _set_checkbox_state для установки состояния 'не отмечен'
         result = self.parser._set_checkbox_state(mock_element, False)
 
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЌР»РµРјРµРЅС‚ Р±С‹Р» РєР»РёРєРЅСѓС‚ (РёР·РјРµРЅРёР»РѕСЃСЊ СЃРѕСЃС‚РѕСЏРЅРёРµ)
+        # Проверяем, что элемент был кликнут (изменилось состояние)
         mock_element.click.assert_called_once()
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЂРµР·СѓР»СЊС‚Р°С‚ СЂР°РІРµРЅ True (СѓСЃРїРµС€РЅРѕ СѓСЃС‚Р°РЅРѕРІР»РµРЅРѕ СЃРѕСЃС‚РѕСЏРЅРёРµ)
+        # Проверяем, что результат равен True (успешно установлено состояние)
         self.assertTrue(result)
 
     def test_set_checkbox_state_no_change_needed(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _set_checkbox_state РєРѕРіРґР° РёР·РјРµРЅРµРЅРёРµ РЅРµ С‚СЂРµР±СѓРµС‚СЃСЏ"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚ РґР»СЏ СЌР»РµРјРµРЅС‚Р°
+        """Тестирование метода _set_checkbox_state когда изменение не требуется"""
+        # Создаем мок-объект для элемента
         mock_element = Mock()
-        mock_element.is_selected.return_value = True  # РР·РЅР°С‡Р°Р»СЊРЅРѕ РѕС‚РјРµС‡РµРЅ
+        mock_element.is_selected.return_value = True  # Изначально отмечен
 
-        # Р’С‹Р·С‹РІР°РµРј РјРµС‚РѕРґ _set_checkbox_state РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃРѕСЃС‚РѕСЏРЅРёСЏ 'РѕС‚РјРµС‡РµРЅ' (СѓР¶Рµ С‚Р°Рє СѓСЃС‚Р°РЅРѕРІР»РµРЅРѕ)
+        # Вызываем метод _set_checkbox_state для установки состояния 'отмечен' (уже так установлено)
         result = self.parser._set_checkbox_state(mock_element, True)
 
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЌР»РµРјРµРЅС‚ РЅРµ Р±С‹Р» РєР»РёРєРЅСѓС‚ (СЃРѕСЃС‚РѕСЏРЅРёРµ СѓР¶Рµ РїСЂР°РІРёР»СЊРЅРѕРµ)
+        # Проверяем, что элемент не был кликнут (состояние уже правильное)
         mock_element.click.assert_not_called()
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЂРµР·СѓР»СЊС‚Р°С‚ СЂР°РІРµРЅ True (СЃРѕСЃС‚РѕСЏРЅРёРµ СѓР¶Рµ Р±С‹Р»Рѕ РїСЂР°РІРёР»СЊРЅРѕРµ)
+        # Проверяем, что результат равен True (состояние уже было правильное)
         self.assertTrue(result)
 
     def test_extract_standard_table_data(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _extract_standard_table_data"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚С‹ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ
+        """Тестирование метода _extract_standard_table_data"""
+        # Создаем мок-объекты для тестирования
         mock_table = Mock()
         mock_row1 = Mock()
         mock_row2 = Mock()
@@ -569,11 +571,11 @@ class TestNewFunctionality(unittest.TestCase):
         mock_cell3 = Mock()
         mock_cell4 = Mock()
 
-        # РќР°СЃС‚СЂРѕР№РєР° РІРѕР·РІСЂР°С‰Р°РµРјС‹С… Р·РЅР°С‡РµРЅРёР№
-        mock_cell1.text = "Р—РЅР°С‡РµРЅРёРµ1"
-        mock_cell2.text = "Р—РЅР°С‡РµРЅРёРµ2"
-        mock_cell3.text = "Р—РЅР°С‡РµРЅРёРµ3"
-        mock_cell4.text = "Р—РЅР°С‡РµРЅРёРµ4"
+        # Настройка возвращаемых значений
+        mock_cell1.text = "Значение1"
+        mock_cell2.text = "Значение2"
+        mock_cell3.text = "Значение3"
+        mock_cell4.text = "Значение4"
 
         mock_row1.find_element.side_effect = lambda by, value: mock_cell1 if "1" in value else mock_cell2
         mock_row2.find_element.side_effect = lambda by, value: mock_cell3 if "1" in value else mock_cell4
@@ -587,25 +589,25 @@ class TestNewFunctionality(unittest.TestCase):
 
         result = self.parser._extract_standard_table_data(mock_table, columns_config)
 
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЂРµР·СѓР»СЊС‚Р°С‚ СЃРѕРґРµСЂР¶РёС‚ РїСЂР°РІРёР»СЊРЅС‹Рµ РґР°РЅРЅС‹Рµ
+        # Проверяем, что результат содержит правильные данные
         expected_result = [
-            {"col1": "Р—РЅР°С‡РµРЅРёРµ1", "col2": "Р—РЅР°С‡РµРЅРёРµ2"},
-            {"col1": "Р—РЅР°С‡РµРЅРёРµ3", "col2": "Р—РЅР°С‡РµРЅРёРµ4"}
+            {"col1": "Значение1", "col2": "Значение2"},
+            {"col1": "Значение3", "col2": "Значение4"}
         ]
         
         self.assertEqual(result, expected_result)
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ Р±С‹Р»Рё РІС‹Р·РІР°РЅС‹ РјРµС‚РѕРґС‹ РґР»СЏ РїРѕРёСЃРєР° СЃС‚СЂРѕРє
+        # Проверяем, что были вызваны методы для поиска строк
         mock_table.find_elements.assert_called_once()
 
     def test_extract_standard_table_data_with_regex(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° _extract_standard_table_data СЃ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµРј СЂРµРіСѓР»СЏСЂРЅС‹С… РІС‹СЂР°Р¶РµРЅРёР№"""
-        # РЎРѕР·РґР°РµРј РјРѕРє-РѕР±СЉРµРєС‚С‹ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ
+        """Тестирование метода _extract_standard_table_data с использованием регулярных выражений"""
+        # Создаем мок-объекты для тестирования
         mock_table = Mock()
         mock_row = Mock()
         mock_cell = Mock()
 
-        # РќР°СЃС‚СЂРѕР№РєР° РІРѕР·РІСЂР°С‰Р°РµРјРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ СЃ С‚РµРєСЃС‚РѕРј, СЃРѕРґРµСЂР¶Р°С‰РёРј С†РёС„СЂС‹
-        mock_cell.text = "РљРѕР»РёС‡РµСЃС‚РІРѕ: 123 С€С‚."
+        # Настройка возвращаемого значения с текстом, содержащим цифры
+        mock_cell.text = "Количество: 123 шт."
 
         mock_row.find_element.return_value = mock_cell
         mock_table.find_elements.return_value = [mock_row]
@@ -616,7 +618,7 @@ class TestNewFunctionality(unittest.TestCase):
 
         result = self.parser._extract_standard_table_data(mock_table, columns_config)
 
-        # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЂРµРіСѓР»СЏСЂРЅРѕРµ РІС‹СЂР°Р¶РµРЅРёРµ РїСЂР°РІРёР»СЊРЅРѕ РёР·РІР»РµРєР»Рѕ С‡РёСЃР»Рѕ
+        # Проверяем, что регулярное выражение правильно извлекло число
         expected_result = [
             {"count": "123"}
         ]
@@ -624,10 +626,10 @@ class TestNewFunctionality(unittest.TestCase):
         self.assertEqual(result, expected_result)
 
     def test_extract_table_data_with_valid_config(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° extract_table_data СЃ РєРѕСЂСЂРµРєС‚РЅРѕР№ РєРѕРЅС„РёРіСѓСЂР°С†РёРµР№"""
-        # РњРѕРєР°РµРј _extract_standard_table_data, С‡С‚РѕР±С‹ РїСЂРѕРІРµСЂРёС‚СЊ, С‡С‚Рѕ РѕРЅ РІС‹Р·С‹РІР°РµС‚СЃСЏ
+        """Тестирование метода extract_table_data с корректной конфигурацией"""
+        # Мокаем _extract_standard_table_data, чтобы проверить, что он вызывается
         with patch.object(self.parser, '_extract_standard_table_data', return_value=[{"test": "data"}]) as mock_method:
-            # РЎРѕР·РґР°РµРј РјРѕРє-С‚Р°Р±Р»РёС†Сѓ
+            # Создаем мок-таблицу
             mock_table_element = Mock()
             self.parser.driver = Mock()
             self.parser.driver.find_element.return_value = mock_table_element
@@ -642,13 +644,13 @@ class TestNewFunctionality(unittest.TestCase):
 
             result = self.parser.extract_table_data(table_config=table_config)
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ _extract_standard_table_data Р±С‹Р» РІС‹Р·РІР°РЅ
+            # Проверяем, что _extract_standard_table_data был вызван
             mock_method.assert_called_once()
             self.assertEqual(result, [{"test": "data"}])
 
     def test_extract_table_data_with_config_key(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° extract_table_data СЃ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµРј РєР»СЋС‡Р° РєРѕРЅС„РёРіСѓСЂР°С†РёРё"""
-        # РћР±РЅРѕРІР»СЏРµРј РєРѕРЅС„РёРіСѓСЂР°С†РёСЋ РґР»СЏ С‚РµСЃС‚Р°
+        """Тестирование метода extract_table_data с использованием ключа конфигурации"""
+        # Обновляем конфигурацию для теста
         table_configs = {
             "test_table": {
                 "table_selector": "//table[@id='test-table']",
@@ -660,36 +662,36 @@ class TestNewFunctionality(unittest.TestCase):
         }
         self.parser.config['table_configs'] = table_configs
 
-        # РњРѕРєР°РµРј _extract_standard_table_data
+        # Мокаем _extract_standard_table_data
         with patch.object(self.parser, '_extract_standard_table_data', return_value=[{"col1": "value1"}]) as mock_method:
-            # РЎРѕР·РґР°РµРј РјРѕРє-С‚Р°Р±Р»РёС†Сѓ
+            # Создаем мок-таблицу
             mock_table_element = Mock()
             self.parser.driver = Mock()
             self.parser.driver.find_element.return_value = mock_table_element
 
             result = self.parser.extract_table_data(table_config_key='test_table')
 
-            # РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ _extract_standard_table_data Р±С‹Р» РІС‹Р·РІР°РЅ
+            # Проверяем, что _extract_standard_table_data был вызван
             mock_method.assert_called_once()
             self.assertEqual(result, [{"col1": "value1"}])
 
     def test_extract_table_data_with_invalid_config(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° extract_table_data СЃ РЅРµРєРѕСЂСЂРµРєС‚РЅРѕР№ РєРѕРЅС„РёРіСѓСЂР°С†РёРµР№"""
-        # РўРµСЃС‚ СЃ РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РёРј РєР»СЋС‡РѕРј
+        """Тестирование метода extract_table_data с некорректной конфигурацией"""
+        # Тест с отсутствующим ключом
         result = self.parser.extract_table_data(table_config_key='nonexistent_table')
         self.assertEqual(result, [])
 
-        # РўРµСЃС‚ СЃ РЅРµРєРѕСЂСЂРµРєС‚РЅРѕР№ РєРѕРЅС„РёРіСѓСЂР°С†РёРµР№ (Р±РµР· РѕР±СЏР·Р°С‚РµР»СЊРЅС‹С… РїРѕР»РµР№)
+        # Тест с некорректной конфигурацией (без обязательных полей)
         invalid_config = {
-            "table_selector": "",  # РџСѓСЃС‚РѕР№ СЃРµР»РµРєС‚РѕСЂ
+            "table_selector": "",  # Пустой селектор
             "table_columns": []
         }
         result = self.parser.extract_table_data(table_config=invalid_config)
         self.assertEqual(result, [])
 
     def test_extract_table_data_exception_handling(self):
-        """РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ РјРµС‚РѕРґР° extract_table_data СЃ РѕР±СЂР°Р±РѕС‚РєРѕР№ РёСЃРєР»СЋС‡РµРЅРёР№"""
-        # РњРѕРєР°РµРј find_element, С‡С‚РѕР±С‹ РІС‹Р±СЂРѕСЃРёС‚СЊ РёСЃРєР»СЋС‡РµРЅРёРµ
+        """Тестирование метода extract_table_data с обработкой исключений"""
+        # Мокаем find_element, чтобы выбросить исключение
         self.parser.driver = Mock()
         self.parser.driver.find_element.side_effect = Exception("Element not found")
 
@@ -707,5 +709,6 @@ class TestNewFunctionality(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
 

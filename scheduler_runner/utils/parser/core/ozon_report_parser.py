@@ -69,9 +69,19 @@ class OzonReportParser(BaseReportParser):
         if config == {} or config is None:
             config = OZON_BASE_CONFIG.copy()
         super().__init__(config, args, logger)
+        self._last_known_pvz = None
 
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser.__init__")
+
+    def _remember_current_pvz(self, pvz_value: str) -> str:
+        normalized_pvz = (pvz_value or "").strip()
+        if normalized_pvz and normalized_pvz != "Unknown":
+            self._last_known_pvz = normalized_pvz
+        return normalized_pvz
+
+    def _get_cached_pvz(self) -> str:
+        return self._last_known_pvz or "Unknown"
 
     def get_current_pvz(self) -> str:
         """
@@ -113,16 +123,27 @@ class OzonReportParser(BaseReportParser):
                 if current_pvz:
                     break
 
-            if self.logger:
-                self.logger.info(f"Текущий ПВЗ: {current_pvz}")
+            remembered_pvz = self._remember_current_pvz(current_pvz)
 
-            return current_pvz if current_pvz else "Unknown"
+            if self.logger:
+                self.logger.info(f"Текущий ПВЗ: {remembered_pvz}")
+
+            if remembered_pvz:
+                return remembered_pvz
+
+            cached_pvz = self._get_cached_pvz()
+            if self.logger and cached_pvz != "Unknown":
+                self.logger.warning(f"Не удалось прочитать текущий ПВЗ из UI, используем кешированное значение: {cached_pvz}")
+            return cached_pvz
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении текущего ПВЗ: {e}")
                 import traceback
                 self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
-            return "Unknown"
+            cached_pvz = self._get_cached_pvz()
+            if self.logger and cached_pvz != "Unknown":
+                self.logger.warning(f"Используем кешированное значение ПВЗ после ошибки чтения UI: {cached_pvz}")
+            return cached_pvz
 
     def set_pvz(self, target_pvz: str) -> bool:
         """
@@ -189,6 +210,7 @@ class OzonReportParser(BaseReportParser):
                     break
 
             if success:
+                self._remember_current_pvz(target_pvz)
                 if self.logger:
                     self.logger.info(f"ПВЗ успешно установлен: {target_pvz}")
                 # Ждем немного, чтобы изменения вступили в силу
@@ -275,7 +297,14 @@ class OzonReportParser(BaseReportParser):
                     self.logger.info(f"Текущий ПВЗ '{current_pvz}' отличается от требуемого '{required_pvz}'. Устанавливаем нужный...")
                 
                 # Проверка: если current_pvz = 'Unknown', это может означать проблему с сессией
+                cached_pvz = self._get_cached_pvz()
                 if current_pvz == 'Unknown':
+                    if cached_pvz == required_pvz:
+                        if self.logger:
+                            self.logger.warning(
+                                f"Текущий ПВЗ не читается из UI, но кешированное значение совпадает с требуемым: {cached_pvz}"
+                            )
+                        return True
                     self.logger.warning("⚠️ ПВЗ не определен (Unknown) — возможна проблема с сессией или структурой страницы")
                     self.logger.warning("Проверьте, что браузер находится на правильной странице, а не на странице логина")
                     self.dump_debug_artifacts("pvz_unknown_before_set")
@@ -312,6 +341,7 @@ class OzonReportParser(BaseReportParser):
                                 self.logger.debug(f"ПВЗ после повторной навигации: {final_pvz}")
                             
                             if final_pvz == required_pvz:
+                                self._remember_current_pvz(final_pvz)
                                 if self.logger:
                                     self.logger.info(f"После повторной навигации ПВЗ по-прежнему правильный: {required_pvz}")
                                 return True
