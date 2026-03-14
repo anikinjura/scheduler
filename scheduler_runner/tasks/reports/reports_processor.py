@@ -189,6 +189,89 @@ def resolve_pvz_ids(raw_pvz_ids=None):
     return resolved_pvz_ids or [PVZ_ID]
 
 
+def discover_available_pvz_scope(configured_pvz_id=PVZ_ID, logger=None, parser_logger=None):
+    logger = logger or configure_logger(user="reports_domain", task_name="Processor")
+    parser_logger = parser_logger or create_parser_logger()
+
+    discovery_result = invoke_available_pvz_discovery(
+        pvz_id=configured_pvz_id,
+        logger=parser_logger,
+    )
+    available_pvz = []
+    normalized_available_pvz = set()
+
+    if discovery_result.get("success", False):
+        for pvz_id in discovery_result.get("available_pvz", []) or []:
+            normalized_pvz_id = normalize_pvz_id(pvz_id)
+            if not normalized_pvz_id or normalized_pvz_id in normalized_available_pvz:
+                continue
+            normalized_available_pvz.add(normalized_pvz_id)
+            available_pvz.append(pvz_id)
+        if normalize_pvz_id(configured_pvz_id) not in normalized_available_pvz:
+            available_pvz.append(configured_pvz_id)
+            normalized_available_pvz.add(normalize_pvz_id(configured_pvz_id))
+        logger.info(
+            f"Discovery доступных ПВЗ завершен: configured_pvz_id={configured_pvz_id}, "
+            f"available_pvz={available_pvz}"
+        )
+    else:
+        logger.warning(
+            "Discovery доступных ПВЗ завершился ошибкой, fallback только на собственный PVZ: "
+            f"{configured_pvz_id}; error={discovery_result.get('error', 'unknown_error')}"
+        )
+        available_pvz = [configured_pvz_id]
+        normalized_available_pvz = {normalize_pvz_id(configured_pvz_id)}
+
+    return {
+        "success": discovery_result.get("success", False),
+        "configured_pvz_id": configured_pvz_id,
+        "available_pvz": available_pvz,
+        "normalized_available_pvz": normalized_available_pvz,
+        "discovery_result": discovery_result,
+    }
+
+
+def resolve_accessible_pvz_ids(raw_pvz_ids=None, configured_pvz_id=PVZ_ID, logger=None, parser_logger=None):
+    requested_pvz_ids = resolve_pvz_ids(raw_pvz_ids)
+    normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
+    requested_colleague_pvz_ids = [
+        pvz_id for pvz_id in requested_pvz_ids if normalize_pvz_id(pvz_id) != normalized_configured_pvz_id
+    ]
+
+    if not requested_colleague_pvz_ids:
+        return {
+            "accessible_pvz_ids": requested_pvz_ids,
+            "skipped_pvz_ids": [],
+            "discovery_scope": None,
+        }
+
+    discovery_scope = discover_available_pvz_scope(
+        configured_pvz_id=configured_pvz_id,
+        logger=logger,
+        parser_logger=parser_logger,
+    )
+    normalized_available_pvz = discovery_scope.get("normalized_available_pvz", set())
+    accessible_pvz_ids = []
+    skipped_pvz_ids = []
+
+    for pvz_id in requested_pvz_ids:
+        if normalize_pvz_id(pvz_id) in normalized_available_pvz:
+            accessible_pvz_ids.append(pvz_id)
+        else:
+            skipped_pvz_ids.append(pvz_id)
+
+    if logger and skipped_pvz_ids:
+        logger.warning(
+            f"Недоступные для текущей учетной записи PVZ исключены из backfill: {skipped_pvz_ids}"
+        )
+
+    return {
+        "accessible_pvz_ids": accessible_pvz_ids,
+        "skipped_pvz_ids": skipped_pvz_ids,
+        "discovery_scope": discovery_scope,
+    }
+
+
 def prepare_coverage_filters(date_from, date_to, pvz_id):
     return {
         "Дата_from": date_from,
@@ -669,7 +752,16 @@ def main():
                     datetime.strptime(date_to, "%Y-%m-%d") - timedelta(days=max(args.backfill_days - 1, 0))
                 ).strftime("%Y-%m-%d")
 
-            resolved_pvz_ids = resolve_pvz_ids(args.pvz)
+            access_scope = resolve_accessible_pvz_ids(
+                raw_pvz_ids=args.pvz,
+                configured_pvz_id=PVZ_ID,
+                logger=processor_logger,
+                parser_logger=parser_logger,
+            )
+            resolved_pvz_ids = access_scope.get("accessible_pvz_ids", [])
+            if not resolved_pvz_ids:
+                processor_logger.info("Backfill остановлен: среди запрошенных PVZ нет доступных для текущей учетной записи")
+                return
             if len(resolved_pvz_ids) > 1:
                 coverage_result = detect_missing_report_dates_by_pvz(
                     date_from=date_from,

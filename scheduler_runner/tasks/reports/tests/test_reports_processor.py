@@ -10,6 +10,42 @@ class TestReportsProcessor(unittest.TestCase):
     def test_resolve_pvz_ids_defaults_to_global_pvz(self):
         self.assertEqual(reports_processor.resolve_pvz_ids(None), [reports_processor.PVZ_ID])
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
+    def test_resolve_accessible_pvz_ids_filters_inaccessible_colleagues(self, mock_invoke_available_pvz_discovery):
+        mock_invoke_available_pvz_discovery.return_value = {
+            "success": True,
+            "available_pvz": ["ЧЕБОКСАРЫ_144", "ЧЕБОКСАРЫ_182"],
+        }
+
+        result = reports_processor.resolve_accessible_pvz_ids(
+            raw_pvz_ids=["ЧЕБОКСАРЫ_144", "ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_143"],
+            configured_pvz_id="ЧЕБОКСАРЫ_144",
+            logger=Mock(),
+            parser_logger=Mock(),
+        )
+
+        self.assertEqual(result["accessible_pvz_ids"], ["ЧЕБОКСАРЫ_144", "ЧЕБОКСАРЫ_182"])
+        self.assertEqual(result["skipped_pvz_ids"], ["ЧЕБОКСАРЫ_143"])
+        mock_invoke_available_pvz_discovery.assert_called_once()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
+    def test_resolve_accessible_pvz_ids_falls_back_to_configured_pvz_when_discovery_fails(self, mock_invoke_available_pvz_discovery):
+        mock_invoke_available_pvz_discovery.return_value = {
+            "success": False,
+            "error": "discovery_failed",
+        }
+
+        result = reports_processor.resolve_accessible_pvz_ids(
+            raw_pvz_ids=["ЧЕБОКСАРЫ_144", "ЧЕБОКСАРЫ_182"],
+            configured_pvz_id="ЧЕБОКСАРЫ_144",
+            logger=Mock(),
+            parser_logger=Mock(),
+        )
+
+        self.assertEqual(result["accessible_pvz_ids"], ["ЧЕБОКСАРЫ_144"])
+        self.assertEqual(result["skipped_pvz_ids"], ["ЧЕБОКСАРЫ_182"])
+        mock_invoke_available_pvz_discovery.assert_called_once()
+
     def test_build_jobs_from_missing_dates_by_pvz_creates_explicit_jobs(self):
         jobs = reports_processor.build_jobs_from_missing_dates_by_pvz(
             {
@@ -529,6 +565,7 @@ class TestReportsProcessor(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
     @patch("argparse.ArgumentParser.parse_args")
@@ -537,6 +574,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_parse_args,
         mock_detect_missing_report_dates,
         mock_invoke_parser_for_pvz,
+        mock_invoke_available_pvz_discovery,
         mock_run_upload_batch_microservice,
         mock_prepare_batch_notification_data,
         mock_format_batch_notification_message,
@@ -553,6 +591,10 @@ class TestReportsProcessor(unittest.TestCase):
             pvz=["PVZ1"],
             detailed_logs=False,
         )
+        mock_invoke_available_pvz_discovery.return_value = {
+            "success": True,
+            "available_pvz": ["PVZ1"],
+        }
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
         mock_run_upload_batch_microservice.return_value = {"success": True}
@@ -573,6 +615,7 @@ class TestReportsProcessor(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.reports_processor.build_aggregated_backfill_summary")
     @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_grouped_jobs")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates_by_pvz")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
@@ -583,6 +626,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates,
         mock_detect_missing_report_dates_by_pvz,
         mock_invoke_parser_for_grouped_jobs,
+        mock_invoke_available_pvz_discovery,
         mock_run_upload_batch_microservice,
         mock_prepare_batch_notification_data,
         mock_build_aggregated_backfill_summary,
@@ -600,6 +644,10 @@ class TestReportsProcessor(unittest.TestCase):
             pvz=["PVZ1", "PVZ2"],
             detailed_logs=False,
         )
+        mock_invoke_available_pvz_discovery.return_value = {
+            "success": True,
+            "available_pvz": ["PVZ1", "PVZ2"],
+        }
         mock_detect_missing_report_dates_by_pvz.return_value = {
             "success": True,
             "missing_dates_by_pvz": {"PVZ1": ["2026-03-01"], "PVZ2": ["2026-03-02"]},
@@ -640,6 +688,82 @@ class TestReportsProcessor(unittest.TestCase):
             mock_build_aggregated_backfill_summary.return_value
         )
         mock_send_notification_microservice.assert_called_once()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_aggregated_backfill_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.build_aggregated_backfill_summary")
+    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_grouped_jobs")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates_by_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("argparse.ArgumentParser.parse_args")
+    def test_main_backfill_with_multiple_pvz_skips_inaccessible_colleagues(
+        self,
+        mock_parse_args,
+        mock_detect_missing_report_dates,
+        mock_detect_missing_report_dates_by_pvz,
+        mock_invoke_parser_for_grouped_jobs,
+        mock_invoke_parser_for_pvz,
+        mock_invoke_available_pvz_discovery,
+        mock_run_upload_batch_microservice,
+        mock_prepare_batch_notification_data,
+        mock_build_aggregated_backfill_summary,
+        mock_format_aggregated_backfill_notification_message,
+        mock_send_notification_microservice,
+    ):
+        mock_parse_args.return_value = Namespace(
+            execution_date=None,
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            backfill_days=7,
+            mode="backfill",
+            max_missing_dates=7,
+            parser_api="legacy",
+            pvz=["PVZ1", "PVZ2"],
+            detailed_logs=False,
+        )
+        mock_invoke_available_pvz_discovery.return_value = {
+            "success": True,
+            "available_pvz": ["PVZ1"],
+        }
+        mock_detect_missing_report_dates.return_value = {
+            "success": True,
+            "missing_dates": ["2026-03-01"],
+        }
+        mock_detect_missing_report_dates_by_pvz.return_value = {
+            "success": True,
+            "missing_dates_by_pvz": {"PVZ1": ["2026-03-01"]},
+            "coverage_results_by_pvz": {"PVZ1": {"missing_dates": ["2026-03-01"]}},
+        }
+        mock_invoke_parser_for_grouped_jobs.return_value = {
+            "PVZ1": {"results_by_date": {}, "successful_dates": [], "failed_dates": []},
+        }
+        mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
+        mock_run_upload_batch_microservice.return_value = {"success": True}
+        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
+        mock_build_aggregated_backfill_summary.return_value = reports_processor.ReportsBackfillExecutionResult(
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            processed_pvz_count=1,
+            missing_dates_count=1,
+            successful_jobs_count=0,
+            failed_jobs_count=0,
+            uploaded_records=0,
+            pvz_results={},
+        )
+        mock_format_aggregated_backfill_notification_message.return_value = "ok"
+
+        reports_processor.main()
+
+        mock_detect_missing_report_dates_by_pvz.assert_not_called()
+        self.assertEqual(mock_detect_missing_report_dates.call_args.kwargs["pvz_id"], "PVZ1")
+        self.assertEqual(
+            [(job.pvz_id, job.execution_date) for job in mock_invoke_parser_for_pvz.call_args.kwargs["jobs"]],
+            [("PVZ1", "2026-03-01")],
+        )
 
 
 if __name__ == "__main__":
