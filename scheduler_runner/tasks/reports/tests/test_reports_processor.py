@@ -174,8 +174,8 @@ class TestReportsProcessor(unittest.TestCase):
         )
 
         mock_run_upload_batch_microservice.assert_not_called()
-        self.assertEqual(result["PVZ2"]["recoverable_dates"], [])
-        self.assertEqual(result["PVZ2"]["upload_result"]["uploaded_records"], 0)
+        self.assertEqual(result["results_by_pvz"]["PVZ2"]["recoverable_dates"], [])
+        self.assertEqual(result["results_by_pvz"]["PVZ2"]["upload_result"]["uploaded_records"], 0)
         self.assertEqual(mock_mark_failover_state.call_args.kwargs["last_error"], "skipped_upload_already_covered")
 
     @patch("scheduler_runner.tasks.reports.reports_processor.mark_failover_state")
@@ -215,7 +215,7 @@ class TestReportsProcessor(unittest.TestCase):
 
         uploaded_batch_result = mock_run_upload_batch_microservice.call_args.args[0]
         self.assertEqual(sorted(uploaded_batch_result["results_by_date"].keys()), ["2026-03-02"])
-        self.assertEqual(result["PVZ2"]["recoverable_dates"], ["2026-03-02"])
+        self.assertEqual(result["results_by_pvz"]["PVZ2"]["recoverable_dates"], ["2026-03-02"])
 
     def test_execute_parser_jobs_for_pvz_keeps_compatible_batch_result_shape(self):
         jobs = reports_processor.build_jobs_for_pvz("PVZ1", ["2026-03-01"])
@@ -532,6 +532,89 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("KPI multi-PVZ backfill", message)
         self.assertIn("PVZ1: missing=2, ok=1, failed=1, uploaded=5", message)
 
+    def test_build_owner_run_summary_collects_owner_metrics(self):
+        summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"missing_dates": ["2026-03-01", "2026-03-02"]},
+            batch_result={
+                "successful_dates": ["2026-03-01"],
+                "failed_dates": ["2026-03-02"],
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+
+        self.assertEqual(summary.pvz_id, "PVZ1")
+        self.assertEqual(summary.missing_dates_count, 2)
+        self.assertEqual(summary.successful_dates, ["2026-03-01"])
+        self.assertEqual(summary.failed_dates, ["2026-03-02"])
+        self.assertEqual(summary.uploaded_records, 1)
+        self.assertTrue(summary.upload_success)
+
+    def test_build_failover_run_summary_collects_failover_metrics(self):
+        summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "candidate_rows_count": 3,
+                "claimed_rows_count": 2,
+                "recovered_pvz_count": 1,
+                "recovered_dates_count": 4,
+                "failed_recovery_dates_count": 1,
+                "uploaded_records": 4,
+            },
+        )
+
+        self.assertTrue(summary.enabled)
+        self.assertEqual(summary.candidate_rows_count, 3)
+        self.assertEqual(summary.claimed_rows_count, 2)
+        self.assertEqual(summary.recovered_pvz_count, 1)
+        self.assertEqual(summary.recovered_dates_count, 4)
+        self.assertEqual(summary.failed_recovery_dates_count, 1)
+        self.assertEqual(summary.uploaded_records, 4)
+
+    def test_format_reports_run_notification_message_builds_single_final_message(self):
+        owner_summary = reports_processor.OwnerRunSummary(
+            pvz_id="PVZ1",
+            coverage_success=True,
+            missing_dates=["2026-03-01", "2026-03-02"],
+            missing_dates_count=2,
+            truncated=False,
+            parse_success=False,
+            successful_dates=["2026-03-01"],
+            failed_dates=["2026-03-02"],
+            uploaded_records=1,
+            upload_success=True,
+            errors=["parse_failed"],
+        )
+        failover_summary = reports_processor.FailoverRunSummary(
+            enabled=True,
+            attempted=True,
+            discovery_success=True,
+            available_pvz=["PVZ2"],
+            candidate_rows_count=2,
+            claimed_rows_count=1,
+            recovered_pvz_count=1,
+            recovered_dates_count=2,
+            failed_recovery_dates_count=0,
+            uploaded_records=2,
+            results_by_pvz={},
+        )
+        run_summary = reports_processor.build_reports_run_summary(
+            mode="backfill_single_pvz",
+            configured_pvz_id="PVZ1",
+            date_from="2026-03-01",
+            date_to="2026-03-03",
+            owner=owner_summary,
+            failover=failover_summary,
+        )
+
+        message = reports_processor.format_reports_run_notification_message(run_summary)
+
+        self.assertIn("KPI reports run", message)
+        self.assertIn("partial", message)
+        self.assertIn("PVZ1", message)
+        self.assertIn("candidate rows: 2", message)
+        self.assertIn("claimed rows: 1", message)
+
     def test_detect_missing_report_dates_by_pvz_groups_results(self):
         with patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates") as mock_detect:
             mock_detect.side_effect = [
@@ -629,8 +712,7 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["results_by_date"]["2026-03-02"]["error"], "parse failed")
 
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
@@ -641,8 +723,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates,
         mock_invoke_parser_for_pvz,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
-        mock_format_batch_notification_message,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
     ):
         mock_parse_args.return_value = Namespace(
@@ -659,8 +740,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
-        mock_format_batch_notification_message.return_value = "ok"
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -674,8 +754,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_send_notification_microservice.assert_called_once()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
@@ -686,8 +765,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates,
         mock_invoke_parser_for_pvz,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
-        mock_format_batch_notification_message,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
     ):
         mock_parse_args.return_value = Namespace(
@@ -704,8 +782,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
-        mock_format_batch_notification_message.return_value = "ok"
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -721,8 +798,7 @@ class TestReportsProcessor(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
     @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
     @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
@@ -733,8 +809,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates,
         mock_invoke_parser_for_pvz,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
-        mock_format_batch_notification_message,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
         mock_sync_owner_failover_state_from_batch_result,
         mock_run_failover_coordination_pass,
@@ -758,8 +833,7 @@ class TestReportsProcessor(unittest.TestCase):
             "failed_dates": [],
         }
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
-        mock_format_batch_notification_message.return_value = "ok"
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -768,9 +842,55 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(mock_sync_owner_failover_state_from_batch_result.call_args.kwargs["missing_dates"], ["2026-03-01"])
         mock_run_failover_coordination_pass.assert_called_once()
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
+    @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_batch_notification_message")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("argparse.ArgumentParser.parse_args")
+    def test_main_backfill_with_failover_sends_notification_only_after_coordination(
+        self,
+        mock_parse_args,
+        mock_detect_missing_report_dates,
+        mock_invoke_parser_for_pvz,
+        mock_run_upload_batch_microservice,
+        mock_format_reports_run_notification_message,
+        mock_send_notification_microservice,
+        mock_sync_owner_failover_state_from_batch_result,
+        mock_run_failover_coordination_pass,
+    ):
+        call_order = []
+        mock_parse_args.return_value = Namespace(
+            execution_date=None,
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            backfill_days=7,
+            mode="backfill",
+            max_missing_dates=7,
+            parser_api="legacy",
+            pvz=None,
+            detailed_logs=False,
+            enable_failover_coordination=True,
+        )
+        mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
+        mock_invoke_parser_for_pvz.return_value = {
+            "results_by_date": {"2026-03-01": {"success": True, "data": {}}},
+            "successful_dates": ["2026-03-01"],
+            "failed_dates": [],
+        }
+        mock_run_upload_batch_microservice.return_value = {"success": True, "uploaded_records": 1}
+        mock_format_reports_run_notification_message.return_value = "ok"
+        mock_run_failover_coordination_pass.side_effect = lambda **kwargs: call_order.append("coordination") or {}
+        mock_send_notification_microservice.side_effect = lambda *args, **kwargs: call_order.append("notification")
+
+        reports_processor.main()
+
+        self.assertEqual(call_order, ["coordination", "notification"])
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
@@ -783,8 +903,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_invoke_parser_for_pvz,
         mock_invoke_available_pvz_discovery,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
-        mock_format_batch_notification_message,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
     ):
         mock_parse_args.return_value = Namespace(
@@ -805,8 +924,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
-        mock_format_batch_notification_message.return_value = "ok"
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -818,9 +936,9 @@ class TestReportsProcessor(unittest.TestCase):
         mock_send_notification_microservice.assert_called_once()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_aggregated_backfill_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.build_reports_run_summary")
     @patch("scheduler_runner.tasks.reports.reports_processor.build_aggregated_backfill_summary")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_grouped_jobs")
@@ -835,9 +953,9 @@ class TestReportsProcessor(unittest.TestCase):
         mock_invoke_parser_for_grouped_jobs,
         mock_invoke_available_pvz_discovery,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
         mock_build_aggregated_backfill_summary,
-        mock_format_aggregated_backfill_notification_message,
+        mock_build_reports_run_summary,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
     ):
         mock_parse_args.return_value = Namespace(
@@ -865,7 +983,6 @@ class TestReportsProcessor(unittest.TestCase):
             "PVZ2": {"results_by_date": {}, "successful_dates": [], "failed_dates": []},
         }
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
         mock_build_aggregated_backfill_summary.return_value = reports_processor.ReportsBackfillExecutionResult(
             date_from="2026-03-01",
             date_to="2026-03-02",
@@ -876,7 +993,8 @@ class TestReportsProcessor(unittest.TestCase):
             uploaded_records=0,
             pvz_results={},
         )
-        mock_format_aggregated_backfill_notification_message.return_value = "ok"
+        mock_build_reports_run_summary.return_value = Mock()
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -891,15 +1009,16 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(mock_invoke_parser_for_grouped_jobs.call_args.kwargs["parser_api"], "legacy")
         self.assertEqual(mock_run_upload_batch_microservice.call_count, 2)
         mock_build_aggregated_backfill_summary.assert_called_once()
-        mock_format_aggregated_backfill_notification_message.assert_called_once_with(
-            mock_build_aggregated_backfill_summary.return_value
+        mock_build_reports_run_summary.assert_called_once()
+        mock_format_reports_run_notification_message.assert_called_once_with(
+            mock_build_reports_run_summary.return_value
         )
         mock_send_notification_microservice.assert_called_once()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
-    @patch("scheduler_runner.tasks.reports.reports_processor.format_aggregated_backfill_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.format_reports_run_notification_message")
+    @patch("scheduler_runner.tasks.reports.reports_processor.build_reports_run_summary")
     @patch("scheduler_runner.tasks.reports.reports_processor.build_aggregated_backfill_summary")
-    @patch("scheduler_runner.tasks.reports.reports_processor.prepare_batch_notification_data")
     @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_available_pvz_discovery")
     @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
@@ -916,9 +1035,9 @@ class TestReportsProcessor(unittest.TestCase):
         mock_invoke_parser_for_pvz,
         mock_invoke_available_pvz_discovery,
         mock_run_upload_batch_microservice,
-        mock_prepare_batch_notification_data,
         mock_build_aggregated_backfill_summary,
-        mock_format_aggregated_backfill_notification_message,
+        mock_build_reports_run_summary,
+        mock_format_reports_run_notification_message,
         mock_send_notification_microservice,
     ):
         mock_parse_args.return_value = Namespace(
@@ -950,7 +1069,6 @@ class TestReportsProcessor(unittest.TestCase):
         }
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
         mock_run_upload_batch_microservice.return_value = {"success": True}
-        mock_prepare_batch_notification_data.return_value = {"summary": "ok"}
         mock_build_aggregated_backfill_summary.return_value = reports_processor.ReportsBackfillExecutionResult(
             date_from="2026-03-01",
             date_to="2026-03-02",
@@ -961,7 +1079,8 @@ class TestReportsProcessor(unittest.TestCase):
             uploaded_records=0,
             pvz_results={},
         )
-        mock_format_aggregated_backfill_notification_message.return_value = "ok"
+        mock_build_reports_run_summary.return_value = Mock()
+        mock_format_reports_run_notification_message.return_value = "ok"
 
         reports_processor.main()
 
@@ -975,5 +1094,3 @@ class TestReportsProcessor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
