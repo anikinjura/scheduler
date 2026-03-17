@@ -178,34 +178,49 @@ class TestBaseParser(unittest.TestCase):
         self.parser.close_browser()
         self.assertIsNone(self.parser.driver)
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.psutil.process_iter')
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
-    def test_terminate_browser_processes(self, mock_sleep, mock_subprocess_run):
+    def test_terminate_browser_processes(self, mock_sleep, mock_subprocess_run, mock_process_iter):
         """Тест завершения процессов браузера"""
-        mock_subprocess_run.return_value = Mock()
+        mock_subprocess_run.return_value = Mock(returncode=0, stderr="")
+        mock_process_iter.return_value = [Mock(info={'pid': 101, 'name': 'msedgedriver.exe'})]
 
         self.parser._terminate_browser_processes()
 
         mock_subprocess_run.assert_called_once_with(
-            ["taskkill", "/f", "/im", "msedge.exe"],
+            ["taskkill", "/f", "/im", "msedgedriver.exe"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
         mock_sleep.assert_called_once_with(2)
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.psutil.process_iter')
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
-    def test_terminate_browser_processes_with_custom_executable(self, mock_subprocess_run, mock_sleep):
-        """Тест завершения процессов браузера с пользовательским исполняемым файлом"""
-        mock_subprocess_run.return_value = Mock()
+    def test_terminate_browser_processes_with_custom_executable(self, mock_subprocess_run, mock_sleep, mock_process_iter):
+        """Тест завершения процессов браузера при принудительном убийстве browser executable"""
+        mock_subprocess_run.return_value = Mock(returncode=0, stderr="")
+        mock_process_iter.return_value = [
+            Mock(info={'pid': 101, 'name': 'msedgedriver.exe'}),
+            Mock(info={'pid': 102, 'name': 'chrome.exe'}),
+        ]
 
         # Изменим конфиг для тестирования другого исполняемого файла
         self.parser.config['BROWSER_EXECUTABLE'] = 'chrome.exe'
+        self.parser.config['FORCE_TERMINATE_BROWSER_PROCESSES'] = True
 
         self.parser._terminate_browser_processes()
 
-        mock_subprocess_run.assert_called_once_with(
+        self.assertEqual(mock_subprocess_run.call_count, 2)
+        mock_subprocess_run.assert_any_call(
+            ["taskkill", "/f", "/im", "msedgedriver.exe"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        mock_subprocess_run.assert_any_call(
             ["taskkill", "/f", "/im", "chrome.exe"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -213,11 +228,26 @@ class TestBaseParser(unittest.TestCase):
         )
         mock_sleep.assert_called_once_with(2)
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.psutil.process_iter')
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
     @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
-    def test_terminate_browser_processes_exception(self, mock_subprocess_run, mock_sleep):
+    def test_terminate_browser_processes_skips_sleep_when_nothing_killed(self, mock_subprocess_run, mock_sleep, mock_process_iter):
+        """Тест: без найденных процессов cleanup не ждет PROCESS_TERMINATION_SLEEP."""
+        self.parser.config['BROWSER_DRIVER_EXECUTABLES'] = ['not-running.exe']
+        mock_process_iter.return_value = []
+
+        self.parser._terminate_browser_processes()
+
+        mock_subprocess_run.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    @patch('scheduler_runner.utils.parser.core.base_parser.psutil.process_iter')
+    @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')
+    @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
+    def test_terminate_browser_processes_exception(self, mock_subprocess_run, mock_sleep, mock_process_iter):
         """Тест завершения процессов браузера с исключением"""
         mock_subprocess_run.side_effect = Exception("Test exception")
+        mock_process_iter.return_value = [Mock(info={'pid': 101, 'name': 'msedgedriver.exe'})]
 
         # Не должно вызвать ошибку
         self.parser._terminate_browser_processes()
@@ -709,6 +739,3 @@ class TestNewFunctionality(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
-

@@ -41,6 +41,8 @@ BASE_CONFIG = {
     "EDGE_USER_DATA_DIR": "",  # Путь к пользовательским данным Edge (если пусто, используется шаблон)
     "HEADLESS": True,  # Режим headless для браузера (включён 05.03.2026 для тестирования)
     "BROWSER_EXECUTABLE": "msedge.exe",  # Имя исполняемого файла браузера
+    "BROWSER_DRIVER_EXECUTABLES": ["msedgedriver.exe"],  # Процессы драйвера, которые безопасно завершать перед стартом parser-а
+    "FORCE_TERMINATE_BROWSER_PROCESSES": False,  # Не убивать пользовательский Edge по умолчанию; это ломает reused profile/session
     "BROWSER_USER_DATA_PATH_TEMPLATE": "C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data",  # Шаблон пути к данным браузера
 
     # === ПАРАМЕТРЫ КОНФИГУРАЦИИ БРАУЗЕРА ===

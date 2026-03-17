@@ -27,6 +27,7 @@ import json
 import tempfile
 import platform
 import shutil
+import psutil
 from pathlib import Path
 from abc import ABC, abstractmethod
 from selenium import webdriver
@@ -974,51 +975,69 @@ class BaseParser(ABC):
                 self.logger.warning(f"Ошибка при очистке Lock-файлов: {e}")
 
     def _terminate_browser_processes(self):
-        """Завершает все процессы Microsoft Edge и очищает Lock-файлы"""
+        """Очищает driver-процессы и lock-файлы, не трогая пользовательский Edge по умолчанию."""
         if self.logger:
             self.logger.trace("Попали в метод BaseParser._terminate_browser_processes")
         try:
             browser_executable = self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')
+            driver_executables = self.config.get('BROWSER_DRIVER_EXECUTABLES', ['msedgedriver.exe'])
+            if isinstance(driver_executables, str):
+                driver_executables = [driver_executables]
+
+            force_kill_browser = self.config.get('FORCE_TERMINATE_BROWSER_PROCESSES', False)
+            process_names_to_kill = list(driver_executables)
+            if force_kill_browser:
+                process_names_to_kill.append(browser_executable)
+
             if self.logger:
-                self.logger.debug(f"Попытка завершения процессов браузера: {browser_executable}")
+                self.logger.debug(
+                    "Попытка завершения процессов parser bootstrap: "
+                    f"drivers={driver_executables}, "
+                    f"force_kill_browser={force_kill_browser}, "
+                    f"browser={browser_executable}"
+                )
 
-            # Проверим, запущены ли процессы браузера
-            import psutil
-            edge_processes = []
-            for proc in psutil.process_iter(['pid', 'name']):
-                if browser_executable.lower() in proc.info['name'].lower():
-                    edge_processes.append(proc.info)
+            any_process_killed = False
+            for process_name in process_names_to_kill:
+                matching_processes = []
+                for proc in psutil.process_iter(['pid', 'name']):
+                    proc_name = (proc.info.get('name') or '').lower()
+                    if process_name.lower() in proc_name:
+                        matching_processes.append(proc.info)
 
-            if edge_processes:
-                if self.logger:
-                    self.logger.debug(f"Найдено запущенных процессов {browser_executable}: {len(edge_processes)}")
-                for proc_info in edge_processes:
+                if matching_processes:
                     if self.logger:
-                        self.logger.debug(f"  PID: {proc_info['pid']}, Name: {proc_info['name']}")
-            else:
-                if self.logger:
-                    self.logger.debug(f"Не найдено запущенных процессов {browser_executable}")
+                        self.logger.debug(f"Найдено запущенных процессов {process_name}: {len(matching_processes)}")
+                        for proc_info in matching_processes:
+                            self.logger.debug(f"  PID: {proc_info['pid']}, Name: {proc_info['name']}")
+                else:
+                    if self.logger:
+                        self.logger.debug(f"Не найдено запущенных процессов {process_name}")
+                    continue
 
-            result = subprocess.run(["taskkill", "/f", "/im", browser_executable],
-                          stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE,
-                          text=True)
+                result = subprocess.run(
+                    ["taskkill", "/f", "/im", process_name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
 
-            if result.returncode != 0:
-                if self.logger:
-                    self.logger.debug(f"Команда taskkill завершилась с кодом {result.returncode}")
-                    if result.stderr:
-                        self.logger.debug(f"Сообщение об ошибке: {result.stderr.strip()}")
-            else:
-                if self.logger:
-                    self.logger.debug(f"Процессы {browser_executable} успешно завершены")
+                if result.returncode != 0:
+                    if self.logger:
+                        self.logger.debug(f"Команда taskkill для {process_name} завершилась с кодом {result.returncode}")
+                        if result.stderr:
+                            self.logger.debug(f"Сообщение об ошибке: {result.stderr.strip()}")
+                else:
+                    any_process_killed = True
+                    if self.logger:
+                        self.logger.debug(f"Процессы {process_name} успешно завершены")
 
-            # Ждем, чтобы процессы точно завершились
-            sleep_time = self.config.get('PROCESS_TERMINATION_SLEEP', 2)
-            if self.logger:
-                self.logger.debug(f"Ожидание завершения процессов: {sleep_time} секунд")
-            time.sleep(sleep_time)
-            
+            if any_process_killed:
+                sleep_time = self.config.get('PROCESS_TERMINATION_SLEEP', 2)
+                if self.logger:
+                    self.logger.debug(f"Ожидание завершения процессов: {sleep_time} секунд")
+                time.sleep(sleep_time)
+
             # Очищаем Lock-файлы после завершения процессов
             user_data_dir = self.config.get('EDGE_USER_DATA_DIR', '')
             if not user_data_dir:
@@ -1027,7 +1046,7 @@ class BaseParser(ABC):
             
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"Ошибка при завершении процессов {self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')}: {e}")
+                self.logger.warning(f"Ошибка при завершении bootstrap-процессов браузера: {e}")
 
     def _get_default_browser_user_data_dir(self, username: Optional[str] = None) -> str:
         """
