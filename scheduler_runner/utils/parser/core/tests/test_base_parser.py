@@ -7,7 +7,7 @@
 - Обновлены тесты для использования нового метода _select_option_from_dropdown
 """
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, PropertyMock
 import subprocess
 import os
 from scheduler_runner.utils.parser.core.base_parser import BaseParser
@@ -44,12 +44,18 @@ class TestBaseParser(unittest.TestCase):
         """Настройка теста"""
         self.config = {
             'EDGE_USER_DATA_DIR': 'test_data_dir',
+            'EDGE_PROFILE_MODE': 'default',
+            'EDGE_AUTOMATION_USER_DATA_DIR': '',
+            'EDGE_AUTOMATION_PROFILE_DIRECTORY': 'ParserProfile',
+            'EDGE_PROFILE_FALLBACK_TO_DEFAULT': True,
             'HEADLESS': True,
             'OUTPUT_DIR': 'test_output_dir',
             'DEFAULT_TIMEOUT': 60,
             'ELEMENT_CLICK_TIMEOUT': 10,
             'ELEMENT_WAIT_TIMEOUT': 10,
             'BROWSER_EXECUTABLE': 'msedge.exe',
+            'FORCE_TERMINATE_BROWSER_PROCESSES': True,
+            'BROWSER_STARTUP_URL': 'https://turbo-pvz.ozon.ru/orders',
             'BROWSER_USER_DATA_PATH_TEMPLATE': 'C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data',
             'PROCESS_TERMINATION_SLEEP': 2,
             'DROPDOWN_OPEN_DELAY': 2,
@@ -57,6 +63,7 @@ class TestBaseParser(unittest.TestCase):
             'PAGE_LOAD_DELAY': 3,
             'browser_config': {
                 'user_data_dir': '',
+                'profile_directory': '',
                 'headless': False,
                 'window_size': [1920, 1080],
                 'timeout': 60
@@ -76,6 +83,11 @@ class TestBaseParser(unittest.TestCase):
             result = self.parser._get_current_user()
             self.assertEqual(result, 'test_user')
 
+    def test_get_default_automation_user_data_dir(self):
+        """Тест получения dedicated automation user-data-dir."""
+        result = self.parser._get_default_automation_user_data_dir('custom_user')
+        self.assertEqual(result, "C:/Users/custom_user/AppData/Local/OzonParser/EdgeUserData")
+
     @patch('scheduler_runner.utils.parser.core.base_parser.BaseParser._resolve_existing_edge_user_data_dir', return_value=None)
     @patch('scheduler_runner.utils.parser.core.base_parser.os.getlogin')
     def test_get_default_browser_user_data_dir(self, mock_getlogin, mock_resolve_existing_dir):
@@ -93,6 +105,23 @@ class TestBaseParser(unittest.TestCase):
         expected_with_current = "C:/Users/test_user/AppData/Local/Microsoft/Edge/User Data"
         self.assertEqual(result_with_current, expected_with_current)
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.BaseParser._get_default_automation_user_data_dir')
+    def test_resolve_edge_runtime_user_data_dir_dedicated_mode(self, mock_get_default_automation_dir):
+        """Тест dedicated runtime user-data-dir."""
+        mock_get_default_automation_dir.return_value = "C:/Users/test_user/AppData/Local/OzonParser/EdgeUserData"
+        self.parser.config['EDGE_USER_DATA_DIR'] = ''
+        self.parser.config['EDGE_PROFILE_MODE'] = 'dedicated'
+        self.parser.config['EDGE_PROFILE_FALLBACK_TO_DEFAULT'] = False
+        result = self.parser._resolve_edge_runtime_user_data_dir(self.parser.config['browser_config'])
+        self.assertEqual(result, "C:/Users/test_user/AppData/Local/OzonParser/EdgeUserData")
+
+    def test_resolve_edge_runtime_profile_directory_dedicated_mode(self):
+        """Тест dedicated runtime profile-directory."""
+        self.parser.config['EDGE_PROFILE_MODE'] = 'dedicated'
+        self.parser.config['EDGE_PROFILE_FALLBACK_TO_DEFAULT'] = False
+        result = self.parser._resolve_edge_runtime_profile_directory(self.parser.config['browser_config'])
+        self.assertEqual(result, "ParserProfile")
+
     @patch('scheduler_runner.utils.parser.core.base_parser.webdriver.Edge')
     @patch('scheduler_runner.utils.parser.core.base_parser.os.path.exists', return_value=True)
     @patch('scheduler_runner.utils.parser.core.base_parser.BaseParser._get_default_browser_user_data_dir', return_value='C:/tmp/edge-profile')
@@ -104,6 +133,8 @@ class TestBaseParser(unittest.TestCase):
 
         # Mock-им метод _terminate_browser_processes у экземпляра
         self.parser._terminate_browser_processes = Mock()
+        self.parser._ensure_edge_runtime_profile_initialized = Mock()
+        self.parser._validate_startup_page_ready = Mock(return_value=True)
 
         result = self.parser.setup_browser()
 
@@ -130,6 +161,8 @@ class TestBaseParser(unittest.TestCase):
         self.parser._terminate_browser_processes = Mock()
         self.parser._cleanup_lock_files = Mock()
         self.parser._log_startup_environment = Mock()
+        self.parser._ensure_edge_runtime_profile_initialized = Mock()
+        self.parser._validate_startup_page_ready = Mock(return_value=True)
         self.parser.config['browser_config']['headless'] = True
 
         result = self.parser.setup_browser()
@@ -154,6 +187,8 @@ class TestBaseParser(unittest.TestCase):
         self.parser._terminate_browser_processes = Mock()
         self.parser._cleanup_lock_files = Mock()
         self.parser._log_startup_environment = Mock()
+        self.parser._ensure_edge_runtime_profile_initialized = Mock()
+        self.parser._validate_startup_page_ready = Mock(return_value=True)
 
         result = self.parser.setup_browser()
 
@@ -184,17 +219,70 @@ class TestBaseParser(unittest.TestCase):
     def test_terminate_browser_processes(self, mock_sleep, mock_subprocess_run, mock_process_iter):
         """Тест завершения процессов браузера"""
         mock_subprocess_run.return_value = Mock(returncode=0, stderr="")
-        mock_process_iter.return_value = [Mock(info={'pid': 101, 'name': 'msedgedriver.exe'})]
+        mock_process_iter.return_value = [
+            Mock(info={'pid': 101, 'name': 'msedgedriver.exe'}),
+            Mock(info={'pid': 102, 'name': 'msedge.exe'}),
+        ]
 
         self.parser._terminate_browser_processes()
 
-        mock_subprocess_run.assert_called_once_with(
+        self.assertEqual(mock_subprocess_run.call_count, 2)
+        mock_subprocess_run.assert_any_call(
             ["taskkill", "/f", "/im", "msedgedriver.exe"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
+        mock_subprocess_run.assert_any_call(
+            ["taskkill", "/f", "/im", "msedge.exe"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
         mock_sleep.assert_called_once_with(2)
+
+    def test_build_edge_options_uses_dedicated_profile(self):
+        """Тест: options builder использует dedicated profile и hardened args."""
+        options = self.parser._build_edge_options(
+            config=self.parser.config['browser_config'],
+            user_data_dir='C:/Users/test/AppData/Local/OzonParser/EdgeUserData',
+            profile_directory='ParserProfile'
+        )
+
+        self.assertIn('--profile-directory=ParserProfile', options.arguments)
+        self.assertIn('--no-first-run', options.arguments)
+        self.assertIn('--remote-debugging-port=0', options.arguments)
+
+    def test_is_internal_startup_page_detects_edge_internal_page(self):
+        """Тест распознавания internal/new-tab startup page."""
+        self.assertTrue(self.parser._is_internal_startup_page("edge://tab-search.top-chrome/", "Новая вкладка"))
+        self.assertTrue(self.parser._is_internal_startup_page("https://ntp.msn.com/edge/ntp?x=1", "Новая вкладка"))
+        self.assertFalse(self.parser._is_internal_startup_page("https://turbo-pvz.ozon.ru/orders", "Система управления заказами ПВЗ"))
+
+    def test_recover_from_internal_startup_page_success(self):
+        """Тест forced recovery со startup internal page."""
+        mock_driver = Mock()
+        mock_driver.current_url = "https://turbo-pvz.ozon.ru/orders"
+        mock_driver.title = "Система управления заказами ПВЗ"
+        self.parser.driver = mock_driver
+
+        result = self.parser._recover_from_internal_startup_page(phase="primary")
+
+        self.assertTrue(result)
+        mock_driver.get.assert_called_once_with("https://turbo-pvz.ozon.ru/orders")
+
+    def test_validate_startup_page_ready_calls_recovery_for_internal_page(self):
+        """Тест: при internal startup page вызывается forced recovery."""
+        mock_driver = Mock()
+        type(mock_driver).current_url = PropertyMock(return_value="edge://tab-search.top-chrome/")
+        type(mock_driver).title = PropertyMock(return_value="Новая вкладка")
+        self.parser.driver = mock_driver
+        self.parser._recover_from_internal_startup_page = Mock(return_value=True)
+
+        result = self.parser._validate_startup_page_ready(phase="primary")
+
+        self.assertTrue(result)
+        self.parser._recover_from_internal_startup_page.assert_called_once_with(phase="primary")
 
     @patch('scheduler_runner.utils.parser.core.base_parser.psutil.process_iter')
     @patch('scheduler_runner.utils.parser.core.base_parser.time.sleep')

@@ -181,17 +181,22 @@ class BaseParser(ABC):
         # Завершаем все процессы браузера перед запуском
         self._terminate_browser_processes()
 
-        # Получаем путь к пользовательским данным браузера
-        user_data_dir = config.get('user_data_dir', self.config.get('EDGE_USER_DATA_DIR'))
-        if not user_data_dir or user_data_dir == "":
-            user_data_dir = self._get_default_browser_user_data_dir()
+        # Получаем runtime user-data-dir и profile directory для текущего режима Edge.
+        user_data_dir = self._resolve_edge_runtime_user_data_dir(config)
+        profile_directory = self._resolve_edge_runtime_profile_directory(config)
+        self._ensure_edge_runtime_profile_initialized(user_data_dir, profile_directory)
             
         if self.logger:
             self.logger.debug(f"Путь к пользовательским данным браузера: {user_data_dir}")
+            self.logger.debug(f"Профиль браузера для runtime: {profile_directory}")
 
         # Логируем окружение старта браузера один раз за запуск парсера.
         if not self._startup_environment_logged:
-            self._log_startup_environment(user_data_dir=user_data_dir, config=config)
+            self._log_startup_environment(
+                user_data_dir=user_data_dir,
+                profile_directory=profile_directory,
+                config=config
+            )
             self._startup_environment_logged = True
             
         # Проверяем, существует ли директория с пользовательскими данными
@@ -208,6 +213,7 @@ class BaseParser(ABC):
         primary_success, crash_signature_detected = self._start_edge_driver_with_retries(
             config=config,
             user_data_dir=user_data_dir,
+            profile_directory=profile_directory,
             max_retries=max_retries,
             retry_delay=retry_delay,
             phase='primary'
@@ -231,6 +237,7 @@ class BaseParser(ABC):
             fallback_success, _ = self._start_edge_driver_with_retries(
                 config=fallback_config,
                 user_data_dir=user_data_dir,
+                profile_directory=profile_directory,
                 max_retries=max_retries,
                 retry_delay=retry_delay,
                 phase='fallback'
@@ -248,6 +255,7 @@ class BaseParser(ABC):
         self,
         config: Dict[str, Any],
         user_data_dir: str,
+        profile_directory: str,
         max_retries: int,
         retry_delay: int,
         phase: str
@@ -261,7 +269,11 @@ class BaseParser(ABC):
                 [1] crash_signature_detected: обнаружена ли сигнатура startup crash.
         """
         crash_signature_detected = False
-        options = self._build_edge_options(config=config, user_data_dir=user_data_dir)
+        options = self._build_edge_options(
+            config=config,
+            user_data_dir=user_data_dir,
+            profile_directory=profile_directory
+        )
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -277,6 +289,7 @@ class BaseParser(ABC):
                     attempt=attempt,
                     max_retries=max_retries,
                     user_data_dir=user_data_dir,
+                    profile_directory=profile_directory,
                     config=config,
                     options=options
                 )
@@ -291,6 +304,9 @@ class BaseParser(ABC):
                 self.driver.implicitly_wait(timeout)
                 if self.logger:
                     self.logger.debug(f"Установлен таймаут ожидания элементов: {timeout} секунд")
+
+                if not self._validate_startup_page_ready(phase=phase):
+                    raise RuntimeError("Browser startup validation failed after forced recovery")
                 return True, crash_signature_detected
 
             except Exception as e:
@@ -300,7 +316,11 @@ class BaseParser(ABC):
                     )
                     self.logger.error(f"Тип ошибки: {type(e).__name__}")
                     self._log_known_startup_crash_signature(error=e, attempt=attempt, max_retries=max_retries)
-                    self._log_post_failed_attempt_state(user_data_dir=user_data_dir, attempt=attempt)
+                    self._log_post_failed_attempt_state(
+                        user_data_dir=user_data_dir,
+                        profile_directory=profile_directory,
+                        attempt=attempt
+                    )
 
                 is_signature = self._is_startup_crash_signature(e)
                 if is_signature:
@@ -311,16 +331,20 @@ class BaseParser(ABC):
                         self.logger.error(
                             f"Параметры запуска браузера (phase={phase}): "
                             f"--user-data-dir={user_data_dir}, "
+                            f"--profile-directory={profile_directory}, "
                             f"headless={config.get('headless', self.config.get('HEADLESS', False))}"
                         )
-                        self._log_user_data_dir_diagnostics(user_data_dir=user_data_dir)
+                        self._log_user_data_dir_diagnostics(
+                            user_data_dir=user_data_dir,
+                            profile_directory=profile_directory
+                        )
                     return False, crash_signature_detected
 
                 if self.logger:
                     self.logger.info(f"Ожидание {retry_delay} секунд перед повторной попыткой...")
 
                 try:
-                    self._cleanup_lock_files(user_data_dir)
+                    self._cleanup_lock_files(user_data_dir, profile_directory)
                 except Exception as cleanup_error:
                     if self.logger:
                         self.logger.debug(f"Очистка Lock-файлов не удалась: {cleanup_error}")
@@ -328,20 +352,33 @@ class BaseParser(ABC):
 
         return False, crash_signature_detected
 
-    def _build_edge_options(self, config: Dict[str, Any], user_data_dir: str) -> EdgeOptions:
+    def _build_edge_options(
+        self,
+        config: Dict[str, Any],
+        user_data_dir: str,
+        profile_directory: str
+    ) -> EdgeOptions:
         """Создает и возвращает EdgeOptions для запуска браузера."""
         options = EdgeOptions()
         browser_binary = self._resolve_edge_binary_location()
         if browser_binary:
             options.binary_location = browser_binary
         options.add_argument(f"--user-data-dir={user_data_dir}")
-        options.add_argument("--profile-directory=Default")
+        options.add_argument(f"--profile-directory={profile_directory}")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-features=msEdgeTranslate,EdgeAutofillServerCommunication")
+        options.add_argument("--remote-debugging-port=0")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
 
         if config.get('headless', self.config.get('HEADLESS', False)):
             options.add_argument("--headless")
+            options.add_argument("--disable-gpu")
             if self.logger:
                 self.logger.debug("Включен headless режим браузера")
 
@@ -352,6 +389,93 @@ class BaseParser(ABC):
             if self.logger:
                 self.logger.debug(f"Установлен размер окна браузера: {width}x{height}")
         return options
+
+    def _validate_startup_page_ready(self, phase: str) -> bool:
+        """
+        Проверяет, не стартовал ли браузер на internal/new-tab page.
+        Если старт произошел на служебной странице Edge, выполняет forced recovery через safe startup URL.
+        """
+        if not self.driver:
+            return False
+
+        current_url = ""
+        current_title = ""
+        try:
+            current_url = self.driver.current_url or ""
+            current_title = self.driver.title or ""
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"BROWSER_STARTUP_PAGE_READ_FAILED (phase={phase}): {e}")
+            return False
+
+        if self.logger:
+            self.logger.debug(
+                f"BROWSER_STARTUP_PAGE_STATE (phase={phase}): "
+                f"url={current_url}, title={current_title}"
+            )
+
+        if not self._is_internal_startup_page(current_url=current_url, title=current_title):
+            return True
+
+        if self.logger:
+            self.logger.warning(
+                f"BROWSER_INTERNAL_STARTUP_PAGE_DETECTED (phase={phase}): "
+                f"url={current_url}, title={current_title}"
+            )
+
+        return self._recover_from_internal_startup_page(phase=phase)
+
+    @staticmethod
+    def _is_internal_startup_page(current_url: str, title: str) -> bool:
+        """Определяет, стартовал ли Edge на internal/new-tab page вместо рабочей страницы."""
+        normalized_url = (current_url or "").lower()
+        normalized_title = (title or "").lower()
+        return (
+            normalized_url.startswith("edge://")
+            or normalized_url.startswith("https://ntp.msn.com/")
+            or "tab-search" in normalized_url
+            or "новая вкладка" in normalized_title
+            or "new tab" in normalized_title
+        )
+
+    def _recover_from_internal_startup_page(self, phase: str) -> bool:
+        """Пытается вывести браузер с internal/new-tab page на безопасную рабочую страницу."""
+        if not self.driver:
+            return False
+
+        startup_url = self.config.get("BROWSER_STARTUP_URL", "https://turbo-pvz.ozon.ru/orders")
+        try:
+            if self.logger:
+                self.logger.warning(
+                    f"BROWSER_FORCED_STARTUP_NAVIGATION (phase={phase}): "
+                    f"startup_url={startup_url}"
+                )
+
+            self.driver.get(startup_url)
+            time.sleep(self.config.get('PAGE_LOAD_DELAY', 3))
+
+            recovered_url = self.driver.current_url or ""
+            recovered_title = self.driver.title or ""
+            if self.logger:
+                self.logger.debug(
+                    f"BROWSER_FORCED_STARTUP_NAVIGATION_RESULT (phase={phase}): "
+                    f"url={recovered_url}, title={recovered_title}"
+                )
+
+            if self._is_internal_startup_page(current_url=recovered_url, title=recovered_title):
+                if self.logger:
+                    self.logger.error(
+                        f"BROWSER_FORCED_STARTUP_NAVIGATION_FAILED (phase={phase}): "
+                        f"url={recovered_url}, title={recovered_title}"
+                    )
+                return False
+            return True
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"BROWSER_FORCED_STARTUP_NAVIGATION_EXCEPTION (phase={phase}): {e}"
+                )
+            return False
 
     def _ensure_selenium_manager_environment(self) -> None:
         """Настраивает writable cache path для Selenium Manager в локальном окружении."""
@@ -383,7 +507,7 @@ class BaseParser(ABC):
                 return candidate
         return None
 
-    def _log_user_data_dir_diagnostics(self, user_data_dir: str) -> None:
+    def _log_user_data_dir_diagnostics(self, user_data_dir: str, profile_directory: str) -> None:
         """Логирует детали по директории профиля браузера."""
         if not self.logger:
             return
@@ -394,7 +518,7 @@ class BaseParser(ABC):
                 else:
                     self.logger.error(f"Директория {user_data_dir} НЕ доступна для чтения")
 
-                lock_file_path = os.path.join(user_data_dir, "Default", "Lock")
+                lock_file_path = os.path.join(user_data_dir, profile_directory, "Lock")
                 if os.path.exists(lock_file_path):
                     self.logger.error(
                         f"Файл блокировки существует: {lock_file_path}. Возможно, браузер уже запущен."
@@ -420,7 +544,7 @@ class BaseParser(ABC):
         except Exception as dir_check_error:
             self.logger.error(f"Ошибка при проверке директории пользовательских данных: {dir_check_error}")
 
-    def _log_startup_environment(self, user_data_dir: str, config: Dict[str, Any]) -> None:
+    def _log_startup_environment(self, user_data_dir: str, profile_directory: str, config: Dict[str, Any]) -> None:
         """Логирует общий контекст окружения для диагностики сбоев старта браузера."""
         if not self.logger:
             return
@@ -434,8 +558,11 @@ class BaseParser(ABC):
             "platform": platform.platform(),
             "python_version": platform.python_version(),
             "current_user": current_user,
+            "profile_mode": self.config.get("EDGE_PROFILE_MODE", "default"),
             "headless": config.get('headless', self.config.get('HEADLESS', False)),
             "user_data_dir": user_data_dir,
+            "profile_directory": profile_directory,
+            "is_default_profile_runtime": profile_directory == "Default",
             "temp_dir": temp_dir,
             "local_app_data": local_app_data,
             "user_data_exists": os.path.exists(user_data_dir),
@@ -455,6 +582,7 @@ class BaseParser(ABC):
         attempt: int,
         max_retries: int,
         user_data_dir: str,
+        profile_directory: str,
         config: Dict[str, Any],
         options: EdgeOptions
     ) -> None:
@@ -462,14 +590,16 @@ class BaseParser(ABC):
         if not self.logger:
             return
 
-        default_lock_path = os.path.join(user_data_dir, "Default", "Lock")
+        default_lock_path = os.path.join(user_data_dir, profile_directory, "Lock")
         local_state_path = os.path.join(user_data_dir, "Local State")
         runtime_context = {
             "attempt": attempt,
             "max_retries": max_retries,
+            "profile_mode": self.config.get("EDGE_PROFILE_MODE", "default"),
             "headless": config.get('headless', self.config.get('HEADLESS', False)),
             "window_size": config.get('window_size', [1920, 1080]),
             "user_data_dir": user_data_dir,
+            "profile_directory": profile_directory,
             "lock_exists_before_start": os.path.exists(default_lock_path),
             "local_state_exists": os.path.exists(local_state_path),
             "options_arguments": list(getattr(options, "arguments", [])),
@@ -479,12 +609,12 @@ class BaseParser(ABC):
             f"BROWSER_START_ATTEMPT_CONTEXT: {json.dumps(runtime_context, ensure_ascii=False, default=str)}"
         )
 
-    def _log_post_failed_attempt_state(self, user_data_dir: str, attempt: int) -> None:
+    def _log_post_failed_attempt_state(self, user_data_dir: str, profile_directory: str, attempt: int) -> None:
         """Логирует состояние окружения сразу после неудачной попытки старта драйвера."""
         if not self.logger:
             return
 
-        lock_path = os.path.join(user_data_dir, "Default", "Lock")
+        lock_path = os.path.join(user_data_dir, profile_directory, "Lock")
         local_state_path = os.path.join(user_data_dir, "Local State")
         post_state = {
             "attempt": attempt,
@@ -922,7 +1052,7 @@ class BaseParser(ABC):
 
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ===
 
-    def _cleanup_lock_files(self, user_data_dir: str) -> None:
+    def _cleanup_lock_files(self, user_data_dir: str, profile_directory: str = "Default") -> None:
         """
         Удаляет Lock-файлы браузера после завершения процессов.
         
@@ -942,9 +1072,9 @@ class BaseParser(ABC):
         try:
             # Основные Lock-файлы, которые могут блокировать запуск
             lock_files = [
-                os.path.join(user_data_dir, "Default", "Lock"),
-                os.path.join(user_data_dir, "Default", "LOCK"),
-                os.path.join(user_data_dir, "Default", "SingletonLock"),
+                os.path.join(user_data_dir, profile_directory, "Lock"),
+                os.path.join(user_data_dir, profile_directory, "LOCK"),
+                os.path.join(user_data_dir, profile_directory, "SingletonLock"),
                 os.path.join(user_data_dir, "SingletonLock"),
             ]
             
@@ -1039,10 +1169,13 @@ class BaseParser(ABC):
                 time.sleep(sleep_time)
 
             # Очищаем Lock-файлы после завершения процессов
-            user_data_dir = self.config.get('EDGE_USER_DATA_DIR', '')
-            if not user_data_dir:
-                user_data_dir = self._get_default_browser_user_data_dir()
-            self._cleanup_lock_files(user_data_dir)
+            runtime_user_data_dir = self._resolve_edge_runtime_user_data_dir(
+                self.config.get('browser_config', {})
+            )
+            runtime_profile_directory = self._resolve_edge_runtime_profile_directory(
+                self.config.get('browser_config', {})
+            )
+            self._cleanup_lock_files(runtime_user_data_dir, runtime_profile_directory)
             
         except Exception as e:
             if self.logger:
@@ -1071,6 +1204,52 @@ class BaseParser(ABC):
         default_path_template = self.config.get('BROWSER_USER_DATA_PATH_TEMPLATE',
                                                "C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data")
         return default_path_template.format(username=username)
+
+    def _get_default_automation_user_data_dir(self, username: Optional[str] = None) -> str:
+        """Возвращает user-local path для dedicated automation Edge profile."""
+        if username is None:
+            username = self._safe_get_current_user()
+        return f"C:/Users/{username}/AppData/Local/OzonParser/EdgeUserData"
+
+    def _resolve_edge_runtime_user_data_dir(self, config: Dict[str, Any]) -> str:
+        """Определяет user-data-dir Edge для текущего runtime режима."""
+        explicit_user_data_dir = (config.get('user_data_dir', '') or self.config.get('EDGE_USER_DATA_DIR', '')).strip()
+        if explicit_user_data_dir:
+            return explicit_user_data_dir
+
+        profile_mode = self.config.get("EDGE_PROFILE_MODE", "default")
+        fallback_to_default = bool(self.config.get("EDGE_PROFILE_FALLBACK_TO_DEFAULT", False))
+        if profile_mode == "dedicated" and not fallback_to_default:
+            explicit_automation_dir = (self.config.get("EDGE_AUTOMATION_USER_DATA_DIR", "") or "").strip()
+            if explicit_automation_dir:
+                return explicit_automation_dir
+            return self._get_default_automation_user_data_dir()
+
+        return self._get_default_browser_user_data_dir()
+
+    def _resolve_edge_runtime_profile_directory(self, config: Dict[str, Any]) -> str:
+        """Определяет profile-directory Edge для текущего runtime режима."""
+        explicit_profile_directory = (config.get("profile_directory", "") or "").strip()
+        if explicit_profile_directory:
+            return explicit_profile_directory
+
+        profile_mode = self.config.get("EDGE_PROFILE_MODE", "default")
+        fallback_to_default = bool(self.config.get("EDGE_PROFILE_FALLBACK_TO_DEFAULT", False))
+        if profile_mode == "dedicated" and not fallback_to_default:
+            return self.config.get("EDGE_AUTOMATION_PROFILE_DIRECTORY", "ParserProfile")
+        return "Default"
+
+    def _ensure_edge_runtime_profile_initialized(self, user_data_dir: str, profile_directory: str) -> None:
+        """Гарантирует существование runtime user-data-dir и profile directory."""
+        try:
+            os.makedirs(user_data_dir, exist_ok=True)
+            os.makedirs(os.path.join(user_data_dir, profile_directory), exist_ok=True)
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(
+                    f"Не удалось подготовить runtime profile директории: "
+                    f"user_data_dir={user_data_dir}, profile={profile_directory}, error={e}"
+                )
 
     def _resolve_existing_edge_user_data_dir(self) -> Optional[str]:
         """Ищет существующую директорию профиля Edge через переменные окружения Windows."""

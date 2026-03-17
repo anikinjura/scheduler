@@ -39,15 +39,21 @@ __version__ = '0.0.1'
 BASE_CONFIG = {
     # === ПАРАМЕТРЫ БРАУЗЕРА ===
     "EDGE_USER_DATA_DIR": "",  # Путь к пользовательским данным Edge (если пусто, используется шаблон)
+    "EDGE_PROFILE_MODE": "default",  # current operational workaround: parser reuses live Default profile after forced Edge shutdown
+    "EDGE_AUTOMATION_USER_DATA_DIR": "",  # Явный путь к automation user-data-dir Edge (если пусто, вычисляется автоматически)
+    "EDGE_AUTOMATION_PROFILE_DIRECTORY": "ParserProfile",  # Имя automation profile внутри dedicated user-data-dir
+    "EDGE_PROFILE_FALLBACK_TO_DEFAULT": True,  # Controlled rollback: keep legacy Default profile path active for current production workaround
     "HEADLESS": True,  # Режим headless для браузера (включён 05.03.2026 для тестирования)
     "BROWSER_EXECUTABLE": "msedge.exe",  # Имя исполняемого файла браузера
     "BROWSER_DRIVER_EXECUTABLES": ["msedgedriver.exe"],  # Процессы драйвера, которые безопасно завершать перед стартом parser-а
-    "FORCE_TERMINATE_BROWSER_PROCESSES": False,  # Не убивать пользовательский Edge по умолчанию; это ломает reused profile/session
+    "FORCE_TERMINATE_BROWSER_PROCESSES": True,  # Operational workaround: освобождаем live Default profile перед parser startup
+    "BROWSER_STARTUP_URL": "https://turbo-pvz.ozon.ru/orders",  # Безопасный URL для forced recovery, если Edge стартовал на internal page
     "BROWSER_USER_DATA_PATH_TEMPLATE": "C:/Users/{username}/AppData/Local/Microsoft/Edge/User Data",  # Шаблон пути к данным браузера
 
     # === ПАРАМЕТРЫ КОНФИГУРАЦИИ БРАУЗЕРА ===
     "browser_config": {
         "user_data_dir": "",  # Путь к пользовательским данным (если пусто, используется EDGE_USER_DATA_DIR)
+        "profile_directory": "",  # Имя Edge profile directory (если пусто, вычисляется по EDGE_PROFILE_MODE)
         "headless": True,  # True - браузер Edge запускается в фоне (тестирование 05.03.2026)
         "window_size": [1920, 1080],  # Размер окна браузера [ширина, высота]
         "timeout": 5,  # Таймаут ожидания элементов (переопределяет DEFAULT_TIMEOUT)
