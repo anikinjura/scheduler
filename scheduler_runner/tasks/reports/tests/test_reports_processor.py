@@ -615,6 +615,45 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("candidate rows: 2", message)
         self.assertIn("claimed rows: 1", message)
 
+    def test_build_owner_run_summary_treats_numeric_failed_dates_as_empty_list(self):
+        summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"success": True, "missing_dates": ["2026-03-01"]},
+            batch_result={
+                "success": True,
+                "successful_dates": ["2026-03-01"],
+                "failed_dates": 0,
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+
+        self.assertEqual(summary.failed_dates, [])
+
+    def test_format_reports_run_notification_message_handles_empty_numeric_failed_dates_regression(self):
+        owner_summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"success": True, "missing_dates": ["2026-03-01"]},
+            batch_result={
+                "success": True,
+                "successful_dates": ["2026-03-01"],
+                "failed_dates": 0,
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        run_summary = reports_processor.build_reports_run_summary(
+            mode="backfill_single_pvz",
+            configured_pvz_id="PVZ1",
+            date_from="2026-03-01",
+            date_to="2026-03-01",
+            owner=owner_summary,
+            failover=reports_processor.build_failover_run_summary(enabled=False),
+        )
+
+        message = reports_processor.format_reports_run_notification_message(run_summary)
+
+        self.assertIn("KPI reports run", message)
+        self.assertIn("неуспешные даты: -", message)
+
     def test_detect_missing_report_dates_by_pvz_groups_results(self):
         with patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates") as mock_detect:
             mock_detect.side_effect = [

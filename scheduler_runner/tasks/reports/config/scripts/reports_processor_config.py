@@ -46,6 +46,6 @@ SCHEDULE = [
         "schedule": "daily",
         "time": "21:10",
         "user": "operator",
-        "timeout": 900,
+        "timeout": 1200,
     },
 ]

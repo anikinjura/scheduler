@@ -222,9 +222,15 @@ def build_filtered_batch_result(batch_result=None, execution_dates=None):
 def _as_date_list(value):
     if isinstance(value, list):
         return value
+    if isinstance(value, tuple):
+        return list(value)
     if value is None:
         return []
-    return [value]
+    if isinstance(value, int):
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    return [str(value)]
 
 
 def _count_batch_successful_dates(batch_result=None):
@@ -341,7 +347,7 @@ def build_reports_run_summary(
 
 def _format_failed_dates(failed_dates):
     failed_dates = failed_dates or []
-    return ", ".join(failed_dates[:5]) if failed_dates else "-"
+    return ", ".join(str(item) for item in failed_dates[:5]) if failed_dates else "-"
 
 
 def format_reports_run_notification_message(summary):
