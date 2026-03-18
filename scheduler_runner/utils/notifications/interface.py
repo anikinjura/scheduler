@@ -124,19 +124,12 @@ def test_connection(connection_params: Dict[str, str], logger=None) -> Dict[str,
         **connection_params,  # Параметры подключения (токен, чат ID и т.д.)
     }
     
-    # Создаем экземпляр уведомителя
     notifier = TelegramNotifier(config=config, logger=logger)
-    
-    # Проверяем подключение
-    connection_result = notifier.connect()
-    
-    # Отключаемся от системы уведомлений
+    connection_params_valid = notifier._validate_connection_params()
+    connection_result = connection_params_valid and notifier._establish_connection()
     notifier.disconnect()
-    
+
     return {
         "success": connection_result,
-        "connection_params_valid": all(
-            param in connection_params 
-            for param in config.get("REQUIRED_CONNECTION_PARAMS", [])
-        )
+        "connection_params_valid": connection_params_valid,
     }

@@ -51,7 +51,6 @@ from scheduler_runner.utils.parser import (
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
 from scheduler_runner.utils.notifications import (
     send_notification,
-    test_connection as test_notification_connection,
 )
 from scheduler_runner.utils.system import SystemUtils
 from scheduler_runner.utils.uploader import (
@@ -1268,10 +1267,6 @@ def send_notification_microservice(notification_message, logger=None):
             "TELEGRAM_CHAT_ID": chat_id,
         }
 
-        connection_result = test_notification_connection(connection_params, logger=logger)
-        logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
-        if not connection_result.get("success", False):
-            return {"success": False, "error": "Не удалось подключиться к Telegram"}
 
         notification_result = send_notification(
             message=notification_message,
@@ -1513,3 +1508,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
