@@ -16,7 +16,7 @@ BACKFILL_CONFIG = {
     "strict_headers": True,
     "max_scan_rows": 5000,
     "max_expected_keys": 1000,
-    "enable_failover_coordination": False,
+    "enable_failover_coordination": True,
     "failover_claim_ttl_minutes": 15,
     "failover_max_claims_per_run": 3,
     "failover_claim_backend": "apps_script",
