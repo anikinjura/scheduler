@@ -293,15 +293,80 @@ def build_failover_run_summary(*, enabled=False, failover_result=None):
     )
 
 
+def _owner_has_work(owner):
+    return bool(owner and owner.missing_dates_count > 0)
+
+
+def _is_owner_skipped_no_missing(owner):
+    return bool(
+        owner
+        and owner.coverage_success is True
+        and owner.missing_dates_count == 0
+        and not owner.successful_dates
+        and not owner.failed_dates
+        and owner.uploaded_records == 0
+        and not owner.errors
+    )
+
+
+def _owner_had_meaningful_success(owner):
+    return bool(
+        owner
+        and _owner_has_work(owner)
+        and owner.upload_success
+        and len(owner.successful_dates) > 0
+        and not owner.failed_dates
+    )
+
+
+def _owner_had_meaningful_failure(owner):
+    return bool(
+        owner
+        and _owner_has_work(owner)
+        and (bool(owner.failed_dates) or owner.upload_success is False)
+    )
+
+
+def _failover_had_meaningful_success(failover):
+    return bool(
+        failover
+        and failover.enabled
+        and (
+            failover.recovered_dates_count > 0
+            or failover.recovered_pvz_count > 0
+            or failover.uploaded_records > 0
+        )
+    )
+
+
+def _failover_had_meaningful_failure(failover):
+    return bool(
+        failover
+        and failover.enabled
+        and failover.failed_recovery_dates_count > 0
+    )
+
+
+def _failover_had_any_work(failover):
+    return bool(
+        failover
+        and failover.enabled
+        and (
+            failover.candidate_rows_count > 0
+            or failover.claimed_rows_count > 0
+            or _failover_had_meaningful_success(failover)
+            or _failover_had_meaningful_failure(failover)
+        )
+    )
+
+
 def resolve_final_run_status(*, owner=None, multi_pvz=None, failover=None):
     if owner:
-        if owner.missing_dates_count == 0 and not failover:
-            return "skipped"
         if owner.coverage_success is False:
             return "failed"
-        if owner.missing_dates_count > 0 and not owner.successful_dates and owner.failed_dates:
+        if _owner_has_work(owner) and not owner.successful_dates and owner.failed_dates:
             return "failed"
-        if owner.failed_dates or not owner.upload_success:
+        if _owner_had_meaningful_failure(owner):
             return "partial"
 
     if multi_pvz:
@@ -312,11 +377,14 @@ def resolve_final_run_status(*, owner=None, multi_pvz=None, failover=None):
         if multi_pvz.failed_jobs_count > 0:
             return "partial"
 
-    if failover and failover.attempted:
-        if failover.failed_recovery_dates_count > 0:
-            return "partial"
+    if _failover_had_meaningful_failure(failover):
+        return "partial"
 
-    if owner or multi_pvz or (failover and failover.attempted):
+    if _owner_had_meaningful_success(owner):
+        return "success"
+    if multi_pvz and multi_pvz.processed_pvz_count > 0:
+        return "success"
+    if _failover_had_meaningful_success(failover):
         return "success"
     return "skipped"
 
@@ -358,17 +426,23 @@ def format_reports_run_notification_message(summary):
     ]
 
     if summary.owner:
-        lines.extend(
-            [
-                "",
-                "Свои данные:",
-                f"- ПВЗ: {summary.owner.pvz_id}",
-                f"- missing dates: {summary.owner.missing_dates_count}",
-                f"- успешно спарсено: {len(summary.owner.successful_dates)}",
-                f"- неуспешные даты: {_format_failed_dates(summary.owner.failed_dates)}",
-                f"- загружено записей: {summary.owner.uploaded_records}",
-            ]
-        )
+        owner_lines = [
+            "",
+            "Свои данные:",
+            f"- ПВЗ: {summary.owner.pvz_id}",
+        ]
+        if _is_owner_skipped_no_missing(summary.owner):
+            owner_lines.append("- missing dates не было")
+        else:
+            owner_lines.extend(
+                [
+                    f"- missing dates: {summary.owner.missing_dates_count}",
+                    f"- успешно спарсено: {len(summary.owner.successful_dates)}",
+                    f"- неуспешные даты: {_format_failed_dates(summary.owner.failed_dates)}",
+                    f"- загружено записей: {summary.owner.uploaded_records}",
+                ]
+            )
+        lines.extend(owner_lines)
 
     if summary.multi_pvz:
         lines.extend(
@@ -394,21 +468,34 @@ def format_reports_run_notification_message(summary):
             lines.extend(["- детали:"] + details[:5])
 
     if summary.failover and summary.failover.enabled:
-        lines.extend(
-            [
-                "",
-                "Помощь коллегам:",
-                f"- attempted: {'yes' if summary.failover.attempted else 'no'}",
-                f"- discovery: {summary.failover.discovery_success if summary.failover.discovery_success is not None else '-'}",
-                f"- доступные ПВЗ: {', '.join(summary.failover.available_pvz) if summary.failover.available_pvz else '-'}",
-                f"- candidate rows: {summary.failover.candidate_rows_count}",
-                f"- claimed rows: {summary.failover.claimed_rows_count}",
-                f"- восстановлено ПВЗ: {summary.failover.recovered_pvz_count}",
-                f"- восстановлено дат: {summary.failover.recovered_dates_count}",
-                f"- неуспешных recovery дат: {summary.failover.failed_recovery_dates_count}",
-                f"- загружено записей: {summary.failover.uploaded_records}",
-            ]
-        )
+        failover_lines = [
+            "",
+            "Помощь коллегам:",
+            f"- attempted: {'yes' if summary.failover.attempted else 'no'}",
+            f"- discovery: {summary.failover.discovery_success if summary.failover.discovery_success is not None else '-'}",
+            f"- доступные ПВЗ: {', '.join(summary.failover.available_pvz) if summary.failover.available_pvz else '-'}",
+        ]
+        if not _failover_had_any_work(summary.failover):
+            failover_lines.extend(
+                [
+                    "- coordination включен, recovery работа не потребовалась",
+                    f"- candidate rows: {summary.failover.candidate_rows_count}",
+                    f"- claimed rows: {summary.failover.claimed_rows_count}",
+                    f"- восстановлено дат: {summary.failover.recovered_dates_count}",
+                ]
+            )
+        else:
+            failover_lines.extend(
+                [
+                    f"- candidate rows: {summary.failover.candidate_rows_count}",
+                    f"- claimed rows: {summary.failover.claimed_rows_count}",
+                    f"- восстановлено ПВЗ: {summary.failover.recovered_pvz_count}",
+                    f"- восстановлено дат: {summary.failover.recovered_dates_count}",
+                    f"- неуспешных recovery дат: {summary.failover.failed_recovery_dates_count}",
+                    f"- загружено записей: {summary.failover.uploaded_records}",
+                ]
+            )
+        lines.extend(failover_lines)
         failover_details = []
         for target_pvz, target_result in summary.failover.results_by_pvz.items():
             failover_details.append(
@@ -768,6 +855,25 @@ def prepare_connection_params():
 def normalize_pvz_id(pvz_id):
     transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
     return transliterated.strip().lower()
+
+
+def should_run_automatic_failover_coordination(
+    *,
+    enabled,
+    raw_pvz_ids=None,
+    resolved_pvz_ids=None,
+    current_pvz_id=None,
+    configured_pvz_id=PVZ_ID,
+):
+    if not enabled:
+        return False
+    if raw_pvz_ids:
+        return False
+    if resolved_pvz_ids is not None and len(resolved_pvz_ids) > 1:
+        return False
+    if current_pvz_id is not None and normalize_pvz_id(current_pvz_id) != normalize_pvz_id(configured_pvz_id):
+        return False
+    return True
 
 
 def resolve_pvz_ids(raw_pvz_ids=None):
@@ -1364,9 +1470,15 @@ def main():
                 parser_logger=parser_logger,
             )
             resolved_pvz_ids = access_scope.get("accessible_pvz_ids", [])
+            should_run_failover_coordination = should_run_automatic_failover_coordination(
+                enabled=args.enable_failover_coordination,
+                raw_pvz_ids=args.pvz,
+                resolved_pvz_ids=resolved_pvz_ids,
+                configured_pvz_id=PVZ_ID,
+            )
             if not resolved_pvz_ids:
                 processor_logger.info("Backfill остановлен: среди запрошенных PVZ нет доступных для текущей учетной записи")
-                if args.enable_failover_coordination and not args.pvz:
+                if should_run_failover_coordination:
                     run_failover_coordination_pass(
                         configured_pvz_id=PVZ_ID,
                         parser_api=args.parser_api,
@@ -1452,13 +1564,35 @@ def main():
                 raise Exception(coverage_result.get("error", "coverage_check_failed"))
 
             missing_dates = coverage_result.get("missing_dates", [])
-            if not missing_dates:
+            should_run_failover_coordination_for_owner = should_run_automatic_failover_coordination(
+                enabled=args.enable_failover_coordination,
+                raw_pvz_ids=args.pvz,
+                resolved_pvz_ids=resolved_pvz_ids,
+                current_pvz_id=pvz_id,
+                configured_pvz_id=PVZ_ID,
+            )
+
+            batch_result = {}
+            upload_result = {}
+            if missing_dates:
+                jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
+                batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
+                upload_result = run_upload_batch_microservice(batch_result)
+
+                if should_run_failover_coordination_for_owner:
+                    sync_owner_failover_state_from_batch_result(
+                        owner_pvz=pvz_id,
+                        missing_dates=missing_dates,
+                        batch_result=batch_result,
+                        logger=create_failover_state_logger(),
+                        source_run_id=source_run_id,
+                    )
+            elif not should_run_failover_coordination_for_owner:
                 processor_logger.info("Backfill не требуется: отсутствующих дат не найдено")
                 return
+            else:
+                processor_logger.info("Своих missing dates нет, переходим сразу к failover coordination pass")
 
-            jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
-            batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
-            upload_result = run_upload_batch_microservice(batch_result)
             owner_summary = build_owner_run_summary(
                 pvz_id=pvz_id,
                 coverage_result=coverage_result,
@@ -1466,17 +1600,8 @@ def main():
                 upload_result=upload_result,
             )
 
-            if args.enable_failover_coordination and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID):
-                sync_owner_failover_state_from_batch_result(
-                    owner_pvz=pvz_id,
-                    missing_dates=missing_dates,
-                    batch_result=batch_result,
-                    logger=create_failover_state_logger(),
-                    source_run_id=source_run_id,
-                )
-
             failover_result = {}
-            if args.enable_failover_coordination and not args.pvz and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID):
+            if should_run_failover_coordination_for_owner:
                 failover_result = run_failover_coordination_pass(
                     configured_pvz_id=PVZ_ID,
                     parser_api=args.parser_api,
@@ -1492,7 +1617,7 @@ def main():
                 date_to=date_to,
                 owner=owner_summary,
                 failover=build_failover_run_summary(
-                    enabled=args.enable_failover_coordination and not args.pvz and normalize_pvz_id(pvz_id) == normalize_pvz_id(PVZ_ID),
+                    enabled=should_run_failover_coordination_for_owner,
                     failover_result=failover_result,
                 ),
             )
