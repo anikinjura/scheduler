@@ -607,6 +607,11 @@ class TestReportsProcessor(unittest.TestCase):
         summary = reports_processor.build_failover_run_summary(
             enabled=True,
             failover_result={
+                "candidate_scan": {
+                    "attempted": True,
+                    "success": True,
+                    "error": "",
+                },
                 "candidate_rows_count": 3,
                 "claimed_rows_count": 2,
                 "recovered_pvz_count": 1,
@@ -620,6 +625,9 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertFalse(summary.owner_state_sync_attempted)
         self.assertIsNone(summary.owner_state_sync_success)
         self.assertEqual(summary.owner_state_sync_error, "")
+        self.assertTrue(summary.candidate_scan_attempted)
+        self.assertTrue(summary.candidate_scan_success)
+        self.assertEqual(summary.candidate_scan_error, "")
         self.assertEqual(summary.candidate_rows_count, 3)
         self.assertEqual(summary.claimed_rows_count, 2)
         self.assertEqual(summary.recovered_pvz_count, 1)
@@ -643,6 +651,26 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertTrue(summary.owner_state_sync_attempted)
         self.assertFalse(summary.owner_state_sync_success)
         self.assertEqual(summary.owner_state_sync_error, "429 read quota exceeded")
+        self.assertFalse(summary.candidate_scan_attempted)
+        self.assertIsNone(summary.candidate_scan_success)
+        self.assertEqual(summary.candidate_scan_error, "")
+
+    def test_build_failover_run_summary_collects_candidate_scan_metrics(self):
+        summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "candidate_scan": {
+                    "attempted": True,
+                    "success": False,
+                    "error": "Не удалось подключиться к KPI_FAILOVER_STATE",
+                }
+            },
+        )
+
+        self.assertTrue(summary.enabled)
+        self.assertTrue(summary.candidate_scan_attempted)
+        self.assertFalse(summary.candidate_scan_success)
+        self.assertEqual(summary.candidate_scan_error, "Не удалось подключиться к KPI_FAILOVER_STATE")
 
     def test_format_reports_run_notification_message_builds_single_final_message(self):
         owner_summary = reports_processor.OwnerRunSummary(
@@ -667,6 +695,9 @@ class TestReportsProcessor(unittest.TestCase):
             owner_state_sync_attempted=True,
             owner_state_sync_success=True,
             owner_state_sync_error="",
+            candidate_scan_attempted=True,
+            candidate_scan_success=True,
+            candidate_scan_error="",
             available_pvz=["PVZ2"],
             candidate_rows_count=2,
             claimed_rows_count=1,
@@ -868,6 +899,44 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("owner state sync: failed", message)
         self.assertIn("owner state sync error: 429 read quota exceeded", message)
 
+    def test_build_reports_run_summary_marks_owner_success_and_candidate_scan_failure_as_partial(self):
+        owner_summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"success": True, "missing_dates": ["2026-03-20"]},
+            batch_result={
+                "success": True,
+                "successful_dates": 1,
+                "failed_dates": 0,
+                "results_by_date": {
+                    "2026-03-20": {"success": True, "data": {}},
+                },
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        failover_summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "attempted": True,
+                "candidate_scan": {
+                    "attempted": True,
+                    "success": False,
+                    "error": "Не удалось подключиться к KPI_FAILOVER_STATE",
+                },
+            },
+        )
+
+        run_summary = reports_processor.build_reports_run_summary(
+            mode="backfill_single_pvz",
+            configured_pvz_id="PVZ1",
+            owner=owner_summary,
+            failover=failover_summary,
+        )
+        message = reports_processor.format_reports_run_notification_message(run_summary)
+
+        self.assertEqual(run_summary.final_status, "partial")
+        self.assertIn("candidate scan: failed", message)
+        self.assertIn("candidate scan error: Не удалось подключиться к KPI_FAILOVER_STATE", message)
+
     def test_resolve_final_run_status_marks_owner_partial_and_failover_success_as_partial(self):
         owner_summary = reports_processor.OwnerRunSummary(
             pvz_id="PVZ1",
@@ -894,6 +963,38 @@ class TestReportsProcessor(unittest.TestCase):
                 "recovered_dates_count": 2,
                 "failed_recovery_dates_count": 0,
                 "uploaded_records": 2,
+            },
+        )
+
+        status = reports_processor.resolve_final_run_status(owner=owner_summary, failover=failover_summary)
+
+        self.assertEqual(status, "partial")
+
+    def test_resolve_final_run_status_marks_owner_success_and_candidate_scan_failure_as_partial(self):
+        owner_summary = reports_processor.OwnerRunSummary(
+            pvz_id="PVZ1",
+            coverage_success=True,
+            missing_dates=["2026-03-20"],
+            missing_dates_count=1,
+            truncated=False,
+            parse_success=True,
+            successful_dates=[],
+            successful_dates_count=1,
+            failed_dates=[],
+            failed_dates_count=0,
+            uploaded_records=1,
+            upload_success=True,
+            errors=[],
+        )
+        failover_summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "attempted": True,
+                "candidate_scan": {
+                    "attempted": True,
+                    "success": False,
+                    "error": "Не удалось подключиться к KPI_FAILOVER_STATE",
+                },
             },
         )
 
@@ -1353,6 +1454,45 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("успешно спарсено: 1", notification_message)
         self.assertIn("owner state sync: failed", notification_message)
         self.assertIn("owner state sync error: 429 read quota exceeded", notification_message)
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.claim_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.collect_claimable_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.discover_available_pvz_scope")
+    def test_run_failover_coordination_pass_keeps_candidate_scan_failure_non_fatal(
+        self,
+        mock_discover_available_pvz_scope,
+        mock_collect_claimable_failover_rows,
+        mock_claim_failover_rows,
+    ):
+        mock_discover_available_pvz_scope.return_value = {
+            "discovery_result": {"success": True},
+            "available_pvz": ["PVZ1"],
+        }
+        mock_collect_claimable_failover_rows.side_effect = RuntimeError(
+            "Не удалось подключиться к KPI_FAILOVER_STATE"
+        )
+
+        result = reports_processor.run_failover_coordination_pass(
+            configured_pvz_id="PVZ1",
+            parser_api="legacy",
+            parser_logger=Mock(),
+            processor_logger=Mock(),
+            source_run_id="run-1",
+        )
+
+        self.assertTrue(result["attempted"])
+        self.assertEqual(result["available_pvz"], ["PVZ1"])
+        self.assertEqual(result["candidate_rows"], [])
+        self.assertEqual(result["candidate_rows_count"], 0)
+        self.assertEqual(result["claimed_rows"], [])
+        self.assertEqual(result["claimed_rows_count"], 0)
+        self.assertTrue(result["candidate_scan"]["attempted"])
+        self.assertFalse(result["candidate_scan"]["success"])
+        self.assertEqual(
+            result["candidate_scan"]["error"],
+            "Не удалось подключиться к KPI_FAILOVER_STATE",
+        )
+        mock_claim_failover_rows.assert_not_called()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
     @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")

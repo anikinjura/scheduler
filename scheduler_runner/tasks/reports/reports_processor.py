@@ -128,6 +128,9 @@ class FailoverRunSummary:
     owner_state_sync_attempted: bool
     owner_state_sync_success: bool | None
     owner_state_sync_error: str
+    candidate_scan_attempted: bool
+    candidate_scan_success: bool | None
+    candidate_scan_error: str
     available_pvz: list
     candidate_rows_count: int
     claimed_rows_count: int
@@ -295,6 +298,7 @@ def build_failover_run_summary(*, enabled=False, failover_result=None):
     failover_result = failover_result or {}
     discovery_result = failover_result.get("discovery_result")
     owner_state_sync = failover_result.get("owner_state_sync") or {}
+    candidate_scan = failover_result.get("candidate_scan") or {}
     return FailoverRunSummary(
         enabled=bool(enabled),
         attempted=bool(failover_result.get("attempted", False)),
@@ -306,6 +310,9 @@ def build_failover_run_summary(*, enabled=False, failover_result=None):
         owner_state_sync_attempted=bool(owner_state_sync.get("attempted", False)),
         owner_state_sync_success=owner_state_sync.get("success"),
         owner_state_sync_error=str(owner_state_sync.get("error", "") or ""),
+        candidate_scan_attempted=bool(candidate_scan.get("attempted", False)),
+        candidate_scan_success=candidate_scan.get("success"),
+        candidate_scan_error=str(candidate_scan.get("error", "") or ""),
         available_pvz=deepcopy(failover_result.get("available_pvz", [])),
         candidate_rows_count=int(failover_result.get("candidate_rows_count", 0) or 0),
         claimed_rows_count=int(failover_result.get("claimed_rows_count", 0) or 0),
@@ -380,12 +387,22 @@ def _failover_sync_had_failure(failover):
     )
 
 
+def _failover_candidate_scan_had_failure(failover):
+    return bool(
+        failover
+        and failover.enabled
+        and failover.candidate_scan_attempted
+        and failover.candidate_scan_success is False
+    )
+
+
 def _failover_had_any_work(failover):
     return bool(
         failover
         and failover.enabled
         and (
             _failover_sync_had_failure(failover)
+            or _failover_candidate_scan_had_failure(failover)
             or failover.owner_state_sync_attempted
             or failover.candidate_rows_count > 0
             or failover.claimed_rows_count > 0
@@ -415,6 +432,8 @@ def resolve_final_run_status(*, owner=None, multi_pvz=None, failover=None):
     if _failover_had_meaningful_failure(failover):
         return "partial"
     if _failover_sync_had_failure(failover):
+        return "partial"
+    if _failover_candidate_scan_had_failure(failover):
         return "partial"
 
     if _owner_had_meaningful_success(owner):
@@ -452,6 +471,16 @@ def build_reports_run_summary(
 def _format_failed_dates(failed_dates):
     failed_dates = failed_dates or []
     return ", ".join(str(item) for item in failed_dates[:5]) if failed_dates else "-"
+
+
+def is_failover_candidate_scan_retryable_error(exc):
+    message = str(exc or "").lower()
+    return (
+        "kpi_failover_state" in message
+        or "quota" in message
+        or "429" in message
+        or "read requests per minute per user" in message
+    )
 
 
 def format_reports_run_notification_message(summary):
@@ -519,6 +548,14 @@ def format_reports_run_notification_message(summary):
             if summary.failover.owner_state_sync_error:
                 failover_lines.append(
                     f"- owner state sync error: {summary.failover.owner_state_sync_error}"
+                )
+        if summary.failover.candidate_scan_attempted:
+            failover_lines.append(
+                f"- candidate scan: {'ok' if summary.failover.candidate_scan_success else 'failed'}"
+            )
+            if summary.failover.candidate_scan_error:
+                failover_lines.append(
+                    f"- candidate scan error: {summary.failover.candidate_scan_error}"
                 )
         if not _failover_had_any_work(summary.failover):
             failover_lines.extend(
@@ -821,18 +858,17 @@ def run_failover_coordination_pass(
         logger=processor_logger,
         parser_logger=parser_logger,
     )
-    candidate_rows = collect_claimable_failover_rows(
-        accessible_pvz_ids=discovery_scope.get("available_pvz", []),
-        configured_pvz_id=configured_pvz_id,
-        max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
-        logger=failover_logger,
-    )
     result = {
         "attempted": True,
         "discovery_result": discovery_scope.get("discovery_result", {}),
         "available_pvz": discovery_scope.get("available_pvz", []),
-        "candidate_rows": candidate_rows,
-        "candidate_rows_count": len(candidate_rows),
+        "candidate_scan": {
+            "attempted": True,
+            "success": None,
+            "error": "",
+        },
+        "candidate_rows": [],
+        "candidate_rows_count": 0,
         "claimed_rows": [],
         "claimed_rows_count": 0,
         "results_by_pvz": {},
@@ -841,8 +877,27 @@ def run_failover_coordination_pass(
         "failed_recovery_dates_count": 0,
         "uploaded_records": 0,
     }
+    try:
+        candidate_rows = collect_claimable_failover_rows(
+            accessible_pvz_ids=discovery_scope.get("available_pvz", []),
+            configured_pvz_id=configured_pvz_id,
+            max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
+            logger=failover_logger,
+        )
+        result["candidate_rows"] = candidate_rows
+        result["candidate_rows_count"] = len(candidate_rows)
+        result["candidate_scan"]["success"] = True
+    except Exception as exc:
+        if not is_failover_candidate_scan_retryable_error(exc):
+            raise
+        result["candidate_scan"]["success"] = False
+        result["candidate_scan"]["error"] = str(exc)
+        processor_logger.warning(
+            f"Failover coordination degraded: candidate scan failed, skip claim phase. error={exc}"
+        )
+        return result
     claimed_rows = claim_failover_rows(
-        candidate_rows=candidate_rows,
+        candidate_rows=result["candidate_rows"],
         claimer_pvz=configured_pvz_id,
         ttl_minutes=BACKFILL_CONFIG.get("failover_claim_ttl_minutes", 15),
         source_run_id=source_run_id,
