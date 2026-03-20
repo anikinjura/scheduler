@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Optional
@@ -13,6 +13,7 @@ from scheduler_runner.tasks.reports.config.scripts.kpi_failover_state_google_she
 )
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
+from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import _index_to_column_letter
 from scheduler_runner.utils.uploader.implementations.google_sheets_uploader import GoogleSheetsUploader
 
 
@@ -25,6 +26,18 @@ STATUS_FAILOVER_FAILED = "failover_failed"
 STATUS_CLAIM_EXPIRED = "claim_expired"
 
 TERMINAL_STATUSES = {STATUS_OWNER_SUCCESS, STATUS_FAILOVER_SUCCESS}
+CANDIDATE_SCAN_COLUMN_NAMES = [
+    "Дата",
+    "target_pvz",
+    "owner_pvz",
+    "status",
+    "claimed_by",
+    "claim_expires_at",
+    "attempt_no",
+    "source_run_id",
+    "last_error",
+    "updated_at",
+]
 
 
 def create_failover_state_logger():
@@ -126,10 +139,11 @@ def failover_state_connection(logger=None):
         uploader.disconnect()
 
 
-def upsert_failover_state(record: Dict[str, Any], logger=None) -> Dict[str, Any]:
+def upsert_failover_state(record: Dict[str, Any], logger=None, uploader=None) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
-    with failover_state_connection(logger=logger) as uploader:
-        return uploader._perform_upload(record, strategy="update_or_append")
+    connection_context = nullcontext(uploader) if uploader is not None else failover_state_connection(logger=logger)
+    with connection_context as active_uploader:
+        return active_uploader._perform_upload(record, strategy="update_or_append")
 
 
 def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) -> Dict[str, Any]:
@@ -150,11 +164,12 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
     }
 
 
-def get_failover_state(execution_date: str, target_pvz: str, logger=None) -> Optional[Dict[str, Any]]:
+def get_failover_state(execution_date: str, target_pvz: str, logger=None, uploader=None) -> Optional[Dict[str, Any]]:
     logger = logger or create_failover_state_logger()
-    with failover_state_connection(logger=logger) as uploader:
-        reporter = uploader.sheets_reporter
-        use_config = uploader.table_config
+    connection_context = nullcontext(uploader) if uploader is not None else failover_state_connection(logger=logger)
+    with connection_context as active_uploader:
+        reporter = active_uploader.sheets_reporter
+        use_config = active_uploader.table_config
         return reporter.get_row_by_unique_keys(
             unique_key_values={
                 "Дата": execution_date,
@@ -189,6 +204,79 @@ def list_failover_state_rows(
     return filtered
 
 
+def _flatten_batch_column_values(values):
+    flattened = []
+    for item in values or []:
+        if isinstance(item, list):
+            flattened.append(item[0] if item else "")
+        else:
+            flattened.append(item)
+    return flattened
+
+
+def list_candidate_failover_rows_fast(
+    *,
+    statuses: Optional[Iterable[str]] = None,
+    logger=None,
+    uploader=None,
+) -> list[Dict[str, Any]]:
+    logger = logger or create_failover_state_logger()
+    connection_context = nullcontext(uploader) if uploader is not None else failover_state_connection(logger=logger)
+
+    with connection_context as active_uploader:
+        reporter = active_uploader.sheets_reporter
+        worksheet = reporter.worksheet
+        table_config = active_uploader.table_config
+
+        date_column_index = table_config.get_column_index("Дата") or 2
+        last_data_row = reporter.get_last_row_with_data(column_index=date_column_index)
+        if last_data_row < 2:
+            return []
+
+        ranges = []
+        column_names = []
+        for column_name in CANDIDATE_SCAN_COLUMN_NAMES:
+            column_letter = table_config.get_column_letter(column_name)
+            if not column_letter:
+                column_index = table_config.get_column_index(column_name)
+                if not column_index:
+                    continue
+                column_letter = _index_to_column_letter(column_index)
+            ranges.append(f"{column_letter}2:{column_letter}{last_data_row}")
+            column_names.append(column_name)
+
+        if not ranges:
+            return []
+
+        batch_values = worksheet.batch_get(ranges)
+
+    column_values = {
+        column_name: _flatten_batch_column_values(values)
+        for column_name, values in zip(column_names, batch_values)
+    }
+    max_len = max((len(values) for values in column_values.values()), default=0)
+    allowed_statuses = set(statuses or [])
+    records = []
+
+    for index in range(max_len):
+        record = {}
+        has_meaningful_data = False
+        for column_name in column_names:
+            values = column_values.get(column_name, [])
+            value = values[index] if index < len(values) else ""
+            if value not in ("", None):
+                has_meaningful_data = True
+            record[column_name] = value
+
+        if not has_meaningful_data:
+            continue
+        if allowed_statuses and record.get("status") not in allowed_statuses:
+            continue
+        records.append(record)
+
+    return records
+
+
 def is_claim_active(state_row: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> bool:
     if not state_row:
         return False
@@ -207,12 +295,14 @@ def verify_claim_ownership(
     claimer_pvz: str,
     source_run_id: str = "",
     logger=None,
+    uploader=None,
 ) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
     persisted_state = get_failover_state(
         execution_date=execution_date,
         target_pvz=target_pvz,
         logger=logger,
+        uploader=uploader,
     )
     ownership_confirmed = bool(
         persisted_state
@@ -292,10 +382,16 @@ def try_claim_failover_via_sheets(
     ttl_minutes: int = 15,
     source_run_id: str = "",
     logger=None,
+    uploader=None,
 ) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
     now = _now()
-    current_state = get_failover_state(execution_date=execution_date, target_pvz=target_pvz, logger=logger)
+    current_state = get_failover_state(
+        execution_date=execution_date,
+        target_pvz=target_pvz,
+        logger=logger,
+        uploader=uploader,
+    )
 
     if current_state and current_state.get("status") in TERMINAL_STATUSES:
         return {
@@ -327,7 +423,7 @@ def try_claim_failover_via_sheets(
         last_error=current_state.get("last_error", "") if current_state else "",
         updated_at=now,
     )
-    upload_result = upsert_failover_state(claimed_record, logger=logger)
+    upload_result = upsert_failover_state(claimed_record, logger=logger, uploader=uploader)
     if not upload_result.get("success", False):
         return {
             "success": False,
@@ -343,6 +439,7 @@ def try_claim_failover_via_sheets(
         claimer_pvz=claimer_pvz,
         source_run_id=source_run_id,
         logger=logger,
+        uploader=uploader,
     )
     return {
         "success": bool(verification_result.get("success", False)),
@@ -363,6 +460,7 @@ def try_claim_failover(
     ttl_minutes: int = 15,
     source_run_id: str = "",
     logger=None,
+    uploader=None,
 ) -> Dict[str, Any]:
     claim_backend = get_failover_claim_backend()
     if claim_backend == "apps_script":
@@ -383,6 +481,7 @@ def try_claim_failover(
         ttl_minutes=ttl_minutes,
         source_run_id=source_run_id,
         logger=logger,
+        uploader=uploader,
     )
 
 

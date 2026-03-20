@@ -30,12 +30,17 @@ from scheduler_runner.tasks.reports.failover_state import (
     STATUS_OWNER_SUCCESS,
     build_failover_state_record,
     create_failover_state_logger,
-    list_failover_state_rows,
+    failover_state_connection,
+    list_candidate_failover_rows_fast,
     mark_failover_state,
     try_claim_failover,
     upsert_failover_state_records,
 )
-from scheduler_runner.tasks.reports.failover_policy import filter_claimable_rows_by_policy
+from scheduler_runner.tasks.reports.failover_policy import (
+    filter_claimable_rows_by_policy,
+    get_priority_list,
+    has_explicit_priority_rule,
+)
 from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
 from scheduler_runner.utils.parser import (
@@ -688,11 +693,13 @@ def collect_claimable_failover_rows(
     configured_pvz_id=PVZ_ID,
     max_claims=None,
     logger=None,
+    uploader=None,
 ):
     logger = logger or create_failover_state_logger()
-    rows = list_failover_state_rows(
+    rows = list_candidate_failover_rows_fast(
         statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED],
         logger=logger,
+        uploader=uploader,
     )
     if not FAILOVER_POLICY_CONFIG.get("enabled", True):
         filtered_rows = []
@@ -721,6 +728,29 @@ def collect_claimable_failover_rows(
     )
 
 
+def should_scan_failover_candidates(
+    *,
+    configured_pvz_id=PVZ_ID,
+    accessible_pvz_ids=None,
+):
+    if not FAILOVER_POLICY_CONFIG.get("enabled", True):
+        return {"should_scan": True, "reason": "policy_disabled"}
+
+    if not has_explicit_priority_rule(configured_pvz_id):
+        return {"should_scan": True, "reason": "no_explicit_rule"}
+
+    priority_list = get_priority_list(configured_pvz_id)
+    if not priority_list:
+        return {"should_scan": False, "reason": "empty_priority_list"}
+
+    normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
+    normalized_priority = {normalize_pvz_id(pvz_id) for pvz_id in priority_list}
+    if normalized_accessible & normalized_priority:
+        return {"should_scan": True, "reason": "accessible_priority_candidates"}
+
+    return {"should_scan": False, "reason": "priority_candidates_not_accessible"}
+
+
 def claim_failover_rows(
     *,
     candidate_rows,
@@ -728,6 +758,7 @@ def claim_failover_rows(
     ttl_minutes,
     source_run_id="",
     logger=None,
+    uploader=None,
 ):
     logger = logger or create_failover_state_logger()
     claimed_rows = []
@@ -740,6 +771,7 @@ def claim_failover_rows(
             ttl_minutes=ttl_minutes,
             source_run_id=source_run_id,
             logger=logger,
+            uploader=uploader,
         )
         if claim_result.get("claimed", False):
             claimed_rows.append(row)
@@ -863,7 +895,7 @@ def run_failover_coordination_pass(
         "discovery_result": discovery_scope.get("discovery_result", {}),
         "available_pvz": discovery_scope.get("available_pvz", []),
         "candidate_scan": {
-            "attempted": True,
+            "attempted": False,
             "success": None,
             "error": "",
         },
@@ -877,16 +909,40 @@ def run_failover_coordination_pass(
         "failed_recovery_dates_count": 0,
         "uploaded_records": 0,
     }
-    try:
-        candidate_rows = collect_claimable_failover_rows(
-            accessible_pvz_ids=discovery_scope.get("available_pvz", []),
-            configured_pvz_id=configured_pvz_id,
-            max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
-            logger=failover_logger,
+    scan_decision = should_scan_failover_candidates(
+        configured_pvz_id=configured_pvz_id,
+        accessible_pvz_ids=discovery_scope.get("available_pvz", []),
+    )
+    if not scan_decision.get("should_scan", True):
+        processor_logger.info(
+            f"Failover coordination: candidate scan skipped, reason={scan_decision.get('reason', 'unknown')}"
         )
-        result["candidate_rows"] = candidate_rows
-        result["candidate_rows_count"] = len(candidate_rows)
-        result["candidate_scan"]["success"] = True
+        return result
+
+    result["candidate_scan"]["attempted"] = True
+    try:
+        with failover_state_connection(logger=failover_logger) as failover_uploader:
+            candidate_rows = collect_claimable_failover_rows(
+                accessible_pvz_ids=discovery_scope.get("available_pvz", []),
+                configured_pvz_id=configured_pvz_id,
+                max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
+                logger=failover_logger,
+                uploader=failover_uploader,
+            )
+            result["candidate_rows"] = candidate_rows
+            result["candidate_rows_count"] = len(candidate_rows)
+            result["candidate_scan"]["success"] = True
+
+            claimed_rows = claim_failover_rows(
+                candidate_rows=result["candidate_rows"],
+                claimer_pvz=configured_pvz_id,
+                ttl_minutes=BACKFILL_CONFIG.get("failover_claim_ttl_minutes", 15),
+                source_run_id=source_run_id,
+                logger=failover_logger,
+                uploader=failover_uploader,
+            )
+            result["claimed_rows"] = claimed_rows
+            result["claimed_rows_count"] = len(claimed_rows)
     except Exception as exc:
         if not is_failover_candidate_scan_retryable_error(exc):
             raise
@@ -896,24 +952,15 @@ def run_failover_coordination_pass(
             f"Failover coordination degraded: candidate scan failed, skip claim phase. error={exc}"
         )
         return result
-    claimed_rows = claim_failover_rows(
-        candidate_rows=result["candidate_rows"],
-        claimer_pvz=configured_pvz_id,
-        ttl_minutes=BACKFILL_CONFIG.get("failover_claim_ttl_minutes", 15),
-        source_run_id=source_run_id,
-        logger=failover_logger,
-    )
-    result["claimed_rows"] = claimed_rows
-    result["claimed_rows_count"] = len(claimed_rows)
-    if not claimed_rows:
+    if not result["claimed_rows"]:
         processor_logger.info("Failover coordination: claimable colleague rows not found")
         return result
 
     processor_logger.info(
-        f"Failover coordination: claimed_rows={len(claimed_rows)}, targets={sorted(set(row['target_pvz'] for row in claimed_rows))}"
+        f"Failover coordination: claimed_rows={len(result['claimed_rows'])}, targets={sorted(set(row['target_pvz'] for row in result['claimed_rows']))}"
     )
     execution_result = run_claimed_failover_backfill(
-        claimed_rows=claimed_rows,
+        claimed_rows=result["claimed_rows"],
         parser_api=parser_api,
         parser_logger=parser_logger,
         failover_logger=failover_logger,
