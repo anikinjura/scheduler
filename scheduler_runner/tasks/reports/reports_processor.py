@@ -28,10 +28,12 @@ from scheduler_runner.tasks.reports.failover_state import (
     STATUS_OWNER_FAILED,
     STATUS_OWNER_PENDING,
     STATUS_OWNER_SUCCESS,
+    build_failover_state_record,
     create_failover_state_logger,
     list_failover_state_rows,
     mark_failover_state,
     try_claim_failover,
+    upsert_failover_state_records,
 )
 from scheduler_runner.tasks.reports.failover_policy import filter_claimable_rows_by_policy
 from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
@@ -110,7 +112,9 @@ class OwnerRunSummary:
     truncated: bool
     parse_success: bool
     successful_dates: list
+    successful_dates_count: int
     failed_dates: list
+    failed_dates_count: int
     uploaded_records: int
     upload_success: bool
     errors: list
@@ -121,6 +125,9 @@ class FailoverRunSummary:
     enabled: bool
     attempted: bool
     discovery_success: bool | None
+    owner_state_sync_attempted: bool
+    owner_state_sync_success: bool | None
+    owner_state_sync_error: str
     available_pvz: list
     candidate_rows_count: int
     claimed_rows_count: int
@@ -241,11 +248,22 @@ def _count_batch_successful_dates(batch_result=None):
     return 0
 
 
+def _count_batch_failed_dates(batch_result=None):
+    failed_dates = (batch_result or {}).get("failed_dates", [])
+    if isinstance(failed_dates, list):
+        return len(failed_dates)
+    if isinstance(failed_dates, int):
+        return failed_dates
+    return 0
+
+
 def build_owner_run_summary(*, pvz_id, coverage_result=None, batch_result=None, upload_result=None):
     coverage_result = coverage_result or {}
     batch_result = batch_result or {}
     upload_result = upload_result or {}
     failed_by_date = extract_batch_failures(batch_result)
+    successful_dates_raw = batch_result.get("successful_dates", [])
+    failed_dates_raw = batch_result.get("failed_dates", [])
 
     errors = []
     if not coverage_result.get("success", True):
@@ -263,8 +281,10 @@ def build_owner_run_summary(*, pvz_id, coverage_result=None, batch_result=None, 
         missing_dates_count=len(coverage_result.get("missing_dates", [])),
         truncated=bool(coverage_result.get("truncated", False)),
         parse_success=bool(batch_result.get("success", False)),
-        successful_dates=deepcopy(_as_date_list(batch_result.get("successful_dates", []))),
-        failed_dates=deepcopy(_as_date_list(batch_result.get("failed_dates", []))),
+        successful_dates=deepcopy(_as_date_list(successful_dates_raw)),
+        successful_dates_count=_count_batch_successful_dates(batch_result),
+        failed_dates=deepcopy(_as_date_list(failed_dates_raw)),
+        failed_dates_count=_count_batch_failed_dates(batch_result),
         uploaded_records=int(upload_result.get("uploaded_records", 0) or 0),
         upload_success=bool(upload_result.get("success", False)),
         errors=[error for error in errors if error],
@@ -274,6 +294,7 @@ def build_owner_run_summary(*, pvz_id, coverage_result=None, batch_result=None, 
 def build_failover_run_summary(*, enabled=False, failover_result=None):
     failover_result = failover_result or {}
     discovery_result = failover_result.get("discovery_result")
+    owner_state_sync = failover_result.get("owner_state_sync") or {}
     return FailoverRunSummary(
         enabled=bool(enabled),
         attempted=bool(failover_result.get("attempted", False)),
@@ -282,6 +303,9 @@ def build_failover_run_summary(*, enabled=False, failover_result=None):
             if isinstance(discovery_result, dict)
             else None
         ),
+        owner_state_sync_attempted=bool(owner_state_sync.get("attempted", False)),
+        owner_state_sync_success=owner_state_sync.get("success"),
+        owner_state_sync_error=str(owner_state_sync.get("error", "") or ""),
         available_pvz=deepcopy(failover_result.get("available_pvz", [])),
         candidate_rows_count=int(failover_result.get("candidate_rows_count", 0) or 0),
         claimed_rows_count=int(failover_result.get("claimed_rows_count", 0) or 0),
@@ -302,8 +326,8 @@ def _is_owner_skipped_no_missing(owner):
         owner
         and owner.coverage_success is True
         and owner.missing_dates_count == 0
-        and not owner.successful_dates
-        and not owner.failed_dates
+        and owner.successful_dates_count == 0
+        and owner.failed_dates_count == 0
         and owner.uploaded_records == 0
         and not owner.errors
     )
@@ -314,8 +338,8 @@ def _owner_had_meaningful_success(owner):
         owner
         and _owner_has_work(owner)
         and owner.upload_success
-        and len(owner.successful_dates) > 0
-        and not owner.failed_dates
+        and owner.successful_dates_count > 0
+        and owner.failed_dates_count == 0
     )
 
 
@@ -323,7 +347,7 @@ def _owner_had_meaningful_failure(owner):
     return bool(
         owner
         and _owner_has_work(owner)
-        and (bool(owner.failed_dates) or owner.upload_success is False)
+        and (owner.failed_dates_count > 0 or owner.upload_success is False)
     )
 
 
@@ -347,12 +371,23 @@ def _failover_had_meaningful_failure(failover):
     )
 
 
+def _failover_sync_had_failure(failover):
+    return bool(
+        failover
+        and failover.enabled
+        and failover.owner_state_sync_attempted
+        and failover.owner_state_sync_success is False
+    )
+
+
 def _failover_had_any_work(failover):
     return bool(
         failover
         and failover.enabled
         and (
-            failover.candidate_rows_count > 0
+            _failover_sync_had_failure(failover)
+            or failover.owner_state_sync_attempted
+            or failover.candidate_rows_count > 0
             or failover.claimed_rows_count > 0
             or _failover_had_meaningful_success(failover)
             or _failover_had_meaningful_failure(failover)
@@ -364,7 +399,7 @@ def resolve_final_run_status(*, owner=None, multi_pvz=None, failover=None):
     if owner:
         if owner.coverage_success is False:
             return "failed"
-        if _owner_has_work(owner) and not owner.successful_dates and owner.failed_dates:
+        if _owner_has_work(owner) and owner.successful_dates_count == 0 and owner.failed_dates_count > 0:
             return "failed"
         if _owner_had_meaningful_failure(owner):
             return "partial"
@@ -378,6 +413,8 @@ def resolve_final_run_status(*, owner=None, multi_pvz=None, failover=None):
             return "partial"
 
     if _failover_had_meaningful_failure(failover):
+        return "partial"
+    if _failover_sync_had_failure(failover):
         return "partial"
 
     if _owner_had_meaningful_success(owner):
@@ -437,7 +474,7 @@ def format_reports_run_notification_message(summary):
             owner_lines.extend(
                 [
                     f"- missing dates: {summary.owner.missing_dates_count}",
-                    f"- успешно спарсено: {len(summary.owner.successful_dates)}",
+                    f"- успешно спарсено: {summary.owner.successful_dates_count}",
                     f"- неуспешные даты: {_format_failed_dates(summary.owner.failed_dates)}",
                     f"- загружено записей: {summary.owner.uploaded_records}",
                 ]
@@ -475,6 +512,14 @@ def format_reports_run_notification_message(summary):
             f"- discovery: {summary.failover.discovery_success if summary.failover.discovery_success is not None else '-'}",
             f"- доступные ПВЗ: {', '.join(summary.failover.available_pvz) if summary.failover.available_pvz else '-'}",
         ]
+        if summary.failover.owner_state_sync_attempted:
+            failover_lines.append(
+                f"- owner state sync: {'ok' if summary.failover.owner_state_sync_success else 'failed'}"
+            )
+            if summary.failover.owner_state_sync_error:
+                failover_lines.append(
+                    f"- owner state sync error: {summary.failover.owner_state_sync_error}"
+                )
         if not _failover_had_any_work(summary.failover):
             failover_lines.extend(
                 [
@@ -526,6 +571,51 @@ def mark_dates_with_owner_status(execution_dates, owner_pvz, status, logger=None
     return results
 
 
+def build_owner_final_failover_state_records(
+    *,
+    owner_pvz,
+    missing_dates,
+    batch_result,
+    source_run_id="",
+):
+    failed_by_date = extract_batch_failures(batch_result)
+    successful_dates = []
+    failed_dates = []
+    records = []
+
+    for execution_date in missing_dates or []:
+        if execution_date in failed_by_date:
+            failed_dates.append(execution_date)
+            records.append(
+                build_failover_state_record(
+                    execution_date=execution_date,
+                    target_pvz=owner_pvz,
+                    owner_pvz=owner_pvz,
+                    status=STATUS_OWNER_FAILED,
+                    source_run_id=source_run_id,
+                    last_error=failed_by_date[execution_date],
+                )
+            )
+            continue
+
+        successful_dates.append(execution_date)
+        records.append(
+            build_failover_state_record(
+                execution_date=execution_date,
+                target_pvz=owner_pvz,
+                owner_pvz=owner_pvz,
+                status=STATUS_OWNER_SUCCESS,
+                source_run_id=source_run_id,
+            )
+        )
+
+    return {
+        "records": records,
+        "successful_dates": successful_dates,
+        "failed_dates": failed_dates,
+    }
+
+
 def sync_owner_failover_state_from_batch_result(
     *,
     owner_pvz,
@@ -535,51 +625,23 @@ def sync_owner_failover_state_from_batch_result(
     source_run_id="",
 ):
     logger = logger or create_failover_state_logger()
-    if missing_dates:
-        mark_dates_with_owner_status(
-            execution_dates=missing_dates,
-            owner_pvz=owner_pvz,
-            status=STATUS_OWNER_PENDING,
-            logger=logger,
-            source_run_id=source_run_id,
-        )
-
-    results = []
-    failed_by_date = extract_batch_failures(batch_result)
-    successful_dates = []
-    failed_dates = []
-    for execution_date in missing_dates or []:
-        if execution_date in failed_by_date:
-            failed_dates.append(execution_date)
-            results.append(
-                mark_failover_state(
-                    execution_date=execution_date,
-                    target_pvz=owner_pvz,
-                    owner_pvz=owner_pvz,
-                    status=STATUS_OWNER_FAILED,
-                    source_run_id=source_run_id,
-                    last_error=failed_by_date[execution_date],
-                    logger=logger,
-                )
-            )
-            continue
-
-        successful_dates.append(execution_date)
-        results.append(
-            mark_failover_state(
-                execution_date=execution_date,
-                target_pvz=owner_pvz,
-                owner_pvz=owner_pvz,
-                status=STATUS_OWNER_SUCCESS,
-                source_run_id=source_run_id,
-                logger=logger,
-            )
-        )
+    built_result = build_owner_final_failover_state_records(
+        owner_pvz=owner_pvz,
+        missing_dates=missing_dates,
+        batch_result=batch_result,
+        source_run_id=source_run_id,
+    )
+    upsert_result = upsert_failover_state_records(
+        built_result["records"],
+        logger=logger,
+    )
+    if not upsert_result.get("success", False):
+        raise RuntimeError("Не удалось синхронизировать owner final statuses в KPI_FAILOVER_STATE")
 
     return {
-        "successful_dates": successful_dates,
-        "failed_dates": failed_dates,
-        "results": results,
+        "successful_dates": built_result["successful_dates"],
+        "failed_dates": built_result["failed_dates"],
+        "results": upsert_result.get("results", []),
     }
 
 
@@ -1574,19 +1636,34 @@ def main():
 
             batch_result = {}
             upload_result = {}
+            owner_state_sync_result = {
+                "attempted": False,
+                "success": None,
+                "error": "",
+            }
             if missing_dates:
                 jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
                 batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
                 upload_result = run_upload_batch_microservice(batch_result)
 
                 if should_run_failover_coordination_for_owner:
-                    sync_owner_failover_state_from_batch_result(
-                        owner_pvz=pvz_id,
-                        missing_dates=missing_dates,
-                        batch_result=batch_result,
-                        logger=create_failover_state_logger(),
-                        source_run_id=source_run_id,
-                    )
+                    owner_state_sync_result["attempted"] = True
+                    try:
+                        sync_owner_failover_state_from_batch_result(
+                            owner_pvz=pvz_id,
+                            missing_dates=missing_dates,
+                            batch_result=batch_result,
+                            logger=create_failover_state_logger(),
+                            source_run_id=source_run_id,
+                        )
+                        owner_state_sync_result["success"] = True
+                    except Exception as exc:
+                        owner_state_sync_result["success"] = False
+                        owner_state_sync_result["error"] = str(exc)
+                        create_failover_state_logger().error(
+                            f"Не удалось синхронизировать owner state в KPI_FAILOVER_STATE: {exc}",
+                            exc_info=True,
+                        )
             elif not should_run_failover_coordination_for_owner:
                 processor_logger.info("Backfill не требуется: отсутствующих дат не найдено")
                 return
@@ -1601,7 +1678,12 @@ def main():
             )
 
             failover_result = {}
-            if should_run_failover_coordination_for_owner:
+            failover_result["owner_state_sync"] = owner_state_sync_result
+            can_run_failover_pass = (
+                should_run_failover_coordination_for_owner
+                and owner_state_sync_result.get("success") is not False
+            )
+            if can_run_failover_pass:
                 failover_result = run_failover_coordination_pass(
                     configured_pvz_id=PVZ_ID,
                     parser_api=args.parser_api,
@@ -1609,6 +1691,7 @@ def main():
                     processor_logger=processor_logger,
                     source_run_id=source_run_id,
                 )
+                failover_result["owner_state_sync"] = owner_state_sync_result
 
             reports_run_summary = build_reports_run_summary(
                 mode="backfill_single_pvz",

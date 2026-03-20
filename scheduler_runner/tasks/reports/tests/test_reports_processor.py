@@ -60,9 +60,47 @@ class TestReportsProcessor(unittest.TestCase):
             ("PVZ2", "2026-03-03"),
         ])
 
-    @patch("scheduler_runner.tasks.reports.reports_processor.mark_failover_state")
-    def test_sync_owner_failover_state_from_batch_result_marks_success_and_failures(self, mock_mark_failover_state):
-        reports_processor.sync_owner_failover_state_from_batch_result(
+    def test_build_owner_final_failover_state_records_marks_success_and_failures(self):
+        result = reports_processor.build_owner_final_failover_state_records(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01", "2026-03-02"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                    "2026-03-02": {"success": False, "error": "parse_failed"},
+                }
+            },
+            source_run_id="run-1",
+        )
+
+        statuses = [record["status"] for record in result["records"]]
+        self.assertEqual(
+            statuses,
+            [
+                reports_processor.STATUS_OWNER_SUCCESS,
+                reports_processor.STATUS_OWNER_FAILED,
+            ],
+        )
+        self.assertEqual(result["successful_dates"], ["2026-03-01"])
+        self.assertEqual(result["failed_dates"], ["2026-03-02"])
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
+    @patch("scheduler_runner.tasks.reports.reports_processor.build_failover_state_record")
+    def test_sync_owner_failover_state_from_batch_result_uses_batch_upsert_once(
+        self,
+        mock_build_failover_state_record,
+        mock_upsert_failover_state_records,
+    ):
+        mock_build_failover_state_record.side_effect = [
+            {"Дата": "2026-03-01", "status": reports_processor.STATUS_OWNER_SUCCESS},
+            {"Дата": "2026-03-02", "status": reports_processor.STATUS_OWNER_FAILED},
+        ]
+        mock_upsert_failover_state_records.return_value = {
+            "success": True,
+            "results": [{"success": True}, {"success": True}],
+        }
+
+        result = reports_processor.sync_owner_failover_state_from_batch_result(
             owner_pvz="PVZ1",
             missing_dates=["2026-03-01", "2026-03-02"],
             batch_result={
@@ -75,16 +113,31 @@ class TestReportsProcessor(unittest.TestCase):
             source_run_id="run-1",
         )
 
-        statuses = [call.kwargs["status"] for call in mock_mark_failover_state.call_args_list]
-        self.assertEqual(
-            statuses,
-            [
-                reports_processor.STATUS_OWNER_PENDING,
-                reports_processor.STATUS_OWNER_PENDING,
-                reports_processor.STATUS_OWNER_SUCCESS,
-                reports_processor.STATUS_OWNER_FAILED,
-            ],
-        )
+        mock_upsert_failover_state_records.assert_called_once()
+        records = mock_upsert_failover_state_records.call_args.args[0]
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["status"], reports_processor.STATUS_OWNER_SUCCESS)
+        self.assertEqual(records[1]["status"], reports_processor.STATUS_OWNER_FAILED)
+        self.assertEqual(result["successful_dates"], ["2026-03-01"])
+        self.assertEqual(result["failed_dates"], ["2026-03-02"])
+        self.assertEqual(len(result["results"]), 2)
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
+    def test_sync_owner_failover_state_from_batch_result_raises_when_batch_upsert_fails(self, mock_upsert):
+        mock_upsert.return_value = {"success": False, "results": [{"success": False}]}
+
+        with self.assertRaises(RuntimeError):
+            reports_processor.sync_owner_failover_state_from_batch_result(
+                owner_pvz="PVZ1",
+                missing_dates=["2026-03-01"],
+                batch_result={
+                    "results_by_date": {
+                        "2026-03-01": {"success": True, "data": {}},
+                    }
+                },
+                logger=Mock(),
+                source_run_id="run-1",
+            )
 
     @patch("scheduler_runner.tasks.reports.reports_processor.list_failover_state_rows")
     def test_collect_claimable_failover_rows_filters_inaccessible_and_own_pvz(self, mock_list_failover_state_rows):
@@ -564,12 +617,32 @@ class TestReportsProcessor(unittest.TestCase):
         )
 
         self.assertTrue(summary.enabled)
+        self.assertFalse(summary.owner_state_sync_attempted)
+        self.assertIsNone(summary.owner_state_sync_success)
+        self.assertEqual(summary.owner_state_sync_error, "")
         self.assertEqual(summary.candidate_rows_count, 3)
         self.assertEqual(summary.claimed_rows_count, 2)
         self.assertEqual(summary.recovered_pvz_count, 1)
         self.assertEqual(summary.recovered_dates_count, 4)
         self.assertEqual(summary.failed_recovery_dates_count, 1)
         self.assertEqual(summary.uploaded_records, 4)
+
+    def test_build_failover_run_summary_collects_owner_state_sync_metrics(self):
+        summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "owner_state_sync": {
+                    "attempted": True,
+                    "success": False,
+                    "error": "429 read quota exceeded",
+                }
+            },
+        )
+
+        self.assertTrue(summary.enabled)
+        self.assertTrue(summary.owner_state_sync_attempted)
+        self.assertFalse(summary.owner_state_sync_success)
+        self.assertEqual(summary.owner_state_sync_error, "429 read quota exceeded")
 
     def test_format_reports_run_notification_message_builds_single_final_message(self):
         owner_summary = reports_processor.OwnerRunSummary(
@@ -580,7 +653,9 @@ class TestReportsProcessor(unittest.TestCase):
             truncated=False,
             parse_success=False,
             successful_dates=["2026-03-01"],
+            successful_dates_count=1,
             failed_dates=["2026-03-02"],
+            failed_dates_count=1,
             uploaded_records=1,
             upload_success=True,
             errors=["parse_failed"],
@@ -589,6 +664,9 @@ class TestReportsProcessor(unittest.TestCase):
             enabled=True,
             attempted=True,
             discovery_success=True,
+            owner_state_sync_attempted=True,
+            owner_state_sync_success=True,
+            owner_state_sync_error="",
             available_pvz=["PVZ2"],
             candidate_rows_count=2,
             claimed_rows_count=1,
@@ -614,6 +692,7 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("PVZ1", message)
         self.assertIn("candidate rows: 2", message)
         self.assertIn("claimed rows: 1", message)
+        self.assertIn("owner state sync: ok", message)
 
     def test_build_owner_run_summary_treats_numeric_failed_dates_as_empty_list(self):
         summary = reports_processor.build_owner_run_summary(
@@ -628,6 +707,37 @@ class TestReportsProcessor(unittest.TestCase):
         )
 
         self.assertEqual(summary.failed_dates, [])
+        self.assertEqual(summary.failed_dates_count, 0)
+
+    def test_build_owner_run_summary_supports_legacy_numeric_successful_dates_contract(self):
+        summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"success": True, "missing_dates": ["2026-03-19"]},
+            batch_result={
+                "success": True,
+                "successful_dates": 1,
+                "failed_dates": 0,
+                "results_by_date": {
+                    "2026-03-19": {"success": True, "data": {}},
+                },
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        run_summary = reports_processor.build_reports_run_summary(
+            mode="backfill_single_pvz",
+            configured_pvz_id="PVZ1",
+            date_from="2026-03-19",
+            date_to="2026-03-19",
+            owner=summary,
+            failover=reports_processor.build_failover_run_summary(enabled=False),
+        )
+        message = reports_processor.format_reports_run_notification_message(run_summary)
+
+        self.assertEqual(summary.successful_dates, [])
+        self.assertEqual(summary.successful_dates_count, 1)
+        self.assertEqual(summary.failed_dates_count, 0)
+        self.assertEqual(run_summary.final_status, "success")
+        self.assertIn("успешно спарсено: 1", message)
 
     def test_format_reports_run_notification_message_handles_empty_numeric_failed_dates_regression(self):
         owner_summary = reports_processor.build_owner_run_summary(
@@ -720,6 +830,44 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("coordination включен, recovery работа не потребовалась", message)
         self.assertIn("candidate rows: 0", message)
 
+    def test_build_reports_run_summary_marks_owner_success_and_sync_failure_as_partial(self):
+        owner_summary = reports_processor.build_owner_run_summary(
+            pvz_id="PVZ1",
+            coverage_result={"success": True, "missing_dates": ["2026-03-19"]},
+            batch_result={
+                "success": True,
+                "successful_dates": 1,
+                "failed_dates": 0,
+                "results_by_date": {
+                    "2026-03-19": {"success": True, "data": {}},
+                },
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        failover_summary = reports_processor.build_failover_run_summary(
+            enabled=True,
+            failover_result={
+                "owner_state_sync": {
+                    "attempted": True,
+                    "success": False,
+                    "error": "429 read quota exceeded",
+                }
+            },
+        )
+
+        run_summary = reports_processor.build_reports_run_summary(
+            mode="backfill_single_pvz",
+            configured_pvz_id="PVZ1",
+            owner=owner_summary,
+            failover=failover_summary,
+        )
+        message = reports_processor.format_reports_run_notification_message(run_summary)
+
+        self.assertEqual(run_summary.final_status, "partial")
+        self.assertIn("успешно спарсено: 1", message)
+        self.assertIn("owner state sync: failed", message)
+        self.assertIn("owner state sync error: 429 read quota exceeded", message)
+
     def test_resolve_final_run_status_marks_owner_partial_and_failover_success_as_partial(self):
         owner_summary = reports_processor.OwnerRunSummary(
             pvz_id="PVZ1",
@@ -729,7 +877,9 @@ class TestReportsProcessor(unittest.TestCase):
             truncated=False,
             parse_success=False,
             successful_dates=["2026-03-01"],
+            successful_dates_count=1,
             failed_dates=["2026-03-02"],
+            failed_dates_count=1,
             uploaded_records=1,
             upload_success=True,
             errors=["parse_failed"],
@@ -760,7 +910,9 @@ class TestReportsProcessor(unittest.TestCase):
             truncated=False,
             parse_success=True,
             successful_dates=["2026-03-01"],
+            successful_dates_count=1,
             failed_dates=[],
+            failed_dates_count=0,
             uploaded_records=1,
             upload_success=True,
             errors=[],
@@ -945,6 +1097,7 @@ class TestReportsProcessor(unittest.TestCase):
             parser_api="new",
             pvz=None,
             detailed_logs=False,
+            enable_failover_coordination=False,
         )
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
@@ -987,6 +1140,7 @@ class TestReportsProcessor(unittest.TestCase):
             parser_api="legacy",
             pvz=None,
             detailed_logs=False,
+            enable_failover_coordination=False,
         )
         mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
         mock_invoke_parser_for_pvz.return_value = {"results_by_date": {}, "successful_dates": [], "failed_dates": []}
@@ -1149,6 +1303,56 @@ class TestReportsProcessor(unittest.TestCase):
         reports_processor.main()
 
         self.assertEqual(call_order, ["coordination", "notification"])
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
+    @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")
+    @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("argparse.ArgumentParser.parse_args")
+    def test_main_backfill_with_owner_state_sync_failure_keeps_owner_result_and_skips_failover_pass(
+        self,
+        mock_parse_args,
+        mock_detect_missing_report_dates,
+        mock_run_upload_batch_microservice,
+        mock_invoke_parser_for_pvz,
+        mock_send_notification_microservice,
+        mock_sync_owner_failover_state_from_batch_result,
+        mock_run_failover_coordination_pass,
+    ):
+        mock_parse_args.return_value = Namespace(
+            execution_date=None,
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            backfill_days=7,
+            mode="backfill",
+            max_missing_dates=7,
+            parser_api="legacy",
+            pvz=None,
+            detailed_logs=False,
+            enable_failover_coordination=True,
+        )
+        mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
+        mock_invoke_parser_for_pvz.return_value = {
+            "success": True,
+            "results_by_date": {"2026-03-01": {"success": True, "data": {}}},
+            "successful_dates": 1,
+            "failed_dates": 0,
+        }
+        mock_run_upload_batch_microservice.return_value = {"success": True, "uploaded_records": 1}
+        mock_sync_owner_failover_state_from_batch_result.side_effect = Exception("429 read quota exceeded")
+
+        reports_processor.main()
+
+        mock_sync_owner_failover_state_from_batch_result.assert_called_once()
+        mock_run_failover_coordination_pass.assert_not_called()
+        mock_send_notification_microservice.assert_called_once()
+        notification_message = mock_send_notification_microservice.call_args.args[0]
+        self.assertIn("Статус: partial", notification_message)
+        self.assertIn("успешно спарсено: 1", notification_message)
+        self.assertIn("owner state sync: failed", notification_message)
+        self.assertIn("owner state sync error: 429 read quota exceeded", notification_message)
 
     @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
     @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")

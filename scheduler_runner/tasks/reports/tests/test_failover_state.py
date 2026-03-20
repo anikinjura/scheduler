@@ -162,6 +162,31 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["status"], failover_state.STATUS_OWNER_PENDING)
         uploader.sheets_reporter.get_row_by_unique_keys.assert_called_once()
 
+    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    def test_upsert_failover_state_records_reuses_single_connection(self, mock_connection_factory):
+        uploader = Mock()
+        uploader._perform_upload.side_effect = [
+            {"success": True},
+            {"success": True},
+        ]
+        connection = mock_connection_factory.return_value
+        connection.__enter__.return_value = uploader
+        connection.__exit__.return_value = False
+
+        result = failover_state.upsert_failover_state_records(
+            [
+                {"Дата": "2026-03-14", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
+                {"Дата": "2026-03-15", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_FAILED},
+            ],
+            logger=Mock(),
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(len(result["results"]), 2)
+        mock_connection_factory.assert_called_once()
+        self.assertEqual(uploader._perform_upload.call_count, 2)
+
     @patch("scheduler_runner.tasks.reports.failover_state.urllib.request.urlopen")
     def test_try_claim_failover_via_apps_script_returns_remote_payload(self, mock_urlopen):
         response = Mock()

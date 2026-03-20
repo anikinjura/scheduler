@@ -132,6 +132,24 @@ def upsert_failover_state(record: Dict[str, Any], logger=None) -> Dict[str, Any]
         return uploader._perform_upload(record, strategy="update_or_append")
 
 
+def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) -> Dict[str, Any]:
+    logger = logger or create_failover_state_logger()
+    normalized_records = [record for record in (records or []) if record]
+    if not normalized_records:
+        return {"success": True, "updated": 0, "results": []}
+
+    results = []
+    with failover_state_connection(logger=logger) as uploader:
+        for record in normalized_records:
+            results.append(uploader._perform_upload(record, strategy="update_or_append"))
+
+    return {
+        "success": all(result.get("success", False) for result in results),
+        "updated": len(results),
+        "results": results,
+    }
+
+
 def get_failover_state(execution_date: str, target_pvz: str, logger=None) -> Optional[Dict[str, Any]]:
     logger = logger or create_failover_state_logger()
     with failover_state_connection(logger=logger) as uploader:
