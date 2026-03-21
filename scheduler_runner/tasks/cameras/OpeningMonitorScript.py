@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scheduler_runner.tasks.cameras.config.scripts.openingmonitor_config import SCRIPT_CONFIG
 from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
-from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
+from scheduler_runner.utils.notifications import send_notification
 from scheduler_runner.utils.filesystem import FileSystemUtils
 
 def _parse_time_from_filename(filename: str) -> Optional[time]:
@@ -310,16 +310,8 @@ def send_telegram_notification(message: str, main_logger=None) -> bool:
         "TELEGRAM_CHAT_ID": chat_id
     }
 
-    # Проверим подключение к Telegram
-    notification_logger.info("Проверка подключения к Telegram...")
-    connection_result = test_notification_connection(connection_params, logger=notification_logger)
-    notification_logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
-
-    if not connection_result.get("success", False):
-        notification_logger.error("Подключение к Telegram не удалось")
-        return False
-
-    # Отправим уведомление
+    # Не делаем отдельный сетевой preflight через getMe:
+    # production-path сразу идет в реальную отправку с retry внутри notifier.
     notification_logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
     notification_result = send_notification(
         message=message,
@@ -428,21 +420,6 @@ def main():
                 message = f"⚠️ ПВЗ: {pvz_id}. Объект не начал работу до {end_time.strftime('%H:%M')}. Видеофайлы не обнаружены."
             logger.warning(message)
 
-        # Подготовим параметры подключения
-        connection_params = {
-            "TELEGRAM_BOT_TOKEN": token,
-            "TELEGRAM_CHAT_ID": chat_id
-        }
-
-        # Проверим подключение к Telegram
-        logger.info("Проверка подключения к Telegram...")
-        connection_result = test_notification_connection(connection_params, logger=logger)
-        logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
-
-        if not connection_result.get("success", False):
-            logger.error("Подключение к Telegram не удалось")
-            sys.exit(1)  # Изменили с return на sys.exit(1), чтобы завершить программу с ошибкой
-
         # Отправим уведомление
         logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
         notification_result = send_telegram_notification(
@@ -451,6 +428,8 @@ def main():
         )
 
         logger.info(f"Результат отправки уведомления: {notification_result}")
+        if not notification_result:
+            sys.exit(1)
 
     except Exception as e:
         logger.critical(f"Критическая ошибка выполнения: {e}", exc_info=True)

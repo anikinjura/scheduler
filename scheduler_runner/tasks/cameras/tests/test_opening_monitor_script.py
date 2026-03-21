@@ -83,7 +83,6 @@ def test_main_uses_search_dirs_and_sends_success(monkeypatch):
 
     monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
     monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
-    monkeypatch.setattr(oms, "test_notification_connection", lambda *a, **k: {"success": True})
     monkeypatch.setattr(oms, "send_telegram_notification", lambda *a, **k: True)
 
     calls = {"n": 0}
@@ -116,7 +115,6 @@ def test_main_sends_failure_message_when_no_files(monkeypatch):
 
     monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
     monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
-    monkeypatch.setattr(oms, "test_notification_connection", lambda *a, **k: {"success": True})
     monkeypatch.setattr(oms, "find_earliest_file_time", lambda *a, **k: None)
 
     captured = {}
@@ -130,3 +128,94 @@ def test_main_sends_failure_message_when_no_files(monkeypatch):
 
     oms.main()
     assert "не начал работу" in captured["message"]
+
+
+def test_send_telegram_notification_skips_network_preflight(monkeypatch):
+    monkeypatch.setattr(
+        oms,
+        "SCRIPT_CONFIG",
+        {
+            **oms.SCRIPT_CONFIG,
+            "TELEGRAM_TOKEN": "fake_token",
+            "TELEGRAM_CHAT_ID": "fake_chat_id",
+        },
+    )
+
+    captured = {}
+
+    def fake_send_notification(message, connection_params, logger=None, **kwargs):
+        captured["message"] = message
+        captured["connection_params"] = connection_params
+        return {"success": True}
+
+    monkeypatch.setattr(oms, "create_notification_logger", lambda: mock.Mock())
+    monkeypatch.setattr(oms, "send_notification", fake_send_notification)
+
+    result = oms.send_telegram_notification("hello", main_logger=mock.Mock())
+
+    assert result is True
+    assert captured["message"] == "hello"
+    assert captured["connection_params"] == {
+        "TELEGRAM_BOT_TOKEN": "fake_token",
+        "TELEGRAM_CHAT_ID": "fake_chat_id",
+    }
+
+
+def test_main_does_not_require_test_connection_before_send(monkeypatch):
+    test_config = {
+        "PVZ_ID": "TEST",
+        "SEARCH_DIR": "/fake/dir",
+        "SEARCH_DIRS": ["/fake/dir1"],
+        "START_TIME": "08:00:00",
+        "END_TIME": "10:00:00",
+        "USER": "test",
+        "TASK_NAME": "test",
+        "DETAILED_LOGS": False,
+        "TELEGRAM_TOKEN": "fake_token",
+        "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "COMBINED_ANALYSIS_ENABLED": False,
+    }
+
+    monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
+    monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
+    monkeypatch.setattr(oms, "find_earliest_file_time", lambda *a, **k: time(8, 10, 0))
+    monkeypatch.setattr("sys.argv", ["OpeningMonitorScript.py"])
+
+    send_called = {"value": False}
+
+    def fake_send(message, main_logger=None):
+        send_called["value"] = True
+        return True
+
+    monkeypatch.setattr(oms, "send_telegram_notification", fake_send)
+
+    oms.main()
+
+    assert send_called["value"] is True
+
+
+def test_main_exits_with_error_when_send_fails(monkeypatch):
+    test_config = {
+        "PVZ_ID": "TEST",
+        "SEARCH_DIR": "/fake/dir",
+        "SEARCH_DIRS": ["/fake/dir1"],
+        "START_TIME": "08:00:00",
+        "END_TIME": "10:00:00",
+        "USER": "test",
+        "TASK_NAME": "test",
+        "DETAILED_LOGS": False,
+        "TELEGRAM_TOKEN": "fake_token",
+        "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "COMBINED_ANALYSIS_ENABLED": False,
+    }
+
+    monkeypatch.setattr(oms, "SCRIPT_CONFIG", test_config)
+    monkeypatch.setattr(oms, "configure_logger", lambda **kwargs: mock.Mock())
+    monkeypatch.setattr(oms, "find_earliest_file_time", lambda *a, **k: time(8, 10, 0))
+    monkeypatch.setattr(oms, "send_telegram_notification", lambda *a, **k: False)
+    monkeypatch.setattr("sys.argv", ["OpeningMonitorScript.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        oms.main()
+
+    assert exc_info.value.code == 1
