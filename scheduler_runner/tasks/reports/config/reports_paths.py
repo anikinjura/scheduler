@@ -37,6 +37,29 @@ def get_safe_pvz_path_name(pvz_id):
 # Базовая директория для отчетов из централизованной конфигурации
 BASE_REPORTS_DIR = PATH_CONFIG['REPORTS_ROOT']
 
+mode_suffix = "PROD" if ENV_MODE == "production" else "TEST"
+notification_provider = os.environ.get(f"NOTIFICATION_PROVIDER_{mode_suffix}", "telegram").lower()
+vk_access_token = os.environ.get(f"VK_ACCESS_TOKEN_{mode_suffix}")
+vk_peer_id = os.environ.get(f"VK_PEER_ID_{mode_suffix}")
+vk_api_version = os.environ.get("VK_API_VERSION", "5.199")
+
+
+def build_notification_connection_params():
+    if notification_provider == "vk":
+        return {
+            "NOTIFICATION_PROVIDER": "vk",
+            "VK_ACCESS_TOKEN": vk_access_token,
+            "VK_PEER_ID": vk_peer_id,
+            "VK_API_VERSION": vk_api_version,
+        }
+
+    return {
+        "NOTIFICATION_PROVIDER": "telegram",
+        "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+    }
+
+
 # Формируем пути в зависимости от режима среды
 if ENV_MODE == 'production':
     REPORTS_JSON = BASE_REPORTS_DIR / "json"
@@ -60,8 +83,13 @@ REPORTS_JSON.mkdir(parents=True, exist_ok=True)
 REPORTS_PATHS = {
     'REPORTS_JSON': REPORTS_JSON,
     'GOOGLE_SHEETS_CREDENTIALS': GOOGLE_SHEETS_CREDENTIALS,
+    'NOTIFICATION_PROVIDER': notification_provider,
     'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
     'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+    'VK_ACCESS_TOKEN': vk_access_token,
+    'VK_PEER_ID': vk_peer_id,
+    'VK_API_VERSION': vk_api_version,
+    'NOTIFICATION_CONNECTION_PARAMS': build_notification_connection_params(),
     'FAILOVER_APPS_SCRIPT_URL': os.environ.get(
         "FAILOVER_APPS_SCRIPT_URL",
         "https://script.google.com/macros/s/AKfycbzAu2cv4PhON28JmWOM9uM4TTnI9llOPIkIhq5JqeNq_W0iHdKj2H9Fbw1Veeqng-YC0Q/exec",

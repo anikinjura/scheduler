@@ -296,23 +296,16 @@ def send_telegram_notification(message: str, main_logger=None) -> bool:
     # Создаем изолированный логгер для работы с микросервисом уведомлений
     notification_logger = create_notification_logger()
 
-    # Подготовим параметры подключения из конфигурации
-    token = SCRIPT_CONFIG.get("TELEGRAM_TOKEN")
-    chat_id = SCRIPT_CONFIG.get("TELEGRAM_CHAT_ID")
+    connection_params = dict(SCRIPT_CONFIG.get("NOTIFICATION_CONNECTION_PARAMS") or {})
+    provider = connection_params.get("NOTIFICATION_PROVIDER", "telegram")
 
-    if not token or not chat_id:
-        notification_logger.warning("Параметры Telegram не заданы, уведомление не отправлено")
+    if not connection_params:
+        notification_logger.warning("Параметры notifications transport не заданы, уведомление не отправлено")
         return False
-
-    # Подготовим параметры подключения
-    connection_params = {
-        "TELEGRAM_BOT_TOKEN": token,
-        "TELEGRAM_CHAT_ID": chat_id
-    }
 
     # Не делаем отдельный сетевой preflight через getMe:
     # production-path сразу идет в реальную отправку с retry внутри notifier.
-    notification_logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+    notification_logger.info(f"Отправка уведомления через provider={provider}: {len(message)} символов")
     notification_result = send_notification(
         message=message,
         connection_params=connection_params,
@@ -352,13 +345,12 @@ def main():
         start_time = time.fromisoformat(SCRIPT_CONFIG["START_TIME"])
         end_time = time.fromisoformat(SCRIPT_CONFIG["END_TIME"])
 
-        token = SCRIPT_CONFIG.get("TELEGRAM_TOKEN")
-        chat_id = SCRIPT_CONFIG.get("TELEGRAM_CHAT_ID")
+        connection_params = dict(SCRIPT_CONFIG.get("NOTIFICATION_CONNECTION_PARAMS") or {})
 
         pvz_id = SCRIPT_CONFIG.get("PVZ_ID", "-")
 
-        if not isinstance(token, str) or not isinstance(chat_id, str) or not token or not chat_id:
-            logger.critical("Токен или ID чата Telegram не заданы в конфигурации!")
+        if not connection_params:
+            logger.critical("Параметры notifications transport не заданы в конфигурации!")
             sys.exit(1)
 
         logger.info(f"Запуск мониторинга. Временной интервал: {start_time} - {end_time}")
@@ -421,7 +413,7 @@ def main():
             logger.warning(message)
 
         # Отправим уведомление
-        logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+        logger.info(f"Отправка уведомления через микросервис notifications: {len(message)} символов")
         notification_result = send_telegram_notification(
             message=message,
             main_logger=logger

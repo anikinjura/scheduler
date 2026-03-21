@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 
 from scheduler_runner.tasks.cameras.config.scripts.videomonitor_config import SCRIPT_CONFIG
 from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
-from scheduler_runner.utils.notifications import send_notification, test_connection as test_notification_connection
+from scheduler_runner.utils.notifications import send_notification
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -176,31 +176,15 @@ def send_telegram_notification(message: str, main_logger=None) -> bool:
     # Создаем изолированный логгер для работы с микросервисом уведомлений
     notification_logger = create_notification_logger()
 
-    # Подготовим параметры подключения из конфигурации
-    token = SCRIPT_CONFIG["TOKEN"]
-    chat_id = SCRIPT_CONFIG["CHAT_ID"]
+    connection_params = dict(SCRIPT_CONFIG.get("NOTIFICATION_CONNECTION_PARAMS") or {})
+    provider = connection_params.get("NOTIFICATION_PROVIDER", "telegram")
 
-    if not token or not chat_id:
-        notification_logger.warning("Параметры Telegram не заданы, уведомление не отправлено")
-        return False
-
-    # Подготовим параметры подключения
-    connection_params = {
-        "TELEGRAM_BOT_TOKEN": token,
-        "TELEGRAM_CHAT_ID": chat_id
-    }
-
-    # Проверим подключение к Telegram
-    notification_logger.info("Проверка подключения к Telegram...")
-    connection_result = test_notification_connection(connection_params, logger=notification_logger)
-    notification_logger.info(f"Результат проверки подключения к Telegram: {connection_result}")
-
-    if not connection_result.get("success", False):
-        notification_logger.error("Подключение к Telegram не удалось")
+    if not connection_params:
+        notification_logger.warning("Параметры notifications transport не заданы, уведомление не отправлено")
         return False
 
     # Отправим уведомление
-    notification_logger.info(f"Отправка уведомления в Telegram: {len(message)} символов")
+    notification_logger.info(f"Отправка уведомления через provider={provider}: {len(message)} символов")
     notification_result = send_notification(
         message=message,
         connection_params=connection_params,

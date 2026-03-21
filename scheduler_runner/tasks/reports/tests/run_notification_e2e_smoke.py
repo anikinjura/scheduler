@@ -22,12 +22,7 @@ from scheduler_runner.utils.notifications import test_connection as test_notific
 
 
 def build_connection_params() -> dict:
-    token = REPORTS_PATHS.get("TELEGRAM_TOKEN")
-    chat_id = REPORTS_PATHS.get("TELEGRAM_CHAT_ID")
-    return {
-        "TELEGRAM_BOT_TOKEN": token,
-        "TELEGRAM_CHAT_ID": chat_id,
-    }
+    return dict(REPORTS_PATHS.get("NOTIFICATION_CONNECTION_PARAMS", {}))
 
 
 def build_default_message(label: str | None = None) -> str:
@@ -56,14 +51,16 @@ def main():
 
     logger = create_notification_logger()
     connection_params = build_connection_params()
-    token = connection_params.get("TELEGRAM_BOT_TOKEN")
-    chat_id = connection_params.get("TELEGRAM_CHAT_ID")
+    provider = connection_params.get("NOTIFICATION_PROVIDER", "telegram")
+    token = connection_params.get("TELEGRAM_BOT_TOKEN") or connection_params.get("VK_ACCESS_TOKEN")
+    chat_id = connection_params.get("TELEGRAM_CHAT_ID") or connection_params.get("VK_PEER_ID")
 
     result = {
         "success": True,
         "mode": args.mode,
         "env_mode": ENV_MODE,
         "pvz_id": PVZ_ID,
+        "provider": provider,
         "has_token": bool(token),
         "has_chat_id": bool(chat_id),
         "token_length": len(token) if token else 0,

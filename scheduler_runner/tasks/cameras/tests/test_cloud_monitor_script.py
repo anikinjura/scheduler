@@ -37,27 +37,30 @@ def test_cloud_accessibility_not_a_dir():
     assert "не является директорией" in msg
 
 
-@patch("scheduler_runner.tasks.cameras.CloudMonitorScript.test_notification_connection")
 @patch("scheduler_runner.tasks.cameras.CloudMonitorScript.send_notification")
-def test_send_telegram_notification_success(mock_send_notification, mock_test_connection):
-    cms.SCRIPT_CONFIG["TOKEN"] = "token"
-    cms.SCRIPT_CONFIG["CHAT_ID"] = "chat"
-    mock_test_connection.return_value = {"success": True}
+def test_send_telegram_notification_success(mock_send_notification):
+    cms.SCRIPT_CONFIG["NOTIFICATION_CONNECTION_PARAMS"] = {
+        "NOTIFICATION_PROVIDER": "telegram",
+        "TELEGRAM_BOT_TOKEN": "token",
+        "TELEGRAM_CHAT_ID": "chat",
+    }
     mock_send_notification.return_value = {"success": True}
 
     assert cms.send_telegram_notification("msg", main_logger=MagicMock()) is True
 
 
-@patch("scheduler_runner.tasks.cameras.CloudMonitorScript.test_notification_connection")
-def test_send_telegram_notification_connection_fail(mock_test_connection):
-    cms.SCRIPT_CONFIG["TOKEN"] = "token"
-    cms.SCRIPT_CONFIG["CHAT_ID"] = "chat"
-    mock_test_connection.return_value = {"success": False, "error": "bad connection"}
+@patch("scheduler_runner.tasks.cameras.CloudMonitorScript.send_notification")
+def test_send_telegram_notification_connection_fail(mock_send_notification):
+    cms.SCRIPT_CONFIG["NOTIFICATION_CONNECTION_PARAMS"] = {
+        "NOTIFICATION_PROVIDER": "telegram",
+        "TELEGRAM_BOT_TOKEN": "token",
+        "TELEGRAM_CHAT_ID": "chat",
+    }
+    mock_send_notification.return_value = {"success": False, "error": "bad connection"}
 
     assert cms.send_telegram_notification("msg", main_logger=MagicMock()) is False
 
 
 def test_send_telegram_notification_no_token():
-    cms.SCRIPT_CONFIG["TOKEN"] = ""
-    cms.SCRIPT_CONFIG["CHAT_ID"] = ""
+    cms.SCRIPT_CONFIG["NOTIFICATION_CONNECTION_PARAMS"] = {}
     assert cms.send_telegram_notification("msg", main_logger=MagicMock()) is False
