@@ -40,11 +40,68 @@ import sys
 import configparser
 from pathlib import Path
 
+
+def _strip_env_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value
+
+
+def load_env_file(env_file: Path) -> dict[str, str]:
+    """
+    Загружает простой `.env`-файл формата KEY=VALUE без внешних зависимостей.
+
+    Поведение специально консервативное:
+    - пропускает пустые строки и комментарии;
+    - не затирает уже существующие переменные окружения;
+    - поддерживает опциональный префикс `export `;
+    - возвращает словарь реально загруженных значений.
+    """
+    loaded: dict[str, str] = {}
+
+    if not env_file.exists():
+        return loaded
+
+    with env_file.open("r", encoding="utf-8") as fh:
+        for lineno, raw_line in enumerate(fh, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+
+            if "=" not in line:
+                print(f"[WARNING] Некорректная строка в .env ({env_file}:{lineno}): {raw_line.rstrip()}")
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                print(f"[WARNING] Пустой ключ в .env ({env_file}:{lineno})")
+                continue
+
+            if key in os.environ:
+                continue
+
+            normalized_value = _strip_env_value(value)
+            os.environ[key] = normalized_value
+            loaded[key] = normalized_value
+
+    return loaded
+
 # 1. Базовые директории проекта
 BASE_DIR = Path(__file__).parent.parent     # Путь к корневой директории проекта
 LOGS_DIR = BASE_DIR / 'logs'
 SCHEDULER_RUNNER_DIR = BASE_DIR / 'scheduler_runner'
 TASKS_DIR = SCHEDULER_RUNNER_DIR / 'tasks'
+
+# Ранняя загрузка `.env` перед чтением остальной конфигурации проекта.
+# Путь можно временно переопределить через SCHEDULER_ENV_FILE.
+DEFAULT_ENV_FILE = BASE_DIR / ".env" / "secrets.env"
+ENV_FILE = Path(os.environ.get("SCHEDULER_ENV_FILE", str(DEFAULT_ENV_FILE)))
+LOADED_ENV_VARS = load_env_file(ENV_FILE)
 
 # 2. Загрузка PVZ_ID и ENV_MODE из pvz_config.ini
 # Ищем pvz_config.ini вне проекта, по умолчанию: C:\tools\pvz_config.ini
