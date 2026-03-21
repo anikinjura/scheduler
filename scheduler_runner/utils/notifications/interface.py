@@ -1,15 +1,21 @@
 """
-Интерфейс для изолированного микросервиса уведомлений
-
-Архитектура:
-- Простой интерфейс для взаимодействия с микросервисом уведомлений
-- Принимает все необходимые параметры извне
-- Возвращает результат отправки уведомления
+Интерфейс для изолированного микросервиса уведомлений.
 """
-__version__ = '1.0.0'
+__version__ = "1.0.0"
 
-from typing import Dict, Any, Union, Optional
+from typing import Any, Dict, Optional, Union
+
 from .implementations.telegram_notifier import TelegramNotifier
+from .implementations.vk_notifier import VkNotifier
+
+
+def _resolve_notifier(config: Dict[str, Any], logger=None):
+    provider = (config.get("NOTIFICATION_PROVIDER") or "telegram").lower()
+    if provider == "telegram":
+        return TelegramNotifier(config=config, logger=logger)
+    if provider == "vk":
+        return VkNotifier(config=config, logger=logger)
+    raise ValueError(f"Неподдерживаемый notification provider: {provider}")
 
 
 def send_notification(
@@ -20,44 +26,24 @@ def send_notification(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Отправка уведомления через изолированный микросервис
-    
-    Args:
-        message: Сообщение для отправки (строка или словарь с данными)
-        connection_params: Параметры подключения (токен, чат ID и т.д.)
-        logger: Объект логгера (если не передан, будет использован внутренний)
-        templates: Шаблоны сообщений (если необходимы)
-        **kwargs: Дополнительные параметры
-    
-    Returns:
-        Dict с результатами отправки уведомления
+    Отправка уведомления через изолированный микросервис.
     """
-    # Формируем конфигурацию из переданных параметров
     config = {
-        **connection_params,  # Параметры подключения (токен, чат ID и т.д.)
+        **connection_params,
     }
-    
-    # Добавляем шаблоны, если они переданы
+
     if templates:
         config["MESSAGE_TEMPLATES"] = templates
-    
-    # Добавляем другие параметры из kwargs
+
     config.update(kwargs)
-    
-    # Создаем экземпляр уведомителя
-    notifier = TelegramNotifier(config=config, logger=logger)
-    
-    # Подключаемся к системе уведомлений
+
+    notifier = _resolve_notifier(config=config, logger=logger)
+
     if notifier.connect():
-        # Отправляем уведомление
         result = notifier.send_notification(message, templates=templates)
-        
-        # Отключаемся от системы уведомлений
         notifier.disconnect()
-        
         return result
-    else:
-        return {"success": False, "error": "Не удалось подключиться к системе уведомлений"}
+    return {"success": False, "error": "Не удалось подключиться к системе уведомлений"}
 
 
 def send_batch_notifications(
@@ -68,63 +54,35 @@ def send_batch_notifications(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Пакетная отправка уведомлений через изолированный микросервис
-    
-    Args:
-        messages: Список сообщений для отправки
-        connection_params: Параметры подключения (токен, чат ID и т.д.)
-        logger: Объект логгера (если не передан, будет использован внутренний)
-        templates: Шаблоны сообщений (если необходимы)
-        **kwargs: Дополнительные параметры
-    
-    Returns:
-        Dict с результатами пакетной отправки уведомлений
+    Пакетная отправка уведомлений через изолированный микросервис.
     """
-    # Формируем конфигурацию из переданных параметров
     config = {
-        **connection_params,  # Параметры подключения (токен, чат ID и т.д.)
+        **connection_params,
     }
-    
-    # Добавляем шаблоны, если они переданы
+
     if templates:
         config["MESSAGE_TEMPLATES"] = templates
-    
-    # Добавляем другие параметры из kwargs
+
     config.update(kwargs)
-    
-    # Создаем экземпляр уведомителя
-    notifier = TelegramNotifier(config=config, logger=logger)
-    
-    # Подключаемся к системе уведомлений
+
+    notifier = _resolve_notifier(config=config, logger=logger)
+
     if notifier.connect():
-        # Отправляем уведомления пакетно
         result = notifier.send_batch_notifications(messages, templates=templates)
-        
-        # Отключаемся от системы уведомлений
         notifier.disconnect()
-        
         return result
-    else:
-        return {"success": False, "error": "Не удалось подключиться к системе уведомлений"}
+    return {"success": False, "error": "Не удалось подключиться к системе уведомлений"}
 
 
 def test_connection(connection_params: Dict[str, str], logger=None) -> Dict[str, Any]:
     """
-    Проверка подключения к системе уведомлений
-    
-    Args:
-        connection_params: Параметры подключения (токен, чат ID и т.д.)
-        logger: Объект логгера (если не передан, будет использован внутренний)
-    
-    Returns:
-        Dict с результатами проверки подключения
+    Проверка подключения к системе уведомлений.
     """
-    # Формируем конфигурацию из переданных параметров
     config = {
-        **connection_params,  # Параметры подключения (токен, чат ID и т.д.)
+        **connection_params,
     }
-    
-    notifier = TelegramNotifier(config=config, logger=logger)
+
+    notifier = _resolve_notifier(config=config, logger=logger)
     connection_params_valid = notifier._validate_connection_params()
     connection_result = connection_params_valid and notifier._establish_connection()
     notifier.disconnect()
