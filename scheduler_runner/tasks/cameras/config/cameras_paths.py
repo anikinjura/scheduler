@@ -18,6 +18,13 @@ def get_safe_pvz_path_name(pvz_id: str) -> str:
     return SystemUtils.cyrillic_to_translit(str(pvz_id))
 
 
+mode_suffix = "PROD" if ENV_MODE == "production" else "TEST"
+notification_provider = os.environ.get(f"NOTIFICATION_PROVIDER_{mode_suffix}", "telegram").lower()
+vk_access_token = os.environ.get(f"VK_ACCESS_TOKEN_{mode_suffix}")
+vk_peer_id = os.environ.get(f"VK_PEER_ID_{mode_suffix}")
+vk_api_version = os.environ.get("VK_API_VERSION", "5.199")
+
+
 if ENV_MODE == "production":
     default_local = Path("D:/camera")
     default_network = Path("O:/cameras") / get_safe_pvz_path_name(PVZ_ID)
@@ -62,10 +69,31 @@ CAMERAS_NETWORK = Path(overrides.get("CAMERAS_NETWORK", default_network))
 TELEGRAM_TOKEN = telegram_token
 TELEGRAM_CHAT_ID = telegram_chat_id
 
+
+def build_notification_connection_params() -> dict:
+    if notification_provider == "vk":
+        return {
+            "NOTIFICATION_PROVIDER": "vk",
+            "VK_ACCESS_TOKEN": vk_access_token,
+            "VK_PEER_ID": vk_peer_id,
+            "VK_API_VERSION": vk_api_version,
+        }
+
+    return {
+        "NOTIFICATION_PROVIDER": "telegram",
+        "TELEGRAM_BOT_TOKEN": TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+    }
+
 CAMERAS_PATHS = {
     "CAMERAS_LOCAL": CAMERAS_LOCAL,
     "LOCAL_ROOTS": LOCAL_ROOTS,
     "CAMERAS_NETWORK": CAMERAS_NETWORK,
+    "NOTIFICATION_PROVIDER": notification_provider,
     "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
     "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+    "VK_ACCESS_TOKEN": vk_access_token,
+    "VK_PEER_ID": vk_peer_id,
+    "VK_API_VERSION": vk_api_version,
+    "NOTIFICATION_CONNECTION_PARAMS": build_notification_connection_params(),
 }

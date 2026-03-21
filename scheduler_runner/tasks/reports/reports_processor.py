@@ -1520,23 +1520,19 @@ def format_aggregated_backfill_notification_message(summary):
 
 def send_notification_microservice(notification_message, logger=None):
     logger = logger or create_notification_logger()
-    logger.info("Подготовка к отправке уведомления в Telegram...")
+    logger.info("Подготовка к отправке уведомления через микросервис notifications...")
 
     try:
         from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
 
-        token = REPORTS_PATHS.get("TELEGRAM_TOKEN")
-        chat_id = REPORTS_PATHS.get("TELEGRAM_CHAT_ID")
+        connection_params = REPORTS_PATHS.get("NOTIFICATION_CONNECTION_PARAMS", {})
+        provider = connection_params.get("NOTIFICATION_PROVIDER", "telegram")
 
-        if not token or not chat_id:
-            logger.error("Отсутствуют параметры подключения для Telegram")
-            return {"success": False, "error": "Отсутствуют параметры подключения для Telegram"}
+        if not connection_params:
+            logger.error("Отсутствуют параметры подключения для notifications transport")
+            return {"success": False, "error": "Отсутствуют параметры подключения для notifications transport"}
 
-        connection_params = {
-            "TELEGRAM_BOT_TOKEN": token,
-            "TELEGRAM_CHAT_ID": chat_id,
-        }
-
+        logger.info(f"Выбран notification provider: {provider}")
 
         notification_result = send_notification(
             message=notification_message,

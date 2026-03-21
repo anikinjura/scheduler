@@ -12,6 +12,8 @@ MODULE_PATH = "scheduler_runner.tasks.cameras.CloudMonitorScript"
 SCRIPT_CONFIG = {
     "PVZ_ID": PVZ_ID,
     "CHECK_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],      # Путь к облачному хранилищу для проверки
+    "NOTIFICATION_PROVIDER": CAMERAS_PATHS["NOTIFICATION_PROVIDER"],
+    "NOTIFICATION_CONNECTION_PARAMS": CAMERAS_PATHS["NOTIFICATION_CONNECTION_PARAMS"],
     "TOKEN": CAMERAS_PATHS["TELEGRAM_TOKEN"],           # Telegram bot_token
     "CHAT_ID": CAMERAS_PATHS["TELEGRAM_CHAT_ID"],       # Telegram chat_id
     "RETRIES": 4,                                       # Количество попыток проверки

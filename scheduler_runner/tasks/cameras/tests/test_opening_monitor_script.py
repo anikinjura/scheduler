@@ -78,6 +78,11 @@ def test_main_uses_search_dirs_and_sends_success(monkeypatch):
         "DETAILED_LOGS": False,
         "TELEGRAM_TOKEN": "fake_token",
         "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "NOTIFICATION_CONNECTION_PARAMS": {
+            "NOTIFICATION_PROVIDER": "telegram",
+            "TELEGRAM_BOT_TOKEN": "fake_token",
+            "TELEGRAM_CHAT_ID": "fake_chat_id",
+        },
         "COMBINED_ANALYSIS_ENABLED": False,
     }
 
@@ -110,6 +115,11 @@ def test_main_sends_failure_message_when_no_files(monkeypatch):
         "DETAILED_LOGS": False,
         "TELEGRAM_TOKEN": "fake_token",
         "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "NOTIFICATION_CONNECTION_PARAMS": {
+            "NOTIFICATION_PROVIDER": "telegram",
+            "TELEGRAM_BOT_TOKEN": "fake_token",
+            "TELEGRAM_CHAT_ID": "fake_chat_id",
+        },
         "COMBINED_ANALYSIS_ENABLED": False,
     }
 
@@ -138,6 +148,11 @@ def test_send_telegram_notification_skips_network_preflight(monkeypatch):
             **oms.SCRIPT_CONFIG,
             "TELEGRAM_TOKEN": "fake_token",
             "TELEGRAM_CHAT_ID": "fake_chat_id",
+            "NOTIFICATION_CONNECTION_PARAMS": {
+                "NOTIFICATION_PROVIDER": "telegram",
+                "TELEGRAM_BOT_TOKEN": "fake_token",
+                "TELEGRAM_CHAT_ID": "fake_chat_id",
+            },
         },
     )
 
@@ -156,6 +171,7 @@ def test_send_telegram_notification_skips_network_preflight(monkeypatch):
     assert result is True
     assert captured["message"] == "hello"
     assert captured["connection_params"] == {
+        "NOTIFICATION_PROVIDER": "telegram",
         "TELEGRAM_BOT_TOKEN": "fake_token",
         "TELEGRAM_CHAT_ID": "fake_chat_id",
     }
@@ -173,6 +189,11 @@ def test_main_does_not_require_test_connection_before_send(monkeypatch):
         "DETAILED_LOGS": False,
         "TELEGRAM_TOKEN": "fake_token",
         "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "NOTIFICATION_CONNECTION_PARAMS": {
+            "NOTIFICATION_PROVIDER": "telegram",
+            "TELEGRAM_BOT_TOKEN": "fake_token",
+            "TELEGRAM_CHAT_ID": "fake_chat_id",
+        },
         "COMBINED_ANALYSIS_ENABLED": False,
     }
 
@@ -206,6 +227,11 @@ def test_main_exits_with_error_when_send_fails(monkeypatch):
         "DETAILED_LOGS": False,
         "TELEGRAM_TOKEN": "fake_token",
         "TELEGRAM_CHAT_ID": "fake_chat_id",
+        "NOTIFICATION_CONNECTION_PARAMS": {
+            "NOTIFICATION_PROVIDER": "telegram",
+            "TELEGRAM_BOT_TOKEN": "fake_token",
+            "TELEGRAM_CHAT_ID": "fake_chat_id",
+        },
         "COMBINED_ANALYSIS_ENABLED": False,
     }
 
