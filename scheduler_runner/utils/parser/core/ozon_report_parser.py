@@ -51,6 +51,7 @@ from .base_report_parser import BaseReportParser
 from ..configs.base_configs.ozon_report_config import OZON_BASE_CONFIG
 from typing import Dict, Any
 import time
+import re
 from selenium.webdriver.common.by import By
 
 
@@ -175,6 +176,26 @@ class OzonReportParser(BaseReportParser):
         )
         return fallback_label.strip()
 
+    def _is_valid_pvz_option_label(self, label: str) -> bool:
+        normalized_label = " ".join((label or "").split())
+        if not normalized_label:
+            return False
+
+        configured_pvz = str(self.config.get("additional_params", {}).get("location_id", "") or "").strip()
+        if configured_pvz and normalized_label == configured_pvz:
+            return True
+
+        cached_pvz = self._get_cached_pvz()
+        if cached_pvz != "Unknown" and normalized_label == cached_pvz:
+            return True
+
+        # Реальные идентификаторы ПВЗ в проекте имеют компактный id-вид без пробелов
+        # и обычно содержат либо разделитель `_`, либо цифровой суффикс.
+        if " " in normalized_label:
+            return False
+
+        return bool(re.match(r"^[A-Za-zА-Яа-яЁё0-9.-]+(?:_[A-Za-zА-Яа-яЁё0-9.-]+)+$", normalized_label))
+
     def collect_available_pvz(self) -> list[str]:
         if self.logger:
             self.logger.trace("Попали в метод OzonReportParser.collect_available_pvz")
@@ -195,6 +216,12 @@ class OzonReportParser(BaseReportParser):
             label = self._extract_pvz_option_label(option_element)
             normalized_label = " ".join((label or "").split())
             if not normalized_label or normalized_label in seen_values:
+                continue
+            if not self._is_valid_pvz_option_label(normalized_label):
+                if self.logger:
+                    self.logger.debug(
+                        f"Пропускаем label, не похожий на идентификатор ПВЗ: {normalized_label}"
+                    )
                 continue
             available_pvz.append(normalized_label)
             seen_values.add(normalized_label)

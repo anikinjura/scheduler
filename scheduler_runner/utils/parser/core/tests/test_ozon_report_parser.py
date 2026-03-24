@@ -270,6 +270,27 @@ class TestOzonReportParser(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_collect_available_pvz_filters_out_navigation_labels(self):
+        self.parser.driver = Mock()
+        self.parser._open_pvz_dropdown = Mock(return_value=True)
+        option1 = Mock()
+        option2 = Mock()
+        option3 = Mock()
+        self.parser._collect_pvz_dropdown_elements = Mock(return_value=[option1, option2, option3])
+        self.parser._extract_pvz_option_label = Mock(
+            side_effect=["Выдача заказов", "ЧЕБОКСАРЫ_340", "Отчёты"]
+        )
+
+        result = self.parser.collect_available_pvz()
+
+        self.assertEqual(result, ["ЧЕБОКСАРЫ_340"])
+
+    def test_is_valid_pvz_option_label_allows_current_selected_pvz(self):
+        self.parser._remember_current_pvz("ЧЕБОКСАРЫ_340")
+
+        self.assertTrue(self.parser._is_valid_pvz_option_label("ЧЕБОКСАРЫ_340"))
+        self.assertFalse(self.parser._is_valid_pvz_option_label("Выдача заказов"))
+
     def test_extract_pvz_option_label_uses_configured_label_candidates(self):
         self.parser.config["selectors"] = {
             "pvz_selectors": {
@@ -548,4 +569,3 @@ class TestOzonReportParser(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
