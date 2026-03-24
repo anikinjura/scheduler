@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -195,6 +196,49 @@ def create_notification_logger():
 def build_processor_run_id(pvz_id=PVZ_ID, started_at=None):
     started_at = started_at or datetime.now()
     return f"{started_at.strftime('%Y%m%d%H%M%S')}|{pvz_id}"
+
+
+def is_retryable_google_sheets_upload_error(error_text):
+    normalized_error = str(error_text or "").lower()
+    retryable_markers = (
+        "[503]",
+        "service is currently unavailable",
+        "temporarily unavailable",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "remote end closed connection",
+    )
+    return any(marker in normalized_error for marker in retryable_markers)
+
+
+def run_google_sheets_upload_with_retry(*, upload_callable, logger=None):
+    logger = logger or create_uploader_logger()
+    max_attempts = max(int(BACKFILL_CONFIG.get("google_sheets_upload_max_attempts", 3) or 3), 1)
+    delay_seconds = max(float(BACKFILL_CONFIG.get("google_sheets_upload_retry_delay_seconds", 5) or 5), 0.0)
+    last_result = {"success": False, "error": "upload_not_started"}
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            logger.warning(f"Повторная попытка batch upload в Google Sheets: attempt={attempt}/{max_attempts}")
+
+        last_result = upload_callable() or {"success": False, "error": "empty_upload_result"}
+        if last_result.get("success", False):
+            return last_result
+
+        error_text = last_result.get("error", "")
+        if attempt >= max_attempts or not is_retryable_google_sheets_upload_error(error_text):
+            return last_result
+
+        logger.warning(
+            f"Retryable upload error при batch upload в Google Sheets: {error_text}; "
+            f"sleep={delay_seconds}s before next attempt"
+        )
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    return last_result
 
 
 def extract_batch_failures(batch_result=None):
@@ -513,6 +557,10 @@ def format_reports_run_notification_message(summary):
                     f"- загружено записей: {summary.owner.uploaded_records}",
                 ]
             )
+            if summary.owner.errors:
+                owner_lines.append(
+                    f"- errors: {'; '.join(str(error) for error in summary.owner.errors[:3])}"
+                )
         lines.extend(owner_lines)
 
     if summary.multi_pvz:
@@ -618,12 +666,17 @@ def build_owner_final_failover_state_records(
     owner_pvz,
     missing_dates,
     batch_result,
+    upload_result=None,
     source_run_id="",
 ):
+    upload_result_provided = upload_result is not None
+    upload_result = upload_result or {}
     failed_by_date = extract_batch_failures(batch_result)
     successful_dates = []
     failed_dates = []
     records = []
+    upload_success = (not upload_result_provided) or bool(upload_result.get("success", False))
+    upload_error = str(upload_result.get("error", "") or "upload_failed")
 
     for execution_date in missing_dates or []:
         if execution_date in failed_by_date:
@@ -636,6 +689,20 @@ def build_owner_final_failover_state_records(
                     status=STATUS_OWNER_FAILED,
                     source_run_id=source_run_id,
                     last_error=failed_by_date[execution_date],
+                )
+            )
+            continue
+
+        if not upload_success:
+            failed_dates.append(execution_date)
+            records.append(
+                build_failover_state_record(
+                    execution_date=execution_date,
+                    target_pvz=owner_pvz,
+                    owner_pvz=owner_pvz,
+                    status=STATUS_OWNER_FAILED,
+                    source_run_id=source_run_id,
+                    last_error=upload_error,
                 )
             )
             continue
@@ -663,6 +730,7 @@ def sync_owner_failover_state_from_batch_result(
     owner_pvz,
     missing_dates,
     batch_result,
+    upload_result=None,
     logger=None,
     source_run_id="",
 ):
@@ -671,6 +739,7 @@ def sync_owner_failover_state_from_batch_result(
         owner_pvz=owner_pvz,
         missing_dates=missing_dates,
         batch_result=batch_result,
+        upload_result=upload_result,
         source_run_id=source_run_id,
     )
     upsert_result = upsert_failover_state_records(
@@ -1338,16 +1407,27 @@ def run_upload_batch_microservice(batch_parsing_result=None):
         logger.warning("Для batch upload нет подготовленных записей")
         return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
 
-    connection_result = test_upload_connection(connection_params, logger=logger)
-    logger.info(f"Результат проверки подключения: {connection_result}")
-    if not connection_result.get("success", False):
-        return {"success": False, "error": "Не удалось подключиться к Google Sheets", "uploaded_records": 0}
+    def perform_upload_attempt():
+        connection_result = test_upload_connection(connection_params, logger=logger)
+        logger.info(f"Результат проверки подключения: {connection_result}")
+        if not connection_result.get("success", False):
+            return {
+                "success": False,
+                "error": "Не удалось подключиться к Google Sheets",
+                "uploaded_records": 0,
+                "connection_params_valid": connection_result.get("connection_params_valid"),
+            }
 
-    upload_result = upload_batch_data(
-        data_list=upload_data_list,
-        connection_params=connection_params,
+        return upload_batch_data(
+            data_list=upload_data_list,
+            connection_params=connection_params,
+            logger=logger,
+            strategy="update_or_append",
+        )
+
+    upload_result = run_google_sheets_upload_with_retry(
+        upload_callable=perform_upload_attempt,
         logger=logger,
-        strategy="update_or_append",
     )
     upload_result["uploaded_records"] = len(upload_data_list)
     return upload_result
@@ -1745,22 +1825,28 @@ def main():
                 upload_result = run_upload_batch_microservice(batch_result)
 
                 if should_run_failover_coordination_for_owner:
-                    owner_state_sync_result["attempted"] = True
-                    try:
-                        sync_owner_failover_state_from_batch_result(
-                            owner_pvz=pvz_id,
-                            missing_dates=missing_dates,
-                            batch_result=batch_result,
-                            logger=create_failover_state_logger(),
-                            source_run_id=source_run_id,
-                        )
-                        owner_state_sync_result["success"] = True
-                    except Exception as exc:
-                        owner_state_sync_result["success"] = False
-                        owner_state_sync_result["error"] = str(exc)
-                        create_failover_state_logger().error(
-                            f"Не удалось синхронизировать owner state в KPI_FAILOVER_STATE: {exc}",
-                            exc_info=True,
+                    if upload_result.get("success", False):
+                        owner_state_sync_result["attempted"] = True
+                        try:
+                            sync_owner_failover_state_from_batch_result(
+                                owner_pvz=pvz_id,
+                                missing_dates=missing_dates,
+                                batch_result=batch_result,
+                                upload_result=upload_result,
+                                logger=create_failover_state_logger(),
+                                source_run_id=source_run_id,
+                            )
+                            owner_state_sync_result["success"] = True
+                        except Exception as exc:
+                            owner_state_sync_result["success"] = False
+                            owner_state_sync_result["error"] = str(exc)
+                            create_failover_state_logger().error(
+                                f"Не удалось синхронизировать owner state в KPI_FAILOVER_STATE: {exc}",
+                                exc_info=True,
+                            )
+                    else:
+                        processor_logger.warning(
+                            "Owner state sync skipped because KPI upload failed"
                         )
             elif not should_run_failover_coordination_for_owner:
                 processor_logger.info("Backfill не требуется: отсутствующих дат не найдено")
@@ -1777,8 +1863,10 @@ def main():
 
             failover_result = {}
             failover_result["owner_state_sync"] = owner_state_sync_result
+            owner_upload_allows_failover = (not missing_dates) or upload_result.get("success", False)
             can_run_failover_pass = (
                 should_run_failover_coordination_for_owner
+                and owner_upload_allows_failover
                 and owner_state_sync_result.get("success") is not False
             )
             if can_run_failover_pass:
@@ -1790,6 +1878,10 @@ def main():
                     source_run_id=source_run_id,
                 )
                 failover_result["owner_state_sync"] = owner_state_sync_result
+            elif should_run_failover_coordination_for_owner and missing_dates and not upload_result.get("success", False):
+                processor_logger.warning(
+                    "Failover coordination pass skipped because owner KPI upload failed"
+                )
 
             reports_run_summary = build_reports_run_summary(
                 mode="backfill_single_pvz",

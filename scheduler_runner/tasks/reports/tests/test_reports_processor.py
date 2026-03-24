@@ -84,6 +84,24 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["successful_dates"], ["2026-03-01"])
         self.assertEqual(result["failed_dates"], ["2026-03-02"])
 
+    def test_build_owner_final_failover_state_records_marks_upload_failure_as_owner_failed(self):
+        result = reports_processor.build_owner_final_failover_state_records(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                }
+            },
+            upload_result={"success": False, "error": "APIError: [503]: The service is currently unavailable"},
+            source_run_id="run-1",
+        )
+
+        self.assertEqual([record["status"] for record in result["records"]], [reports_processor.STATUS_OWNER_FAILED])
+        self.assertEqual(result["successful_dates"], [])
+        self.assertEqual(result["failed_dates"], ["2026-03-01"])
+        self.assertIn("503", result["records"][0]["last_error"])
+
     @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
     @patch("scheduler_runner.tasks.reports.reports_processor.build_failover_state_record")
     def test_sync_owner_failover_state_from_batch_result_uses_batch_upsert_once(
@@ -109,6 +127,7 @@ class TestReportsProcessor(unittest.TestCase):
                     "2026-03-02": {"success": False, "error": "parse_failed"},
                 }
             },
+            upload_result={"success": True, "uploaded_records": 1},
             logger=Mock(),
             source_run_id="run-1",
         )
@@ -135,9 +154,50 @@ class TestReportsProcessor(unittest.TestCase):
                         "2026-03-01": {"success": True, "data": {}},
                     }
                 },
+                upload_result={"success": True, "uploaded_records": 1},
                 logger=Mock(),
                 source_run_id="run-1",
             )
+
+    def test_run_google_sheets_upload_with_retry_retries_retryable_errors(self):
+        logger = Mock()
+        upload_callable = Mock(side_effect=[
+            {"success": False, "error": "APIError: [503]: The service is currently unavailable"},
+            {"success": True, "uploaded_records": 1},
+        ])
+
+        with patch.dict(
+            reports_processor.BACKFILL_CONFIG,
+            {"google_sheets_upload_max_attempts": 2, "google_sheets_upload_retry_delay_seconds": 0},
+            clear=False,
+        ):
+            result = reports_processor.run_google_sheets_upload_with_retry(
+                upload_callable=upload_callable,
+                logger=logger,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(upload_callable.call_count, 2)
+
+    def test_run_google_sheets_upload_with_retry_does_not_retry_non_retryable_errors(self):
+        logger = Mock()
+        upload_callable = Mock(return_value={
+            "success": False,
+            "error": "Не удалось подключиться к Google Sheets",
+        })
+
+        with patch.dict(
+            reports_processor.BACKFILL_CONFIG,
+            {"google_sheets_upload_max_attempts": 3, "google_sheets_upload_retry_delay_seconds": 0},
+            clear=False,
+        ):
+            result = reports_processor.run_google_sheets_upload_with_retry(
+                upload_callable=upload_callable,
+                logger=logger,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(upload_callable.call_count, 1)
 
     @patch("scheduler_runner.tasks.reports.reports_processor.list_candidate_failover_rows_fast")
     def test_collect_claimable_failover_rows_filters_inaccessible_and_own_pvz(self, mock_list_candidate_failover_rows_fast):
@@ -1508,6 +1568,59 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertIn("успешно спарсено: 1", notification_message)
         self.assertIn("owner state sync: failed", notification_message)
         self.assertIn("owner state sync error: 429 read quota exceeded", notification_message)
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
+    @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")
+    @patch("scheduler_runner.tasks.reports.reports_processor.send_notification_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.invoke_parser_for_pvz")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_upload_batch_microservice")
+    @patch("scheduler_runner.tasks.reports.reports_processor.detect_missing_report_dates")
+    @patch("argparse.ArgumentParser.parse_args")
+    def test_main_backfill_with_upload_failure_skips_owner_state_sync_and_failover_pass(
+        self,
+        mock_parse_args,
+        mock_detect_missing_report_dates,
+        mock_run_upload_batch_microservice,
+        mock_invoke_parser_for_pvz,
+        mock_send_notification_microservice,
+        mock_sync_owner_failover_state_from_batch_result,
+        mock_run_failover_coordination_pass,
+    ):
+        mock_parse_args.return_value = Namespace(
+            execution_date=None,
+            date_from="2026-03-01",
+            date_to="2026-03-02",
+            backfill_days=7,
+            mode="backfill",
+            max_missing_dates=7,
+            parser_api="legacy",
+            pvz=None,
+            detailed_logs=False,
+            enable_failover_coordination=True,
+        )
+        mock_detect_missing_report_dates.return_value = {"success": True, "missing_dates": ["2026-03-01"]}
+        mock_invoke_parser_for_pvz.return_value = {
+            "success": True,
+            "results_by_date": {"2026-03-01": {"success": True, "data": {}}},
+            "successful_dates": 1,
+            "failed_dates": 0,
+        }
+        mock_run_upload_batch_microservice.return_value = {
+            "success": False,
+            "error": "APIError: [503]: The service is currently unavailable",
+            "uploaded_records": 0,
+        }
+
+        reports_processor.main()
+
+        mock_sync_owner_failover_state_from_batch_result.assert_not_called()
+        mock_run_failover_coordination_pass.assert_not_called()
+        mock_send_notification_microservice.assert_called_once()
+        notification_message = mock_send_notification_microservice.call_args.args[0]
+        self.assertIn("Статус: partial", notification_message)
+        self.assertIn("успешно спарсено: 1", notification_message)
+        self.assertIn("загружено записей: 0", notification_message)
+        self.assertIn("service is currently unavailable", notification_message)
 
     @patch("scheduler_runner.tasks.reports.reports_processor.claim_failover_rows")
     @patch("scheduler_runner.tasks.reports.reports_processor.collect_claimable_failover_rows")
