@@ -256,14 +256,15 @@ def can_attempt_failover_claim(
     )
 
 
-def filter_claimable_rows_by_policy(
+def evaluate_claimable_rows_by_policy(
     *,
     rows: Iterable[Dict[str, Any]],
     configured_pvz_id: str,
     available_pvz: Iterable[str],
     max_claims: int | None = None,
     now: datetime | None = None,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
+    decisions = []
     eligible_rows = []
     for row in rows or []:
         decision = can_attempt_failover_claim(
@@ -272,10 +273,68 @@ def filter_claimable_rows_by_policy(
             available_pvz=available_pvz,
             now=now,
         )
-        if decision.get("eligible", False):
+        decision_item = {
+            "execution_date": row.get("Дата", ""),
+            "target_pvz": row.get("target_pvz", ""),
+            "status": row.get("status"),
+            "eligible": bool(decision.get("eligible", False)),
+            "reason": decision.get("reason", ""),
+        }
+        if "rank" in decision:
+            decision_item["rank"] = decision.get("rank")
+        if "priority_list" in decision:
+            decision_item["priority_list"] = decision.get("priority_list")
+        if "helper_candidates" in decision:
+            decision_item["helper_candidates"] = decision.get("helper_candidates")
+        if "preferred_helper" in decision:
+            decision_item["preferred_helper"] = decision.get("preferred_helper")
+        if "eligible_time" in decision:
+            decision_item["eligible_time"] = decision.get("eligible_time")
+        decisions.append(decision_item)
+        if decision_item["eligible"]:
             eligible_rows.append(row)
 
     eligible_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
-    if max_claims:
-        eligible_rows = eligible_rows[:max_claims]
-    return eligible_rows
+    selected_rows = eligible_rows[:max_claims] if max_claims else eligible_rows
+    selected_keys = {(row.get("Дата", ""), row.get("target_pvz", "")) for row in selected_rows}
+    for decision_item in decisions:
+        decision_item["selected_for_claim"] = (
+            decision_item["eligible"]
+            and (decision_item["execution_date"], decision_item["target_pvz"]) in selected_keys
+        )
+
+    rejected_reasons = {}
+    for decision_item in decisions:
+        if decision_item["eligible"]:
+            continue
+        reason = decision_item.get("reason", "unknown")
+        rejected_reasons[reason] = int(rejected_reasons.get(reason, 0) or 0) + 1
+
+    return {
+        "mode": get_selection_mode(),
+        "decisions": decisions,
+        "eligible_rows": eligible_rows,
+        "selected_rows": selected_rows,
+        "eligible_count": len(eligible_rows),
+        "selected_count": len(selected_rows),
+        "rejected_count": max(len(decisions) - len(eligible_rows), 0),
+        "rejected_reasons": rejected_reasons,
+    }
+
+
+def filter_claimable_rows_by_policy(
+    *,
+    rows: Iterable[Dict[str, Any]],
+    configured_pvz_id: str,
+    available_pvz: Iterable[str],
+    max_claims: int | None = None,
+    now: datetime | None = None,
+) -> List[Dict[str, Any]]:
+    evaluation = evaluate_claimable_rows_by_policy(
+        rows=rows,
+        configured_pvz_id=configured_pvz_id,
+        available_pvz=available_pvz,
+        max_claims=max_claims,
+        now=now,
+    )
+    return evaluation["selected_rows"]

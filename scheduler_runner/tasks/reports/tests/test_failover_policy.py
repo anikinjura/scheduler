@@ -386,6 +386,41 @@ class TestFailoverPolicy(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertEqual(result["reason"], "max_attempts_reached")
 
+    def test_evaluate_claimable_rows_by_policy_returns_selected_and_rejected_summary(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "selection_mode": failover_policy.SELECTION_MODE_CAPABILITY_RANKED,
+                "capability_map": {
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1", "PVZ_TARGET_2"],
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                },
+                "helper_bias": {"PVZ_HELPER_A": 1, "PVZ_HELPER_B": 5},
+                "max_attempts_per_date": 3,
+            },
+            clear=False,
+        ):
+            evaluation = failover_policy.evaluate_claimable_rows_by_policy(
+                rows=[
+                    {"Дата": "2026-03-14", "target_pvz": "PVZ_TARGET_1", "status": "owner_failed", "attempt_no": 0},
+                    {"Дата": "2026-03-14", "target_pvz": "PVZ_TARGET_2", "status": "owner_failed", "attempt_no": 3},
+                ],
+                configured_pvz_id="PVZ_HELPER_A",
+                available_pvz=["PVZ_TARGET_1", "PVZ_TARGET_2", "PVZ_HELPER_A"],
+                max_claims=1,
+            )
+
+        self.assertEqual(evaluation["mode"], failover_policy.SELECTION_MODE_CAPABILITY_RANKED)
+        self.assertEqual(evaluation["eligible_count"], 1)
+        self.assertEqual(evaluation["selected_count"], 1)
+        self.assertEqual(evaluation["rejected_count"], 1)
+        self.assertEqual(evaluation["rejected_reasons"]["max_attempts_reached"], 1)
+        self.assertEqual(len(evaluation["selected_rows"]), 1)
+        self.assertEqual(evaluation["selected_rows"][0]["target_pvz"], "PVZ_TARGET_1")
+        selected_decisions = [item for item in evaluation["decisions"] if item["selected_for_claim"]]
+        self.assertEqual(len(selected_decisions), 1)
+        self.assertEqual(selected_decisions[0]["preferred_helper"], "pvz_helper_a")
+
 
 if __name__ == "__main__":
     unittest.main()
