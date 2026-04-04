@@ -16,10 +16,11 @@ class TestGoogleSheetsRewardFormulaColumns(unittest.TestCase):
             "Количество выдач",
             "Прямой поток",
             "Возвратный поток",
-            "timestamp",
             "Сумма за Количество выдач",
             "Сумма за Прямой поток",
             "Сумма за Возвратный поток",
+            "Итого вознаграждение",
+            "timestamp",
         ]
 
         values = reporter._prepare_row_values(
@@ -42,19 +43,20 @@ class TestGoogleSheetsRewardFormulaColumns(unittest.TestCase):
         self.assertEqual(values[3], 317)
         self.assertEqual(values[4], 20)
         self.assertEqual(values[5], 0)
-        self.assertEqual(values[6], "2026-04-04 21:33:00")
         self.assertEqual(
-            values[7],
+            values[6],
             '=GET_REWARD("Количество выдач";D7;$B7;KPI_REWARD_RULES_RANGE)',
         )
         self.assertEqual(
-            values[8],
+            values[7],
             '=GET_REWARD("Прямой поток";E7;$B7;KPI_REWARD_RULES_RANGE)',
         )
         self.assertEqual(
-            values[9],
+            values[8],
             '=GET_REWARD("Возвратный поток";F7;$B7;KPI_REWARD_RULES_RANGE)',
         )
+        self.assertEqual(values[9], "=SUM(G7:I7)")
+        self.assertEqual(values[10], "2026-04-04 21:33:00")
 
 
 if __name__ == "__main__":
