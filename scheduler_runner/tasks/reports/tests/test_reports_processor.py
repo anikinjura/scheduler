@@ -218,17 +218,26 @@ class TestReportsProcessor(unittest.TestCase):
             {"Р”Р°С‚Р°": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_OWNER_FAILED},
         ])
 
-    @patch("scheduler_runner.tasks.reports.reports_processor.filter_claimable_rows_by_policy")
+    @patch("scheduler_runner.tasks.reports.reports_processor.evaluate_claimable_rows_by_policy")
     @patch("scheduler_runner.tasks.reports.reports_processor.list_candidate_failover_rows_fast")
     def test_collect_claimable_failover_rows_uses_policy_filter_when_enabled(
         self,
         mock_list_candidate_failover_rows_fast,
-        mock_filter_claimable_rows_by_policy,
+        mock_evaluate_claimable_rows_by_policy,
     ):
         mock_list_candidate_failover_rows_fast.return_value = [
             {"Дата": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_FAILOVER_FAILED},
         ]
-        mock_filter_claimable_rows_by_policy.return_value = mock_list_candidate_failover_rows_fast.return_value
+        mock_evaluate_claimable_rows_by_policy.return_value = {
+            "mode": "priority_map_legacy",
+            "decisions": [],
+            "eligible_rows": mock_list_candidate_failover_rows_fast.return_value,
+            "selected_rows": mock_list_candidate_failover_rows_fast.return_value,
+            "eligible_count": 1,
+            "selected_count": 1,
+            "rejected_count": 0,
+            "rejected_reasons": {},
+        }
 
         with patch.dict(reports_processor.FAILOVER_POLICY_CONFIG, {"enabled": True}, clear=False):
             result = reports_processor.collect_claimable_failover_rows(
@@ -239,7 +248,41 @@ class TestReportsProcessor(unittest.TestCase):
             )
 
         self.assertEqual(result, mock_list_candidate_failover_rows_fast.return_value)
-        mock_filter_claimable_rows_by_policy.assert_called_once()
+        mock_evaluate_claimable_rows_by_policy.assert_called_once()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.evaluate_claimable_rows_by_policy")
+    @patch("scheduler_runner.tasks.reports.reports_processor.list_candidate_failover_rows_fast")
+    def test_collect_claimable_failover_rows_can_return_policy_evaluation(
+        self,
+        mock_list_candidate_failover_rows_fast,
+        mock_evaluate_claimable_rows_by_policy,
+    ):
+        mock_list_candidate_failover_rows_fast.return_value = [
+            {"Дата": "2026-03-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": reports_processor.STATUS_FAILOVER_FAILED},
+        ]
+        mock_evaluate_claimable_rows_by_policy.return_value = {
+            "mode": "capability_ranked",
+            "decisions": [],
+            "eligible_rows": mock_list_candidate_failover_rows_fast.return_value,
+            "selected_rows": mock_list_candidate_failover_rows_fast.return_value,
+            "eligible_count": 1,
+            "selected_count": 1,
+            "rejected_count": 0,
+            "rejected_reasons": {},
+        }
+
+        with patch.dict(reports_processor.FAILOVER_POLICY_CONFIG, {"enabled": True}, clear=False):
+            result = reports_processor.collect_claimable_failover_rows(
+                accessible_pvz_ids=["PVZ2"],
+                configured_pvz_id="PVZ1",
+                max_claims=3,
+                logger=Mock(),
+                return_evaluation=True,
+            )
+
+        self.assertEqual(result["mode"], "capability_ranked")
+        self.assertEqual(result["selected_rows"], mock_list_candidate_failover_rows_fast.return_value)
+        mock_evaluate_claimable_rows_by_policy.assert_called_once()
 
     def test_should_scan_failover_candidates_returns_false_for_explicit_empty_priority_list(self):
         with patch.dict(
@@ -1888,6 +1931,84 @@ class TestReportsProcessor(unittest.TestCase):
         )
         mock_collect_claimable_failover_rows.assert_called_once()
         mock_claim_failover_rows.assert_not_called()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.reports_processor.run_claimed_failover_backfill")
+    @patch("scheduler_runner.tasks.reports.reports_processor.claim_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.collect_claimable_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.discover_available_pvz_scope")
+    def test_run_failover_coordination_pass_propagates_capability_ranked_arbitration_summary(
+        self,
+        mock_discover_available_pvz_scope,
+        mock_collect_claimable_failover_rows,
+        mock_claim_failover_rows,
+        mock_run_claimed_failover_backfill,
+        mock_failover_state_connection,
+    ):
+        shared_uploader = Mock()
+        connection = mock_failover_state_connection.return_value
+        connection.__enter__.return_value = shared_uploader
+        connection.__exit__.return_value = False
+        mock_discover_available_pvz_scope.return_value = {
+            "discovery_result": {"success": True},
+            "available_pvz": ["PVZ_HELPER_A", "PVZ_TARGET_1"],
+        }
+        selected_rows = [
+            {"Дата": "2026-03-14", "target_pvz": "PVZ_TARGET_1", "owner_pvz": "PVZ_TARGET_1", "status": reports_processor.STATUS_OWNER_FAILED},
+        ]
+        mock_collect_claimable_failover_rows.return_value = {
+            "mode": "capability_ranked",
+            "decisions": [
+                {
+                    "execution_date": "2026-03-14",
+                    "target_pvz": "PVZ_TARGET_1",
+                    "status": reports_processor.STATUS_OWNER_FAILED,
+                    "eligible": True,
+                    "reason": "eligible",
+                    "preferred_helper": "pvz_helper_a",
+                    "selected_for_claim": True,
+                }
+            ],
+            "eligible_rows": selected_rows,
+            "selected_rows": selected_rows,
+            "eligible_count": 1,
+            "selected_count": 1,
+            "rejected_count": 0,
+            "rejected_reasons": {},
+        }
+        mock_claim_failover_rows.return_value = selected_rows
+        mock_run_claimed_failover_backfill.return_value = {
+            "results_by_pvz": {},
+            "recovered_pvz_count": 0,
+            "recovered_dates_count": 0,
+            "failed_recovery_dates_count": 0,
+            "uploaded_records": 0,
+        }
+
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "capability_ranked",
+                "capability_map": {"PVZ_HELPER_A": ["PVZ_TARGET_1"]},
+            },
+            clear=False,
+        ):
+            result = reports_processor.run_failover_coordination_pass(
+                configured_pvz_id="PVZ_HELPER_A",
+                parser_api="legacy",
+                parser_logger=Mock(),
+                processor_logger=Mock(),
+                source_run_id="run-1",
+            )
+
+        self.assertEqual(result["scan_policy_mode"], "capability_ranked")
+        self.assertEqual(result["candidate_policy_evaluation"]["mode"], "capability_ranked")
+        self.assertEqual(result["candidate_policy_evaluation"]["selected_count"], 1)
+        self.assertEqual(result["candidate_rows_count"], 1)
+        self.assertEqual(result["claimed_rows_count"], 1)
+        mock_collect_claimable_failover_rows.assert_called_once()
+        self.assertTrue(mock_collect_claimable_failover_rows.call_args.kwargs["return_evaluation"])
 
     @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
     @patch("scheduler_runner.tasks.reports.reports_processor.sync_owner_failover_state_from_batch_result")

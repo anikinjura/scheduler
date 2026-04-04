@@ -38,6 +38,7 @@ from scheduler_runner.tasks.reports.failover_state import (
     upsert_failover_state_records,
 )
 from scheduler_runner.tasks.reports.failover_policy import (
+    evaluate_claimable_rows_by_policy,
     filter_claimable_rows_by_policy,
     get_capability_targets_for_helper,
     get_priority_list,
@@ -765,6 +766,7 @@ def collect_claimable_failover_rows(
     max_claims=None,
     logger=None,
     uploader=None,
+    return_evaluation=False,
 ):
     logger = logger or create_failover_state_logger()
     rows = list_candidate_failover_rows_fast(
@@ -774,6 +776,7 @@ def collect_claimable_failover_rows(
     )
     if not FAILOVER_POLICY_CONFIG.get("enabled", True):
         filtered_rows = []
+        decisions = []
         normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
         normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
         for row in rows:
@@ -781,22 +784,71 @@ def collect_claimable_failover_rows(
             if not target_pvz:
                 continue
             normalized_target_pvz = normalize_pvz_id(target_pvz)
+            decision_item = {
+                "execution_date": row.get("Дата", ""),
+                "target_pvz": target_pvz,
+                "status": row.get("status"),
+                "eligible": False,
+                "reason": "",
+            }
             if normalized_target_pvz == normalized_configured_pvz_id:
+                decision_item["reason"] = "own_target_pvz"
+                decisions.append(decision_item)
                 continue
             if normalized_target_pvz not in normalized_accessible:
+                decision_item["reason"] = "not_accessible"
+                decisions.append(decision_item)
                 continue
+            decision_item["eligible"] = True
+            decision_item["reason"] = "eligible"
+            decisions.append(decision_item)
             filtered_rows.append(row)
         filtered_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
-        if max_claims:
-            filtered_rows = filtered_rows[:max_claims]
-        return filtered_rows
+        selected_rows = filtered_rows[:max_claims] if max_claims else filtered_rows
+        selected_keys = {(row.get("Дата", ""), row.get("target_pvz", "")) for row in selected_rows}
+        for decision_item in decisions:
+            decision_item["selected_for_claim"] = (
+                decision_item.get("eligible", False)
+                and (decision_item["execution_date"], decision_item["target_pvz"]) in selected_keys
+            )
+        evaluation = {
+            "mode": "policy_disabled",
+            "decisions": decisions,
+            "eligible_rows": filtered_rows,
+            "selected_rows": selected_rows,
+            "eligible_count": len(filtered_rows),
+            "selected_count": len(selected_rows),
+            "rejected_count": max(len(decisions) - len(filtered_rows), 0),
+            "rejected_reasons": {
+                reason: len([item for item in decisions if not item.get("eligible", False) and item.get("reason") == reason])
+                for reason in {item.get("reason") for item in decisions if not item.get("eligible", False)}
+            },
+        }
+        return evaluation if return_evaluation else selected_rows
 
-    return filter_claimable_rows_by_policy(
+    evaluation = evaluate_claimable_rows_by_policy(
         rows=rows,
         configured_pvz_id=configured_pvz_id,
         available_pvz=accessible_pvz_ids,
         max_claims=max_claims,
     )
+    return evaluation if return_evaluation else evaluation["selected_rows"]
+
+
+def normalize_claimable_failover_evaluation(candidate_evaluation) -> dict:
+    if isinstance(candidate_evaluation, dict):
+        return candidate_evaluation
+    selected_rows = list(candidate_evaluation or [])
+    return {
+        "mode": get_selection_mode(),
+        "decisions": [],
+        "eligible_rows": selected_rows,
+        "selected_rows": selected_rows,
+        "eligible_count": len(selected_rows),
+        "selected_count": len(selected_rows),
+        "rejected_count": 0,
+        "rejected_reasons": {},
+    }
 
 
 def should_scan_failover_candidates(
@@ -1030,6 +1082,7 @@ def run_failover_coordination_pass(
         },
         "candidate_rows": [],
         "candidate_rows_count": 0,
+        "candidate_policy_evaluation": {},
         "claimed_rows": [],
         "claimed_rows_count": 0,
         "results_by_pvz": {},
@@ -1058,16 +1111,27 @@ def run_failover_coordination_pass(
     result["candidate_scan"]["attempted"] = True
     try:
         with failover_state_connection(logger=failover_logger) as failover_uploader:
-            candidate_rows = collect_claimable_failover_rows(
+            candidate_evaluation = collect_claimable_failover_rows(
                 accessible_pvz_ids=discovery_scope.get("available_pvz", []),
                 configured_pvz_id=configured_pvz_id,
                 max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
                 logger=failover_logger,
                 uploader=failover_uploader,
+                return_evaluation=True,
             )
-            result["candidate_rows"] = candidate_rows
-            result["candidate_rows_count"] = len(candidate_rows)
+            candidate_evaluation = normalize_claimable_failover_evaluation(candidate_evaluation)
+            result["candidate_policy_evaluation"] = candidate_evaluation
+            result["candidate_rows"] = candidate_evaluation.get("selected_rows", [])
+            result["candidate_rows_count"] = len(result["candidate_rows"])
             result["candidate_scan"]["success"] = True
+            processor_logger.info(
+                "Failover coordination arbitration: "
+                f"mode={candidate_evaluation.get('mode')}, "
+                f"eligible={candidate_evaluation.get('eligible_count', 0)}, "
+                f"selected={candidate_evaluation.get('selected_count', 0)}, "
+                f"rejected={candidate_evaluation.get('rejected_count', 0)}, "
+                f"rejected_reasons={candidate_evaluation.get('rejected_reasons', {})}"
+            )
             if not result["candidate_rows"]:
                 processor_logger.info("Failover coordination: claimable colleague rows not found")
                 return result
