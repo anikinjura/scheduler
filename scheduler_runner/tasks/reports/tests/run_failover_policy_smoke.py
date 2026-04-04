@@ -260,7 +260,9 @@ def main():
         "claimer_pvz": args.claimer_pvz,
         "claim_backend": BACKFILL_CONFIG.get("failover_claim_backend"),
         "accessible_pvz_ids": accessible_pvz_ids,
+        "selection_mode": FAILOVER_POLICY_CONFIG.get("selection_mode"),
         "policy_priority_map": FAILOVER_POLICY_CONFIG.get("priority_map", {}),
+        "policy_capability_map": FAILOVER_POLICY_CONFIG.get("capability_map", {}),
         "seeded_rows": seeded_rows,
         "decisions_before_claim": decisions,
         "candidate_rows": [

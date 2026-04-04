@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import FAILOVER_POLICY_CONFIG
 from scheduler_runner.tasks.reports.failover_state import (
@@ -13,11 +13,21 @@ from scheduler_runner.utils.system import SystemUtils
 
 
 TERMINAL_STATUSES = {STATUS_OWNER_SUCCESS, STATUS_FAILOVER_SUCCESS}
+SELECTION_MODE_PRIORITY_MAP_LEGACY = "priority_map_legacy"
+SELECTION_MODE_CAPABILITY_RANKED = "capability_ranked"
 
 
 def normalize_pvz_id(pvz_id: str | None) -> str:
     transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
     return transliterated.strip().lower()
+
+
+def get_selection_mode() -> str:
+    raw_mode = str(FAILOVER_POLICY_CONFIG.get("selection_mode", SELECTION_MODE_PRIORITY_MAP_LEGACY) or "")
+    normalized_mode = raw_mode.strip().lower()
+    if normalized_mode in {SELECTION_MODE_PRIORITY_MAP_LEGACY, SELECTION_MODE_CAPABILITY_RANKED}:
+        return normalized_mode
+    return SELECTION_MODE_PRIORITY_MAP_LEGACY
 
 
 def get_priority_map() -> Dict[str, List[str]]:
@@ -28,12 +38,67 @@ def get_priority_map() -> Dict[str, List[str]]:
     return normalized_map
 
 
+def get_capability_map() -> Dict[str, List[str]]:
+    raw_map = FAILOVER_POLICY_CONFIG.get("capability_map", {}) or {}
+    normalized_map: Dict[str, List[str]] = {}
+    for helper_pvz, target_list in raw_map.items():
+        normalized_map[normalize_pvz_id(helper_pvz)] = [str(item).strip() for item in (target_list or []) if str(item).strip()]
+    return normalized_map
+
+
+def get_helper_bias_map() -> Dict[str, int]:
+    raw_map = FAILOVER_POLICY_CONFIG.get("helper_bias", {}) or {}
+    normalized_map: Dict[str, int] = {}
+    for helper_pvz, bias in raw_map.items():
+        normalized_map[normalize_pvz_id(helper_pvz)] = int(bias or 0)
+    return normalized_map
+
+
 def get_priority_list(target_pvz: str) -> List[str]:
     return get_priority_map().get(normalize_pvz_id(target_pvz), [])
 
 
 def has_explicit_priority_rule(target_pvz: str) -> bool:
     return normalize_pvz_id(target_pvz) in get_priority_map()
+
+
+def helper_has_any_capabilities(helper_pvz: str) -> bool:
+    return bool(get_capability_map().get(normalize_pvz_id(helper_pvz), []))
+
+
+def get_capability_targets_for_helper(helper_pvz: str) -> List[str]:
+    return get_capability_map().get(normalize_pvz_id(helper_pvz), [])
+
+
+def get_helper_candidates_for_target(target_pvz: str) -> List[str]:
+    normalized_target_pvz = normalize_pvz_id(target_pvz)
+    candidates: List[str] = []
+    for helper_pvz, target_list in get_capability_map().items():
+        normalized_targets = {normalize_pvz_id(item) for item in target_list}
+        if normalized_target_pvz in normalized_targets:
+            candidates.append(helper_pvz)
+    return sorted(candidates)
+
+
+def get_live_accessible_helper_candidates(target_pvz: str, available_pvz: Iterable[str]) -> List[str]:
+    normalized_target_pvz = normalize_pvz_id(target_pvz)
+    normalized_available_pvz = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz or [])}
+    if normalized_target_pvz not in normalized_available_pvz:
+        return []
+    return get_helper_candidates_for_target(target_pvz)
+
+
+def build_helper_rank_tuple(helper_pvz: str) -> Tuple[int, str]:
+    helper_bias = get_helper_bias_map()
+    normalized_helper_pvz = normalize_pvz_id(helper_pvz)
+    return (int(helper_bias.get(normalized_helper_pvz, 0)), normalized_helper_pvz)
+
+
+def select_preferred_helper_for_target(target_pvz: str, available_pvz: Iterable[str]) -> str | None:
+    candidates = get_live_accessible_helper_candidates(target_pvz, available_pvz)
+    if not candidates:
+        return None
+    return min(candidates, key=build_helper_rank_tuple)
 
 
 def get_current_rank(target_pvz: str, claimer_pvz: str) -> int | None:
@@ -59,7 +124,7 @@ def get_eligible_time(state_row: Dict[str, Any], rank: int, now: datetime | None
     return reference_ts + timedelta(minutes=max(rank - 1, 0) * delay_minutes)
 
 
-def can_attempt_failover_claim(
+def can_attempt_failover_claim_legacy(
     *,
     state_row: Dict[str, Any],
     configured_pvz_id: str,
@@ -111,6 +176,84 @@ def can_attempt_failover_claim(
         "rank": rank,
         "priority_list": priority_list,
     }
+
+
+def can_attempt_failover_claim_capability_ranked(
+    *,
+    state_row: Dict[str, Any],
+    configured_pvz_id: str,
+    available_pvz: Iterable[str],
+    now: datetime | None = None,
+) -> Dict[str, Any]:
+    target_pvz = state_row.get("target_pvz", "")
+    normalized_target_pvz = normalize_pvz_id(target_pvz)
+    normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
+    normalized_available_pvz = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz or [])}
+    status = state_row.get("status")
+
+    if not target_pvz:
+        return {"eligible": False, "reason": "missing_target_pvz"}
+    if status in TERMINAL_STATUSES:
+        return {"eligible": False, "reason": "terminal_status"}
+    if normalized_target_pvz == normalized_configured_pvz_id:
+        return {"eligible": False, "reason": "own_target_pvz"}
+    if normalized_target_pvz not in normalized_available_pvz:
+        return {"eligible": False, "reason": "not_accessible"}
+
+    attempt_no = int(state_row.get("attempt_no") or 0)
+    max_attempts = int(FAILOVER_POLICY_CONFIG.get("max_attempts_per_date", 3) or 3)
+    if max_attempts > 0 and attempt_no >= max_attempts:
+        return {"eligible": False, "reason": "max_attempts_reached"}
+
+    helper_candidates = get_helper_candidates_for_target(target_pvz)
+    if not helper_candidates:
+        return {"eligible": False, "reason": "no_eligible_helpers"}
+
+    preferred_helper = select_preferred_helper_for_target(target_pvz, available_pvz)
+    if not preferred_helper:
+        return {
+            "eligible": False,
+            "reason": "no_accessible_helper_candidates",
+            "helper_candidates": helper_candidates,
+        }
+
+    if normalized_configured_pvz_id != normalize_pvz_id(preferred_helper):
+        return {
+            "eligible": False,
+            "reason": "not_preferred_helper",
+            "helper_candidates": helper_candidates,
+            "preferred_helper": preferred_helper,
+        }
+
+    return {
+        "eligible": True,
+        "reason": "eligible",
+        "helper_candidates": helper_candidates,
+        "preferred_helper": preferred_helper,
+    }
+
+
+def can_attempt_failover_claim(
+    *,
+    state_row: Dict[str, Any],
+    configured_pvz_id: str,
+    available_pvz: Iterable[str],
+    now: datetime | None = None,
+) -> Dict[str, Any]:
+    if get_selection_mode() == SELECTION_MODE_CAPABILITY_RANKED:
+        return can_attempt_failover_claim_capability_ranked(
+            state_row=state_row,
+            configured_pvz_id=configured_pvz_id,
+            available_pvz=available_pvz,
+            now=now,
+        )
+
+    return can_attempt_failover_claim_legacy(
+        state_row=state_row,
+        configured_pvz_id=configured_pvz_id,
+        available_pvz=available_pvz,
+        now=now,
+    )
 
 
 def filter_claimable_rows_by_policy(

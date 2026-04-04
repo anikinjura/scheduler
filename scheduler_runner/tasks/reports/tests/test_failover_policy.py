@@ -219,6 +219,173 @@ class TestFailoverPolicy(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["target_pvz"], "PVZ2")
 
+    def test_get_selection_mode_defaults_to_legacy(self):
+        with patch.dict(failover_policy.FAILOVER_POLICY_CONFIG, {}, clear=True):
+            self.assertEqual(
+                failover_policy.get_selection_mode(),
+                failover_policy.SELECTION_MODE_PRIORITY_MAP_LEGACY,
+            )
+
+    def test_get_helper_candidates_for_target_uses_capability_reverse_lookup(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "capability_map": {
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1", "PVZ_TARGET_2"],
+                },
+            },
+            clear=False,
+        ):
+            result = failover_policy.get_helper_candidates_for_target("PVZ_TARGET_1")
+
+        self.assertEqual(result, ["pvz_helper_a", "pvz_helper_b"])
+
+    def test_select_preferred_helper_for_target_uses_bias_then_lexical_tiebreak(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "capability_map": {
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1"],
+                },
+                "helper_bias": {
+                    "PVZ_HELPER_B": 5,
+                    "PVZ_HELPER_A": 1,
+                },
+            },
+            clear=False,
+        ):
+            result = failover_policy.select_preferred_helper_for_target(
+                "PVZ_TARGET_1",
+                ["PVZ_TARGET_1", "PVZ_HELPER_A"],
+            )
+
+        self.assertEqual(result, "pvz_helper_a")
+
+    def test_select_preferred_helper_for_target_uses_lexical_tiebreak_when_bias_equal(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "capability_map": {
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1"],
+                },
+                "helper_bias": {},
+            },
+            clear=False,
+        ):
+            result = failover_policy.select_preferred_helper_for_target(
+                "PVZ_TARGET_1",
+                ["PVZ_TARGET_1", "PVZ_HELPER_A"],
+            )
+
+        self.assertEqual(result, "pvz_helper_a")
+
+    def test_capability_ranked_allows_preferred_helper(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "selection_mode": failover_policy.SELECTION_MODE_CAPABILITY_RANKED,
+                "capability_map": {
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1"],
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                },
+                "helper_bias": {"PVZ_HELPER_A": 1, "PVZ_HELPER_B": 5},
+                "max_attempts_per_date": 3,
+            },
+            clear=False,
+        ):
+            result = failover_policy.can_attempt_failover_claim(
+                state_row={
+                    "Дата": "2026-03-14",
+                    "target_pvz": "PVZ_TARGET_1",
+                    "status": "owner_failed",
+                    "attempt_no": 0,
+                },
+                configured_pvz_id="PVZ_HELPER_A",
+                available_pvz=["PVZ_TARGET_1", "PVZ_HELPER_A"],
+            )
+
+        self.assertTrue(result["eligible"])
+        self.assertEqual(result["preferred_helper"], "pvz_helper_a")
+
+    def test_capability_ranked_rejects_non_preferred_helper(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "selection_mode": failover_policy.SELECTION_MODE_CAPABILITY_RANKED,
+                "capability_map": {
+                    "PVZ_HELPER_A": ["PVZ_TARGET_1"],
+                    "PVZ_HELPER_B": ["PVZ_TARGET_1"],
+                },
+                "helper_bias": {"PVZ_HELPER_A": 1, "PVZ_HELPER_B": 5},
+                "max_attempts_per_date": 3,
+            },
+            clear=False,
+        ):
+            result = failover_policy.can_attempt_failover_claim(
+                state_row={
+                    "Дата": "2026-03-14",
+                    "target_pvz": "PVZ_TARGET_1",
+                    "status": "owner_failed",
+                    "attempt_no": 0,
+                },
+                configured_pvz_id="PVZ_HELPER_B",
+                available_pvz=["PVZ_TARGET_1", "PVZ_HELPER_B"],
+            )
+
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["reason"], "not_preferred_helper")
+        self.assertEqual(result["preferred_helper"], "pvz_helper_a")
+
+    def test_capability_ranked_rejects_not_accessible_target(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "selection_mode": failover_policy.SELECTION_MODE_CAPABILITY_RANKED,
+                "capability_map": {"PVZ_HELPER_A": ["PVZ_TARGET_1"]},
+            },
+            clear=False,
+        ):
+            result = failover_policy.can_attempt_failover_claim(
+                state_row={
+                    "Дата": "2026-03-14",
+                    "target_pvz": "PVZ_TARGET_1",
+                    "status": "owner_failed",
+                    "attempt_no": 0,
+                },
+                configured_pvz_id="PVZ_HELPER_A",
+                available_pvz=["PVZ_HELPER_A"],
+            )
+
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["reason"], "not_accessible")
+
+    def test_capability_ranked_rejects_max_attempts(self):
+        with patch.dict(
+            failover_policy.FAILOVER_POLICY_CONFIG,
+            {
+                "selection_mode": failover_policy.SELECTION_MODE_CAPABILITY_RANKED,
+                "capability_map": {"PVZ_HELPER_A": ["PVZ_TARGET_1"]},
+                "max_attempts_per_date": 3,
+            },
+            clear=False,
+        ):
+            result = failover_policy.can_attempt_failover_claim(
+                state_row={
+                    "Дата": "2026-03-14",
+                    "target_pvz": "PVZ_TARGET_1",
+                    "status": "owner_failed",
+                    "attempt_no": 3,
+                },
+                configured_pvz_id="PVZ_HELPER_A",
+                available_pvz=["PVZ_TARGET_1", "PVZ_HELPER_A"],
+            )
+
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["reason"], "max_attempts_reached")
+
 
 if __name__ == "__main__":
     unittest.main()
