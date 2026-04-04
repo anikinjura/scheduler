@@ -25,6 +25,7 @@ BACKFILL_CONFIG = {
 
 FAILOVER_POLICY_CONFIG = {
     "enabled": True,
+    "selection_mode": "priority_map_legacy",
     "priority_map": {
         "ЧЕБОКСАРЫ_143": ["ЧЕБОКСАРЫ_144"],
         "ЧЕБОКСАРЫ_182": ["ЧЕБОКСАРЫ_144"],
@@ -32,10 +33,20 @@ FAILOVER_POLICY_CONFIG = {
         "СОСНОВКА_10": ["ЧЕБОКСАРЫ_144"],
         "ЧЕБОКСАРЫ_340": [],
     },
+    "capability_map": {
+        "ЧЕБОКСАРЫ_143": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_182": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_144": ["ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_143"],
+        "СОСНОВКА_10": ["ЧЕБОКСАРЫ_144"],
+        "ЧЕБОКСАРЫ_340": [],
+    },
+    "helper_bias": {},
+    "dry_run_capability_ranked": False,
     "default_rank_delay_minutes": 10,
     "max_attempts_per_date": 3,
     "max_claims_per_run": 3,
     "allow_unlisted_fallback": False,
+    "prefer_lower_load_helpers": False,
 }
 
 SCHEDULE = [

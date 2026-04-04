@@ -39,7 +39,9 @@ from scheduler_runner.tasks.reports.failover_state import (
 )
 from scheduler_runner.tasks.reports.failover_policy import (
     filter_claimable_rows_by_policy,
+    get_capability_targets_for_helper,
     get_priority_list,
+    get_selection_mode,
     has_explicit_priority_rule,
 )
 from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
@@ -805,6 +807,23 @@ def should_scan_failover_candidates(
     if not FAILOVER_POLICY_CONFIG.get("enabled", True):
         return {"should_scan": True, "reason": "policy_disabled"}
 
+    if get_selection_mode() == "capability_ranked":
+        return should_scan_failover_candidates_capability_ranked(
+            configured_pvz_id=configured_pvz_id,
+            accessible_pvz_ids=accessible_pvz_ids,
+        )
+
+    return should_scan_failover_candidates_legacy(
+        configured_pvz_id=configured_pvz_id,
+        accessible_pvz_ids=accessible_pvz_ids,
+    )
+
+
+def should_scan_failover_candidates_legacy(
+    *,
+    configured_pvz_id=PVZ_ID,
+    accessible_pvz_ids=None,
+):
     if not has_explicit_priority_rule(configured_pvz_id):
         return {"should_scan": True, "reason": "no_explicit_rule"}
 
@@ -818,6 +837,45 @@ def should_scan_failover_candidates(
         return {"should_scan": True, "reason": "accessible_priority_candidates"}
 
     return {"should_scan": False, "reason": "priority_candidates_not_accessible"}
+
+
+def should_scan_failover_candidates_capability_ranked(
+    *,
+    configured_pvz_id=PVZ_ID,
+    accessible_pvz_ids=None,
+):
+    capability_targets = get_capability_targets_for_helper(configured_pvz_id)
+    if not capability_targets:
+        return {"should_scan": False, "reason": "empty_capability_list"}
+
+    normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
+    normalized_accessible.discard(normalize_pvz_id(configured_pvz_id))
+    normalized_targets = {normalize_pvz_id(pvz_id) for pvz_id in capability_targets}
+    if normalized_accessible & normalized_targets:
+        return {"should_scan": True, "reason": "accessible_capability_targets"}
+
+    return {"should_scan": False, "reason": "capability_targets_not_accessible"}
+
+
+def collect_failover_scan_decisions(
+    *,
+    configured_pvz_id=PVZ_ID,
+    accessible_pvz_ids=None,
+):
+    active_decision = should_scan_failover_candidates(
+        configured_pvz_id=configured_pvz_id,
+        accessible_pvz_ids=accessible_pvz_ids,
+    )
+    decisions = {
+        "active_mode": get_selection_mode(),
+        "active": active_decision,
+    }
+    if FAILOVER_POLICY_CONFIG.get("dry_run_capability_ranked", False):
+        decisions["dry_run_capability_ranked"] = should_scan_failover_candidates_capability_ranked(
+            configured_pvz_id=configured_pvz_id,
+            accessible_pvz_ids=accessible_pvz_ids,
+        )
+    return decisions
 
 
 def claim_failover_rows(
@@ -963,6 +1021,8 @@ def run_failover_coordination_pass(
         "attempted": True,
         "discovery_result": discovery_scope.get("discovery_result", {}),
         "available_pvz": discovery_scope.get("available_pvz", []),
+        "scan_policy_mode": get_selection_mode(),
+        "scan_decisions": {},
         "candidate_scan": {
             "attempted": False,
             "success": None,
@@ -978,13 +1038,20 @@ def run_failover_coordination_pass(
         "failed_recovery_dates_count": 0,
         "uploaded_records": 0,
     }
-    scan_decision = should_scan_failover_candidates(
+    scan_decisions = collect_failover_scan_decisions(
         configured_pvz_id=configured_pvz_id,
         accessible_pvz_ids=discovery_scope.get("available_pvz", []),
     )
+    result["scan_decisions"] = scan_decisions
+    scan_decision = scan_decisions.get("active", {})
+    if "dry_run_capability_ranked" in scan_decisions:
+        processor_logger.info(
+            f"Failover coordination dry-run: capability_ranked decision={scan_decisions['dry_run_capability_ranked']}"
+        )
     if not scan_decision.get("should_scan", True):
         processor_logger.info(
-            f"Failover coordination: candidate scan skipped, reason={scan_decision.get('reason', 'unknown')}"
+            "Failover coordination: candidate scan skipped, "
+            f"mode={result['scan_policy_mode']}, reason={scan_decision.get('reason', 'unknown')}"
         )
         return result
 
@@ -1001,6 +1068,9 @@ def run_failover_coordination_pass(
             result["candidate_rows"] = candidate_rows
             result["candidate_rows_count"] = len(candidate_rows)
             result["candidate_scan"]["success"] = True
+            if not result["candidate_rows"]:
+                processor_logger.info("Failover coordination: claimable colleague rows not found")
+                return result
 
             claimed_rows = claim_failover_rows(
                 candidate_rows=result["candidate_rows"],
@@ -1022,7 +1092,7 @@ def run_failover_coordination_pass(
         )
         return result
     if not result["claimed_rows"]:
-        processor_logger.info("Failover coordination: claimable colleague rows not found")
+        processor_logger.info("Failover coordination: claimable rows were scanned but claim was not acquired")
         return result
 
     processor_logger.info(

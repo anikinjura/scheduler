@@ -295,6 +295,84 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertTrue(decision["should_scan"])
         self.assertEqual(decision["reason"], "accessible_priority_candidates")
 
+    def test_should_scan_failover_candidates_capability_ranked_returns_false_for_empty_capability_list(self):
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "capability_ranked",
+                "capability_map": {"PVZ1": []},
+            },
+            clear=False,
+        ):
+            decision = reports_processor.should_scan_failover_candidates(
+                configured_pvz_id="PVZ1",
+                accessible_pvz_ids=["PVZ1", "PVZ2"],
+            )
+
+        self.assertFalse(decision["should_scan"])
+        self.assertEqual(decision["reason"], "empty_capability_list")
+
+    def test_should_scan_failover_candidates_capability_ranked_returns_false_when_targets_not_accessible(self):
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "capability_ranked",
+                "capability_map": {"PVZ1": ["PVZ2"]},
+            },
+            clear=False,
+        ):
+            decision = reports_processor.should_scan_failover_candidates(
+                configured_pvz_id="PVZ1",
+                accessible_pvz_ids=["PVZ1"],
+            )
+
+        self.assertFalse(decision["should_scan"])
+        self.assertEqual(decision["reason"], "capability_targets_not_accessible")
+
+    def test_should_scan_failover_candidates_capability_ranked_returns_true_when_target_accessible(self):
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "capability_ranked",
+                "capability_map": {"PVZ1": ["PVZ2"]},
+            },
+            clear=False,
+        ):
+            decision = reports_processor.should_scan_failover_candidates(
+                configured_pvz_id="PVZ1",
+                accessible_pvz_ids=["PVZ1", "PVZ2"],
+            )
+
+        self.assertTrue(decision["should_scan"])
+        self.assertEqual(decision["reason"], "accessible_capability_targets")
+
+    def test_collect_failover_scan_decisions_adds_capability_ranked_dry_run(self):
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "priority_map_legacy",
+                "priority_map": {"PVZ1": ["PVZ2"]},
+                "capability_map": {"PVZ1": ["PVZ3"]},
+                "dry_run_capability_ranked": True,
+            },
+            clear=False,
+        ):
+            decisions = reports_processor.collect_failover_scan_decisions(
+                configured_pvz_id="PVZ1",
+                accessible_pvz_ids=["PVZ1", "PVZ2"],
+            )
+
+        self.assertEqual(decisions["active_mode"], "priority_map_legacy")
+        self.assertEqual(decisions["active"]["reason"], "accessible_priority_candidates")
+        self.assertEqual(
+            decisions["dry_run_capability_ranked"]["reason"],
+            "capability_targets_not_accessible",
+        )
+
     def test_build_filtered_batch_result_keeps_only_requested_dates(self):
         result = reports_processor.build_filtered_batch_result(
             batch_result={
@@ -1752,6 +1830,7 @@ class TestReportsProcessor(unittest.TestCase):
 
         self.assertTrue(result["attempted"])
         self.assertEqual(result["available_pvz"], ["PVZ1"])
+        self.assertEqual(result["scan_policy_mode"], "priority_map_legacy")
         self.assertFalse(result["candidate_scan"]["attempted"])
         self.assertIsNone(result["candidate_scan"]["success"])
         self.assertEqual(result["candidate_rows"], [])
@@ -1759,6 +1838,55 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["claimed_rows"], [])
         self.assertEqual(result["claimed_rows_count"], 0)
         mock_collect_claimable_failover_rows.assert_not_called()
+        mock_claim_failover_rows.assert_not_called()
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.reports_processor.claim_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.collect_claimable_failover_rows")
+    @patch("scheduler_runner.tasks.reports.reports_processor.discover_available_pvz_scope")
+    def test_run_failover_coordination_pass_records_dry_run_scan_decisions(
+        self,
+        mock_discover_available_pvz_scope,
+        mock_collect_claimable_failover_rows,
+        mock_claim_failover_rows,
+        mock_failover_state_connection,
+    ):
+        shared_uploader = Mock()
+        connection = mock_failover_state_connection.return_value
+        connection.__enter__.return_value = shared_uploader
+        connection.__exit__.return_value = False
+        mock_discover_available_pvz_scope.return_value = {
+            "discovery_result": {"success": True},
+            "available_pvz": ["PVZ1", "PVZ2"],
+        }
+        mock_collect_claimable_failover_rows.return_value = []
+
+        with patch.dict(
+            reports_processor.FAILOVER_POLICY_CONFIG,
+            {
+                "enabled": True,
+                "selection_mode": "priority_map_legacy",
+                "priority_map": {"PVZ1": ["PVZ2"]},
+                "capability_map": {"PVZ1": ["PVZ3"]},
+                "dry_run_capability_ranked": True,
+            },
+            clear=False,
+        ):
+            result = reports_processor.run_failover_coordination_pass(
+                configured_pvz_id="PVZ1",
+                parser_api="legacy",
+                parser_logger=Mock(),
+                processor_logger=Mock(),
+                source_run_id="run-1",
+            )
+
+        self.assertEqual(result["scan_policy_mode"], "priority_map_legacy")
+        self.assertIn("dry_run_capability_ranked", result["scan_decisions"])
+        self.assertEqual(
+            result["scan_decisions"]["dry_run_capability_ranked"]["reason"],
+            "capability_targets_not_accessible",
+        )
+        mock_collect_claimable_failover_rows.assert_called_once()
         mock_claim_failover_rows.assert_not_called()
 
     @patch("scheduler_runner.tasks.reports.reports_processor.run_failover_coordination_pass")
