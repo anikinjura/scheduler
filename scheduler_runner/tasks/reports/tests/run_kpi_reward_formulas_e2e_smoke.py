@@ -124,6 +124,7 @@ def read_row_render_diagnostics(connection_params: dict, row_number: int, logger
             "Сумма за Количество выдач",
             "Сумма за Прямой поток",
             "Сумма за Возвратный поток",
+            "Итого вознаграждение",
         ]
         reward_diagnostics = {}
         for header in reward_headers:
@@ -158,6 +159,7 @@ def extract_reward_snapshot(row: dict | None) -> dict:
         "Сумма за Количество выдач": row.get("Сумма за Количество выдач", ""),
         "Сумма за Прямой поток": row.get("Сумма за Прямой поток", ""),
         "Сумма за Возвратный поток": row.get("Сумма за Возвратный поток", ""),
+        "Итого вознаграждение": row.get("Итого вознаграждение", ""),
     }
 
 

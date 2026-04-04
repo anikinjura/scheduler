@@ -17,6 +17,7 @@ class TestReportsProcessor(unittest.TestCase):
                 "Сумма за Количество выдач",
                 "Сумма за Прямой поток",
                 "Сумма за Возвратный поток",
+                "Итого вознаграждение",
             }
         }
 
@@ -24,6 +25,7 @@ class TestReportsProcessor(unittest.TestCase):
             "Сумма за Количество выдач",
             "Сумма за Прямой поток",
             "Сумма за Возвратный поток",
+            "Итого вознаграждение",
         })
         self.assertEqual(reward_columns["Сумма за Количество выдач"].column_type, ColumnType.FORMULA)
         self.assertEqual(
@@ -37,6 +39,10 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(
             reward_columns["Сумма за Возвратный поток"].formula_template,
             '=GET_REWARD("Возвратный поток";F{row};$B{row};KPI_REWARD_RULES_RANGE)',
+        )
+        self.assertEqual(
+            reward_columns["Итого вознаграждение"].formula_template,
+            "=SUM(G{row}:I{row})",
         )
 
     def test_resolve_pvz_ids_defaults_to_global_pvz(self):

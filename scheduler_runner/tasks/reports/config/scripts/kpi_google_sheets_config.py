@@ -37,7 +37,6 @@ TABLE_CONFIG = TableConfig(
         ColumnDefinition(name="Количество выдач", column_type=ColumnType.DATA),
         ColumnDefinition(name="Прямой поток", column_type=ColumnType.DATA),
         ColumnDefinition(name="Возвратный поток", column_type=ColumnType.DATA),
-        ColumnDefinition(name="timestamp", column_type=ColumnType.DATA),
         ColumnDefinition(
             name="Сумма за Количество выдач",
             column_type=ColumnType.FORMULA,
@@ -53,6 +52,12 @@ TABLE_CONFIG = TableConfig(
             column_type=ColumnType.FORMULA,
             formula_template='=GET_REWARD("Возвратный поток";F{row};$B{row};KPI_REWARD_RULES_RANGE)'
         ),
+        ColumnDefinition(
+            name="Итого вознаграждение",
+            column_type=ColumnType.FORMULA,
+            formula_template="=SUM(G{row}:I{row})"
+        ),
+        ColumnDefinition(name="timestamp", column_type=ColumnType.DATA),
     ],
     unique_key_columns=["Дата", "ПВЗ"]
 )
