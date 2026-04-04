@@ -41,7 +41,7 @@ FAILOVER_POLICY_CONFIG = {
         "ЧЕБОКСАРЫ_340": [],
     },
     "helper_bias": {},
-    "dry_run_capability_ranked": False,
+    "dry_run_capability_ranked": True,
     "default_rank_delay_minutes": 10,
     "max_attempts_per_date": 3,
     "max_claims_per_run": 3,
