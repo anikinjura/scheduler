@@ -4,9 +4,41 @@ from unittest.mock import Mock, patch
 
 from scheduler_runner.utils.parser.core.contracts import ParserJobResult
 from scheduler_runner.tasks.reports import reports_processor
+from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import TABLE_CONFIG
+from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import ColumnType
 
 
 class TestReportsProcessor(unittest.TestCase):
+    def test_kpi_table_config_includes_reward_formula_columns(self):
+        reward_columns = {
+            column.name: column
+            for column in TABLE_CONFIG.columns
+            if column.name in {
+                "Сумма за Количество выдач",
+                "Сумма за Прямой поток",
+                "Сумма за Возвратный поток",
+            }
+        }
+
+        self.assertEqual(set(reward_columns.keys()), {
+            "Сумма за Количество выдач",
+            "Сумма за Прямой поток",
+            "Сумма за Возвратный поток",
+        })
+        self.assertEqual(reward_columns["Сумма за Количество выдач"].column_type, ColumnType.FORMULA)
+        self.assertEqual(
+            reward_columns["Сумма за Количество выдач"].formula_template,
+            '=GET_REWARD("Количество выдач";D{row};$B{row};KPI_REWARD_RULES_RANGE)',
+        )
+        self.assertEqual(
+            reward_columns["Сумма за Прямой поток"].formula_template,
+            '=GET_REWARD("Прямой поток";E{row};$B{row};KPI_REWARD_RULES_RANGE)',
+        )
+        self.assertEqual(
+            reward_columns["Сумма за Возвратный поток"].formula_template,
+            '=GET_REWARD("Возвратный поток";F{row};$B{row};KPI_REWARD_RULES_RANGE)',
+        )
+
     def test_resolve_pvz_ids_defaults_to_global_pvz(self):
         self.assertEqual(reports_processor.resolve_pvz_ids(None), [reports_processor.PVZ_ID])
 
