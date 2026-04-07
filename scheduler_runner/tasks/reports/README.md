@@ -113,7 +113,7 @@ Failover coordination теперь разбит на два слоя:
 - detailed runbook: [`FAILOVER_COORDINATION.md`](C:/tools/scheduler/scheduler_runner/tasks/reports/FAILOVER_COORDINATION.md)
 
 Что уже работает:
-- owner пишет `owner_pending / owner_success / owner_failed` по missing dates своего PVZ;
+- owner пишет `owner_pending / owner_failed`, а terminal `owner_success` сохраняет только для дат с prior incident-related history;
 - processor может сделать один bounded failover pass по доступным коллегам;
 - claim по умолчанию идет через Google Apps Script Web App под `LockService`;
 - перед upload recovery path делает повторный coverage-check и исключает уже закрытые даты.
@@ -123,6 +123,7 @@ Failover coordination теперь разбит на два слоя:
   - enforce `max_attempts_per_date`
   - support `priority_map`
   - support rank-based delay
+  - support dual-mode selection API (`priority_map_legacy` + `capability_ranked` dry-run)
 
 Текущие ограничения:
 - автоматический coordination flow пока `opt-in` через `--enable_failover_coordination`;
@@ -135,14 +136,16 @@ Failover coordination теперь разбит на два слоя:
   - `ЧЕБОКСАРЫ_144 -> [ЧЕБОКСАРЫ_182, ЧЕБОКСАРЫ_143]`
   - `СОСНОВКА_10 -> [ЧЕБОКСАРЫ_144]`
 - `ЧЕБОКСАРЫ_340` в pilot map остается изолированным через явное пустое правило `[]`;
-- карта пока pilot-level и может быть расширена после дополнительных discovery/e2e прогонов и реальных recovery кейсов.
+- карта пока pilot-level и может быть расширена после дополнительных discovery/e2e прогонов и реальных recovery кейсов;
+- текущий active selection mode остается `priority_map_legacy`;
+- `dry_run_capability_ranked=True` уже включен и должен анализироваться по `Processor` логам.
 
 ## Основные Модули
 
 - [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
   - основной orchestration script
 - [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
-  - coordination state helpers и claim backend switch
+  - coordination state helpers, optimized state upsert и claim backend switch
 - [`failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_policy.py)
   - policy-aware filtering и arbitration helpers
 - [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
@@ -202,6 +205,7 @@ Single-PVZ backfill с automatic failover coordination:
   - недоступные PVZ отбрасываются до parser run
 - `backfill + failover coordination`
   - owner sync-ит свои failed dates в `KPI_FAILOVER_STATE`
+  - healthy-new success rows suppress-ятся и не пишутся без необходимости
   - processor делает bounded claim pass по доступным коллегам
   - claim backend по умолчанию `apps_script`
   - arbitration идет через policy layer, если включен `FAILOVER_POLICY_CONFIG["enabled"]`
@@ -214,6 +218,11 @@ Single-PVZ backfill с automatic failover coordination:
 - `Uploader`
 - `Notification`
 - `FailoverState`
+
+Полезные актуальные сигналы в `Processor` логах:
+- `Failover coordination dry-run: capability_ranked decision=...`
+- `Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...`
+- `Owner state sync metrics: prefetch_keys=..., prefetch_rows_found=..., persisted_rows=..., suppressed_success=..., upsert_updated=..., upsert_appended=..., upsert_prefetch_matches=...`
 
 Parser runtime и его артефакты живут в parser package logging area:
 - `logs/reports_domain/Parser/`
@@ -243,4 +252,16 @@ Parser runtime и его артефакты живут в parser package logging
 
 ```powershell
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_claim_smoke --claim_backend apps_script --pretty
+```
+
+Synthetic smoke optimized upsert path:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_state_upsert_smoke --pretty
+```
+
+Synthetic smoke owner-success suppression policy:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_state_owner_success_policy_smoke --pretty
 ```
