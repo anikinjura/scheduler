@@ -43,6 +43,19 @@ CANDIDATE_SCAN_COLUMN_NAMES = [
     "updated_at",
 ]
 FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["Дата", "target_pvz"]
+FAILOVER_STATE_ALL_COLUMN_NAMES = [
+    "request_id",
+    "Дата",
+    "target_pvz",
+    "owner_pvz",
+    "status",
+    "claimed_by",
+    "claim_expires_at",
+    "attempt_no",
+    "source_run_id",
+    "last_error",
+    "updated_at",
+]
 
 
 def create_failover_state_logger():
@@ -170,6 +183,86 @@ def _flatten_single_column_batch_values(values):
         else:
             flattened.append(item)
     return flattened
+
+
+def get_failover_state_rows_by_keys(
+    *,
+    keys: list[Dict[str, str]],
+    logger=None,
+    uploader=None,
+) -> Dict[tuple[str, str], Dict[str, Any]]:
+    logger = logger or create_failover_state_logger()
+    normalized_keys_input = [key for key in (keys or []) if key]
+    if not normalized_keys_input:
+        return {}
+
+    connection_context = nullcontext(uploader) if uploader is not None else failover_state_connection(logger=logger)
+    with connection_context as active_uploader:
+        reporter = active_uploader.sheets_reporter
+        worksheet = reporter.worksheet
+        table_config = active_uploader.table_config
+
+        target_keys = {
+            (
+                _normalize_failover_lookup_value(reporter, key.get("Дата", "")),
+                _normalize_failover_lookup_value(reporter, key.get("target_pvz", "")),
+            )
+            for key in normalized_keys_input
+        }
+
+        date_column_index = table_config.get_column_index("Дата") or 2
+        last_data_row = reporter.get_last_row_with_data(column_index=date_column_index)
+        if last_data_row < 2:
+            return {}
+
+        ranges = []
+        column_names = []
+        for column_name in FAILOVER_STATE_ALL_COLUMN_NAMES:
+            column_letter = table_config.get_column_letter(column_name)
+            if not column_letter:
+                column_index = table_config.get_column_index(column_name)
+                if not column_index:
+                    continue
+                column_letter = _index_to_column_letter(column_index)
+            ranges.append(f"{column_letter}2:{column_letter}{last_data_row}")
+            column_names.append(column_name)
+
+        if not ranges:
+            return {}
+
+        batch_values = worksheet.batch_get(ranges)
+
+    column_values = {
+        column_name: _flatten_single_column_batch_values(values)
+        for column_name, values in zip(column_names, batch_values)
+    }
+    max_len = max((len(values) for values in column_values.values()), default=0)
+    matched_rows: Dict[tuple[str, str], Dict[str, Any]] = {}
+
+    for index in range(max_len):
+        row = {}
+        has_meaningful_data = False
+        for column_name in column_names:
+            values = column_values.get(column_name, [])
+            value = values[index] if index < len(values) else ""
+            if value not in ("", None):
+                has_meaningful_data = True
+            row[column_name] = value
+
+        if not has_meaningful_data:
+            continue
+
+        row_key = (
+            _normalize_failover_lookup_value(reporter, row.get("Дата", "")),
+            _normalize_failover_lookup_value(reporter, row.get("target_pvz", "")),
+        )
+        if row_key not in target_keys or row_key in matched_rows:
+            continue
+
+        row["_row_number"] = index + 2
+        matched_rows[row_key] = row
+
+    return matched_rows
 
 
 def _build_existing_failover_row_lookup(records: list[Dict[str, Any]], uploader) -> tuple[Dict[tuple[str, str], int], int]:
