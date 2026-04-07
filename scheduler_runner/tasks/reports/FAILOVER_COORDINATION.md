@@ -54,15 +54,21 @@ Terminal statuses:
 - `owner_success`
 - `failover_success`
 
+Практический нюанс текущего baseline:
+- `owner_success` больше не пишется безусловно для каждого healthy owner-run;
+- terminal `owner_success` сохраняется только для дат, у которых уже была incident-related история;
+- healthy-new success rows теперь suppress-ятся и не пишутся в `KPI_FAILOVER_STATE`.
+
 ## Runtime Flow
 
 Текущий flow в `reports_processor` такой:
 
 1. owner object делает обычный single-PVZ backfill по своему `PVZ_ID`;
 2. для missing dates пишет `owner_pending`;
-3. по итогам parse:
-   - successful dates -> `owner_success`
+3. по итогам parse строит финальный owner-state:
    - failed dates -> `owner_failed`
+   - successful dates -> `owner_success` только если это нужно для terminal state history;
+   - healthy-new success rows suppress-ятся и не записываются;
 4. если включен `--enable_failover_coordination`, processor делает один bounded failover pass:
    - определяет доступных коллег через parser discovery;
    - читает claimable rows из `KPI_FAILOVER_STATE`;
@@ -109,18 +115,26 @@ Policy layer живет отдельно от claim backend:
 - reject not accessible target;
 - enforce `max_attempts_per_date`;
 - explicit `priority_map`;
-- rank-based delay.
+- rank-based delay;
+- dual-mode selection API:
+  - active mode сейчас `priority_map_legacy`;
+  - `capability_ranked` уже работает как dry-run telemetry.
 
 Config живет в:
 - [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
 
 Основные policy keys:
 - `enabled`
+- `selection_mode`
 - `priority_map`
+- `capability_map`
+- `helper_bias`
+- `dry_run_capability_ranked`
 - `default_rank_delay_minutes`
 - `max_attempts_per_date`
 - `max_claims_per_run`
 - `allow_unlisted_fallback`
+- `prefer_lower_load_helpers`
 
 Текущий pilot policy map:
 - `ЧЕБОКСАРЫ_143 -> [ЧЕБОКСАРЫ_144]`
@@ -133,6 +147,13 @@ Config живет в:
 - `ЧЕБОКСАРЫ_144` выступает primary recovery buddy для `ЧЕБОКСАРЫ_143`, `ЧЕБОКСАРЫ_182` и `СОСНОВКА_10`;
 - recovery для `ЧЕБОКСАРЫ_144` идет по rank order: сначала `ЧЕБОКСАРЫ_182`, затем `ЧЕБОКСАРЫ_143` после delay;
 - `ЧЕБОКСАРЫ_340` policy-aware слоем считается изолированным target через явное пустое правило `[]`.
+
+Текущий rollout status:
+- active selection mode: `priority_map_legacy`
+- dry-run mode: `capability_ranked`
+- в `Processor` логах нужно смотреть:
+  - `Failover coordination dry-run: capability_ranked decision=...`
+  - `Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...`
 
 ## Google Apps Script
 
@@ -161,6 +182,8 @@ Deployment:
 Manual smoke-script:
 - [`tests/run_failover_claim_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_claim_smoke.py)
 - [`tests/run_failover_policy_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_policy_smoke.py)
+- [`tests/run_failover_state_upsert_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_state_upsert_smoke.py)
+- [`tests/run_failover_state_owner_success_policy_smoke.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/tests/run_failover_state_owner_success_policy_smoke.py)
 
 Команда:
 
@@ -205,6 +228,28 @@ Synthetic policy-aware smoke:
 - это synthetic сценарий, а не реальный distributed e2e;
 - при частом повторении может упираться в Google Sheets quota по `read requests per minute per user`, поэтому его стоит запускать точечно.
 
+Synthetic smoke для optimized upsert:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_state_upsert_smoke --pretty
+```
+
+Что проверяет:
+- append двух synthetic rows в `KPI_FAILOVER_STATE`;
+- повторный upsert обновляет те же rows, а не создает новые;
+- batch upsert path работает через bulk prefetch + direct update/append.
+
+Synthetic smoke для owner-success policy:
+
+```powershell
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_state_owner_success_policy_smoke --pretty
+```
+
+Что проверяет:
+- healthy-new success -> строка не создается;
+- prior incident-related row -> terminal `owner_success` сохраняется;
+- duplicate prior `owner_success` -> лишний rewrite не выполняется.
+
 ## API/Quota Discipline
 
 Квоты Google нужно экономить, поэтому coordination не должен быть high-frequency.
@@ -216,6 +261,12 @@ Synthetic policy-aware smoke:
 - один reread после claim verification
 - один batched coverage-check на recovery batch одного `target_pvz`
 - без per-date claim/read loops поверх этого
+- owner-state upsert теперь тоже оптимизирован:
+  - bulk prefetch existing rows по `Дата + target_pvz`
+  - direct `update` для existing rows
+  - grouped `append_rows` для новых rows
+- healthy-new `owner_success` больше не пишутся без необходимости
+- в `Processor` логах доступны owner-state sync metrics для оценки read/write pressure
 
 ## Ограничения
 
@@ -230,6 +281,26 @@ Synthetic policy-aware smoke:
 - state update paths кроме claim пока остаются на Python-side через Google Sheets API.
 - `priority_map` уже заполнен pilot-матрицей для e2e и controlled failover-прогонов, но это еще не финальная business policy для всех объектов;
 - текущая карта строится на подтвержденных discovery-связях и операционных гипотезах, поэтому требует дальнейшей валидации на реальных recovery-сценариях.
+- `429` по `KPI_FAILOVER_STATE` все еще возможен, но текущий baseline уже включает:
+  - снижение read pressure в owner-state upsert path;
+  - suppression лишних healthy-success writes;
+  - diagnostics для измерения эффекта по боевым логам.
+
+## Observability
+
+После rollout текущего baseline в `Processor` логах нужно смотреть строку:
+
+```text
+Owner state sync metrics: prefetch_keys=..., prefetch_rows_found=..., persisted_rows=..., suppressed_success=..., upsert_updated=..., upsert_appended=..., upsert_prefetch_matches=...
+```
+
+Практический смысл полей:
+- `prefetch_keys` — сколько `Дата + target_pvz` ключей object подготовил к owner final sync;
+- `prefetch_rows_found` — сколько existing rows уже было найдено в `KPI_FAILOVER_STATE`;
+- `persisted_rows` — сколько rows реально было записано после success-suppression policy;
+- `suppressed_success` — сколько healthy-new success dates не были записаны;
+- `upsert_updated` / `upsert_appended` — сколько rows реально обновили и сколько добавили;
+- `upsert_prefetch_matches` — сколько incoming records совпало с существующими rows в bulk prefetch path.
 
 ## Проверка Кода
 
