@@ -421,3 +421,108 @@ class TestFailoverState(unittest.TestCase):
 
         self.assertTrue(result["success"])
         uploader._perform_upload.assert_called_once()
+
+    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    def test_get_failover_state_rows_by_keys_uses_batch_get_and_returns_keyed_rows(self, mock_connection_factory):
+        uploader = Mock()
+        uploader.table_config.get_column_index.side_effect = lambda name: {
+            "Дата": 2,
+            "target_pvz": 3,
+            "owner_pvz": 4,
+            "status": 5,
+            "claimed_by": 6,
+            "claim_expires_at": 7,
+            "attempt_no": 8,
+            "source_run_id": 9,
+            "last_error": 10,
+            "updated_at": 11,
+            "request_id": 1,
+        }.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {
+            "request_id": "A",
+            "Дата": "B",
+            "target_pvz": "C",
+            "owner_pvz": "D",
+            "status": "E",
+            "claimed_by": "F",
+            "claim_expires_at": "G",
+            "attempt_no": "H",
+            "source_run_id": "I",
+            "last_error": "J",
+            "updated_at": "K",
+        }.get(name)
+        uploader.sheets_reporter.get_last_row_with_data.return_value = 4
+        uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
+        uploader.sheets_reporter._normalize_for_comparison.side_effect = lambda value: value
+        uploader.sheets_reporter.worksheet.batch_get.return_value = [
+            [["req-1"], ["req-2"], ["req-3"]],
+            [["2026-03-14"], ["2026-03-15"], ["2026-03-16"]],
+            [["PVZ1"], ["PVZ2"], ["PVZ3"]],
+            [["OWNER1"], ["OWNER2"], ["OWNER3"]],
+            [[failover_state.STATUS_OWNER_FAILED], [failover_state.STATUS_OWNER_SUCCESS], [failover_state.STATUS_FAILOVER_FAILED]],
+            [[""], [""], ["PVZ9"]],
+            [[""], [""], ["14.03.2099 12:30:00"]],
+            [["0"], ["0"], ["1"]],
+            [["run-1"], ["run-2"], ["run-3"]],
+            [["boom"], [""], ["retry"]],
+            [["20.03.2026 21:30:00"], ["20.03.2026 21:31:00"], ["20.03.2026 21:32:00"]],
+        ]
+        connection = mock_connection_factory.return_value
+        connection.__enter__.return_value = uploader
+        connection.__exit__.return_value = False
+
+        result = failover_state.get_failover_state_rows_by_keys(
+            keys=[
+                {"Дата": "2026-03-14", "target_pvz": "PVZ1"},
+                {"Дата": "2026-03-16", "target_pvz": "PVZ3"},
+            ],
+            logger=Mock(),
+        )
+
+        uploader.sheets_reporter.worksheet.batch_get.assert_called_once()
+        self.assertEqual(set(result.keys()), {("2026-03-14", "PVZ1"), ("2026-03-16", "PVZ3")})
+        self.assertEqual(result[("2026-03-14", "PVZ1")]["status"], failover_state.STATUS_OWNER_FAILED)
+        self.assertEqual(result[("2026-03-14", "PVZ1")]["_row_number"], 2)
+        self.assertEqual(result[("2026-03-16", "PVZ3")]["claimed_by"], "PVZ9")
+
+    def test_get_failover_state_rows_by_keys_reuses_existing_uploader(self):
+        uploader = Mock()
+        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {
+            "request_id": "A",
+            "Дата": "B",
+            "target_pvz": "C",
+            "owner_pvz": "D",
+            "status": "E",
+            "claimed_by": "F",
+            "claim_expires_at": "G",
+            "attempt_no": "H",
+            "source_run_id": "I",
+            "last_error": "J",
+            "updated_at": "K",
+        }.get(name)
+        uploader.sheets_reporter.get_last_row_with_data.return_value = 2
+        uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
+        uploader.sheets_reporter._normalize_for_comparison.side_effect = lambda value: value
+        uploader.sheets_reporter.worksheet.batch_get.return_value = [
+            [["req-1"]],
+            [["2026-03-14"]],
+            [["PVZ1"]],
+            [["OWNER1"]],
+            [[failover_state.STATUS_OWNER_FAILED]],
+            [[""]],
+            [[""]],
+            [["0"]],
+            [["run-1"]],
+            [["boom"]],
+            [["20.03.2026 21:30:00"]],
+        ]
+
+        result = failover_state.get_failover_state_rows_by_keys(
+            keys=[{"Дата": "2026-03-14", "target_pvz": "PVZ1"}],
+            logger=Mock(),
+            uploader=uploader,
+        )
+
+        self.assertEqual(result[("2026-03-14", "PVZ1")]["status"], failover_state.STATUS_OWNER_FAILED)
+        uploader.sheets_reporter.worksheet.batch_get.assert_called_once()

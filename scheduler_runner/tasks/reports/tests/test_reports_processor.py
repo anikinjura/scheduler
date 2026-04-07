@@ -109,6 +109,9 @@ class TestReportsProcessor(unittest.TestCase):
                 }
             },
             source_run_id="run-1",
+            existing_state_rows_by_date={
+                "2026-03-01": {"status": reports_processor.STATUS_OWNER_FAILED}
+            },
         )
 
         statuses = [record["status"] for record in result["records"]]
@@ -121,6 +124,106 @@ class TestReportsProcessor(unittest.TestCase):
         )
         self.assertEqual(result["successful_dates"], ["2026-03-01"])
         self.assertEqual(result["failed_dates"], ["2026-03-02"])
+
+    def test_classify_owner_success_history_returns_no_state_for_missing_row(self):
+        result = reports_processor.classify_owner_success_history(None)
+
+        self.assertEqual(result["classification"], "no_state")
+        self.assertEqual(result["status"], "")
+        self.assertFalse(result["should_persist_success_if_enabled"])
+
+    def test_classify_owner_success_history_marks_owner_success_as_terminal_success_only(self):
+        result = reports_processor.classify_owner_success_history({"status": reports_processor.STATUS_OWNER_SUCCESS})
+
+        self.assertEqual(result["classification"], "terminal_success_only")
+        self.assertEqual(result["status"], reports_processor.STATUS_OWNER_SUCCESS)
+        self.assertFalse(result["should_persist_success_if_enabled"])
+
+    def test_classify_owner_success_history_marks_incident_related_statuses(self):
+        incident_statuses = [
+            reports_processor.STATUS_OWNER_FAILED,
+            reports_processor.STATUS_CLAIM_EXPIRED,
+            reports_processor.STATUS_FAILOVER_FAILED,
+            "failover_claimed",
+            reports_processor.STATUS_FAILOVER_SUCCESS,
+        ]
+
+        for status in incident_statuses:
+            with self.subTest(status=status):
+                result = reports_processor.classify_owner_success_history({"status": status})
+                self.assertEqual(result["classification"], "incident_related")
+                self.assertEqual(result["status"], status)
+                self.assertTrue(result["should_persist_success_if_enabled"])
+
+    def test_classify_owner_success_history_marks_unexpected_status_as_other(self):
+        result = reports_processor.classify_owner_success_history({"status": reports_processor.STATUS_OWNER_PENDING})
+
+        self.assertEqual(result["classification"], "other")
+        self.assertEqual(result["status"], reports_processor.STATUS_OWNER_PENDING)
+        self.assertFalse(result["should_persist_success_if_enabled"])
+
+    def test_should_persist_owner_success_from_history_suppresses_healthy_new_success(self):
+        result = reports_processor.should_persist_owner_success_from_history(None)
+
+        self.assertFalse(result["persisted"])
+        self.assertEqual(result["classification"], "no_state")
+        self.assertEqual(result["reason"], "healthy_new_success")
+
+    def test_should_persist_owner_success_from_history_persists_incident_history(self):
+        result = reports_processor.should_persist_owner_success_from_history(
+            {"status": reports_processor.STATUS_OWNER_FAILED}
+        )
+
+        self.assertTrue(result["persisted"])
+        self.assertEqual(result["classification"], "incident_related")
+        self.assertEqual(result["reason"], "incident_history_present")
+
+    def test_should_persist_owner_success_from_history_suppresses_duplicate_owner_success(self):
+        result = reports_processor.should_persist_owner_success_from_history(
+            {"status": reports_processor.STATUS_OWNER_SUCCESS}
+        )
+
+        self.assertFalse(result["persisted"])
+        self.assertEqual(result["classification"], "terminal_success_only")
+        self.assertEqual(result["reason"], "already_terminal_success")
+
+    def test_build_owner_final_failover_state_records_suppresses_healthy_new_success_rows(self):
+        result = reports_processor.build_owner_final_failover_state_records(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                }
+            },
+            source_run_id="run-1",
+            existing_state_rows_by_date={},
+        )
+
+        self.assertEqual(result["records"], [])
+        self.assertEqual(result["successful_dates"], ["2026-03-01"])
+        self.assertEqual(result["failed_dates"], [])
+        self.assertEqual(result["suppressed_success_dates"], ["2026-03-01"])
+        self.assertFalse(result["success_persistence_by_date"]["2026-03-01"]["persisted"])
+
+    def test_build_owner_final_failover_state_records_persists_success_for_prior_owner_failed(self):
+        result = reports_processor.build_owner_final_failover_state_records(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                }
+            },
+            source_run_id="run-1",
+            existing_state_rows_by_date={
+                "2026-03-01": {"status": reports_processor.STATUS_OWNER_FAILED}
+            },
+        )
+
+        self.assertEqual([record["status"] for record in result["records"]], [reports_processor.STATUS_OWNER_SUCCESS])
+        self.assertEqual(result["suppressed_success_dates"], [])
+        self.assertTrue(result["success_persistence_by_date"]["2026-03-01"]["persisted"])
 
     def test_build_owner_final_failover_state_records_marks_upload_failure_as_owner_failed(self):
         result = reports_processor.build_owner_final_failover_state_records(
@@ -139,14 +242,20 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["successful_dates"], [])
         self.assertEqual(result["failed_dates"], ["2026-03-01"])
         self.assertIn("503", result["records"][0]["last_error"])
+        self.assertEqual(result["suppressed_success_dates"], [])
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys")
     @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
     @patch("scheduler_runner.tasks.reports.reports_processor.build_failover_state_record")
     def test_sync_owner_failover_state_from_batch_result_uses_batch_upsert_once(
         self,
         mock_build_failover_state_record,
         mock_upsert_failover_state_records,
+        mock_get_failover_state_rows_by_keys,
     ):
+        mock_get_failover_state_rows_by_keys.return_value = {
+            ("2026-03-01", "pvz1"): {"Дата": "01.03.2026", "target_pvz": "PVZ1", "status": reports_processor.STATUS_OWNER_FAILED}
+        }
         mock_build_failover_state_record.side_effect = [
             {"Дата": "2026-03-01", "status": reports_processor.STATUS_OWNER_SUCCESS},
             {"Дата": "2026-03-02", "status": reports_processor.STATUS_OWNER_FAILED},
@@ -177,10 +286,16 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(records[1]["status"], reports_processor.STATUS_OWNER_FAILED)
         self.assertEqual(result["successful_dates"], ["2026-03-01"])
         self.assertEqual(result["failed_dates"], ["2026-03-02"])
+        self.assertEqual(result["suppressed_success_dates"], [])
+        self.assertEqual(result["persisted_rows_count"], 2)
         self.assertEqual(len(result["results"]), 2)
 
+    @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys")
     @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
-    def test_sync_owner_failover_state_from_batch_result_raises_when_batch_upsert_fails(self, mock_upsert):
+    def test_sync_owner_failover_state_from_batch_result_raises_when_batch_upsert_fails(self, mock_upsert, mock_get_existing):
+        mock_get_existing.return_value = {
+            ("2026-03-01", "pvz1"): {"Дата": "01.03.2026", "target_pvz": "PVZ1", "status": reports_processor.STATUS_OWNER_FAILED}
+        }
         mock_upsert.return_value = {"success": False, "results": [{"success": False}]}
 
         with self.assertRaises(RuntimeError):
@@ -196,6 +311,68 @@ class TestReportsProcessor(unittest.TestCase):
                 logger=Mock(),
                 source_run_id="run-1",
             )
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys", return_value={})
+    @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
+    def test_sync_owner_failover_state_from_batch_result_skips_batch_upsert_when_all_success_rows_are_suppressed(
+        self,
+        mock_upsert,
+        mock_get_existing,
+    ):
+        result = reports_processor.sync_owner_failover_state_from_batch_result(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                }
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+            logger=Mock(),
+            source_run_id="run-1",
+        )
+
+        mock_get_existing.assert_called_once()
+        mock_upsert.assert_not_called()
+        self.assertEqual(result["successful_dates"], ["2026-03-01"])
+        self.assertEqual(result["failed_dates"], [])
+        self.assertEqual(result["suppressed_success_dates"], ["2026-03-01"])
+        self.assertEqual(result["persisted_rows_count"], 0)
+        self.assertEqual(result["results"], [])
+
+    @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys")
+    @patch("scheduler_runner.tasks.reports.reports_processor.upsert_failover_state_records")
+    def test_sync_owner_failover_state_from_batch_result_persists_only_incident_related_success_rows_in_mixed_batch(
+        self,
+        mock_upsert,
+        mock_get_existing,
+    ):
+        mock_get_existing.return_value = {
+            ("2026-03-01", "pvz1"): {"Дата": "01.03.2026", "target_pvz": "PVZ1", "status": reports_processor.STATUS_OWNER_FAILED}
+        }
+        mock_upsert.return_value = {"success": True, "results": [{"success": True}]}
+
+        result = reports_processor.sync_owner_failover_state_from_batch_result(
+            owner_pvz="PVZ1",
+            missing_dates=["2026-03-01", "2026-03-02"],
+            batch_result={
+                "results_by_date": {
+                    "2026-03-01": {"success": True, "data": {}},
+                    "2026-03-02": {"success": True, "data": {}},
+                }
+            },
+            upload_result={"success": True, "uploaded_records": 2},
+            logger=Mock(),
+            source_run_id="run-1",
+        )
+
+        mock_upsert.assert_called_once()
+        persisted_records = mock_upsert.call_args.args[0]
+        self.assertEqual(len(persisted_records), 1)
+        self.assertEqual(persisted_records[0]["status"], reports_processor.STATUS_OWNER_SUCCESS)
+        self.assertEqual(result["successful_dates"], ["2026-03-01", "2026-03-02"])
+        self.assertEqual(result["suppressed_success_dates"], ["2026-03-02"])
+        self.assertEqual(result["persisted_rows_count"], 1)
 
     def test_run_google_sheets_upload_with_retry_retries_retryable_errors(self):
         logger = Mock()
