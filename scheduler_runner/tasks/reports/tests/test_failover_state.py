@@ -205,6 +205,10 @@ class TestFailoverState(unittest.TestCase):
         uploader.sheets_reporter._update_existing_row.assert_called_once()
         uploader.sheets_reporter.worksheet.append_rows.assert_called_once()
         uploader._perform_upload.assert_not_called()
+        self.assertEqual(result["diagnostics"]["requested_records_count"], 2)
+        self.assertEqual(result["diagnostics"]["prefetch_matches_count"], 1)
+        self.assertEqual(result["diagnostics"]["updated_count"], 1)
+        self.assertEqual(result["diagnostics"]["appended_count"], 1)
 
     @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
     def test_upsert_failover_state_records_batches_multiple_appends_into_single_request(self, mock_connection_factory):
@@ -249,6 +253,9 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["results"][1]["row_number"], 7)
         uploader.sheets_reporter._update_existing_row.assert_not_called()
         uploader._perform_upload.assert_not_called()
+        self.assertEqual(result["diagnostics"]["prefetch_matches_count"], 0)
+        self.assertEqual(result["diagnostics"]["updated_count"], 0)
+        self.assertEqual(result["diagnostics"]["appended_count"], 2)
 
     @patch("scheduler_runner.tasks.reports.failover_state.urllib.request.urlopen")
     def test_try_claim_failover_via_apps_script_returns_remote_payload(self, mock_urlopen):
