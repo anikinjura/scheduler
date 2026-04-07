@@ -13,7 +13,11 @@ from scheduler_runner.tasks.reports.config.scripts.kpi_failover_state_google_she
 )
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
-from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import _index_to_column_letter
+from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_core import retry_on_api_error
+from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import (
+    ColumnType,
+    _index_to_column_letter,
+)
 from scheduler_runner.utils.uploader.implementations.google_sheets_uploader import GoogleSheetsUploader
 
 
@@ -38,6 +42,7 @@ CANDIDATE_SCAN_COLUMN_NAMES = [
     "last_error",
     "updated_at",
 ]
+FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["Дата", "target_pvz"]
 
 
 def create_failover_state_logger():
@@ -146,6 +151,126 @@ def upsert_failover_state(record: Dict[str, Any], logger=None, uploader=None) ->
         return active_uploader._perform_upload(record, strategy="update_or_append")
 
 
+def _normalize_failover_lookup_value(reporter, value: Any) -> str:
+    return reporter._normalize_for_comparison(reporter._prepare_value_for_search(value))
+
+
+def _build_failover_record_lookup_key(record: Dict[str, Any], reporter) -> tuple[str, str]:
+    return tuple(
+        _normalize_failover_lookup_value(reporter, record.get(column_name, ""))
+        for column_name in FAILOVER_STATE_UPSERT_KEY_COLUMNS
+    )
+
+
+def _flatten_single_column_batch_values(values):
+    flattened = []
+    for item in values or []:
+        if isinstance(item, list):
+            flattened.append(item[0] if item else "")
+        else:
+            flattened.append(item)
+    return flattened
+
+
+def _build_existing_failover_row_lookup(records: list[Dict[str, Any]], uploader) -> tuple[Dict[tuple[str, str], int], int]:
+    reporter = uploader.sheets_reporter
+    table_config = uploader.table_config
+    date_column_index = table_config.get_column_index("Дата") or 2
+    last_data_row = reporter.get_last_row_with_data(column_index=date_column_index)
+    if last_data_row < 2:
+        return {}, last_data_row
+
+    target_keys = {
+        _build_failover_record_lookup_key(record, reporter)
+        for record in records
+        if record
+    }
+    if not target_keys:
+        return {}, last_data_row
+
+    ranges = []
+    key_columns = []
+    for column_name in FAILOVER_STATE_UPSERT_KEY_COLUMNS:
+        column_letter = table_config.get_column_letter(column_name)
+        if not column_letter:
+            column_index = table_config.get_column_index(column_name)
+            if not column_index:
+                continue
+            column_letter = _index_to_column_letter(column_index)
+        ranges.append(f"{column_letter}2:{column_letter}{last_data_row}")
+        key_columns.append(column_name)
+
+    if len(key_columns) != len(FAILOVER_STATE_UPSERT_KEY_COLUMNS):
+        return {}, last_data_row
+
+    batch_values = reporter.worksheet.batch_get(ranges)
+    column_values = {
+        column_name: _flatten_single_column_batch_values(values)
+        for column_name, values in zip(key_columns, batch_values)
+    }
+    max_len = max((len(values) for values in column_values.values()), default=0)
+    row_lookup: Dict[tuple[str, str], int] = {}
+
+    for index in range(max_len):
+        key_parts = []
+        has_meaningful_data = False
+        for column_name in FAILOVER_STATE_UPSERT_KEY_COLUMNS:
+            values = column_values.get(column_name, [])
+            raw_value = values[index] if index < len(values) else ""
+            if raw_value not in ("", None):
+                has_meaningful_data = True
+            key_parts.append(_normalize_failover_lookup_value(reporter, raw_value))
+
+        if not has_meaningful_data:
+            continue
+
+        key_tuple = tuple(key_parts)
+        if key_tuple in target_keys and key_tuple not in row_lookup:
+            row_lookup[key_tuple] = index + 2
+
+    return row_lookup, last_data_row
+
+
+def _prepare_failover_row_values(headers, config, data: Dict[str, Any], row_number: int) -> list[Any]:
+    values = []
+    for header in headers:
+        col_def = config.get_column(header)
+        if not col_def:
+            values.append("")
+            continue
+
+        if col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+            values.append(col_def.formula_template.replace("{row}", str(row_number)))
+        elif col_def.name in data:
+            values.append(data[col_def.name])
+        else:
+            values.append("")
+    return values
+
+
+@retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
+def _append_failover_state_rows_bulk(uploader, *, rows_to_append: list[tuple[int, Dict[str, Any]]]) -> list[Dict[str, Any]]:
+    reporter = uploader.sheets_reporter
+    config = uploader.table_config
+    headers = reporter.worksheet.row_values(1)
+    values = [
+        _prepare_failover_row_values(headers, config, record, row_number)
+        for row_number, record in rows_to_append
+    ]
+    reporter.worksheet.append_rows(values=values, value_input_option="USER_ENTERED")
+
+    return [
+        reporter._create_result(
+            success=True,
+            action="appended",
+            message=f"Строка {row_number} добавлена",
+            data=record,
+            row_number=row_number,
+        )
+        for row_number, record in rows_to_append
+    ]
+
+
 def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
     normalized_records = [record for record in (records or []) if record]
@@ -154,8 +279,29 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
 
     results = []
     with failover_state_connection(logger=logger) as uploader:
+        row_lookup, last_data_row = _build_existing_failover_row_lookup(normalized_records, uploader)
+        reporter = uploader.sheets_reporter
+        append_queue = []
+        next_append_row = max(last_data_row, 1) + 1
+
         for record in normalized_records:
-            results.append(uploader._perform_upload(record, strategy="update_or_append"))
+            existing_row = row_lookup.get(_build_failover_record_lookup_key(record, reporter))
+            if existing_row:
+                results.append(
+                    reporter._update_existing_row(
+                        row_number=existing_row,
+                        data=record,
+                        config=uploader.table_config,
+                        formula_row_placeholder="{row}",
+                    )
+                )
+                continue
+
+            append_queue.append((next_append_row, record))
+            next_append_row += 1
+
+        if append_queue:
+            results.extend(_append_failover_state_rows_bulk(uploader, rows_to_append=append_queue))
 
     return {
         "success": all(result.get("success", False) for result in results),
