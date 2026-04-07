@@ -165,10 +165,26 @@ class TestFailoverState(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
     def test_upsert_failover_state_records_reuses_single_connection(self, mock_connection_factory):
         uploader = Mock()
-        uploader._perform_upload.side_effect = [
-            {"success": True},
-            {"success": True},
+        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {"Дата": "B", "target_pvz": "C"}.get(name)
+        uploader.table_config.get_column.side_effect = lambda name: None
+        uploader.sheets_reporter.get_last_row_with_data.return_value = 2
+        uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
+        uploader.sheets_reporter._normalize_for_comparison.side_effect = lambda value: value
+        uploader.sheets_reporter.worksheet.batch_get.return_value = [
+            [["2026-03-14"]],
+            [["PVZ1"]],
         ]
+        uploader.sheets_reporter.worksheet.row_values.return_value = [
+            "request_id",
+            "Дата",
+            "target_pvz",
+            "owner_pvz",
+            "status",
+            "updated_at",
+        ]
+        uploader.sheets_reporter._update_existing_row.return_value = {"success": True, "action": "updated", "row_number": 2}
+        uploader.sheets_reporter._create_result.side_effect = lambda **kwargs: kwargs
         connection = mock_connection_factory.return_value
         connection.__enter__.return_value = uploader
         connection.__exit__.return_value = False
@@ -176,7 +192,7 @@ class TestFailoverState(unittest.TestCase):
         result = failover_state.upsert_failover_state_records(
             [
                 {"Дата": "2026-03-14", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
-                {"Дата": "2026-03-15", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_FAILED},
+                {"Дата": "2026-03-15", "target_pvz": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED},
             ],
             logger=Mock(),
         )
@@ -185,7 +201,54 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["updated"], 2)
         self.assertEqual(len(result["results"]), 2)
         mock_connection_factory.assert_called_once()
-        self.assertEqual(uploader._perform_upload.call_count, 2)
+        uploader.sheets_reporter.worksheet.batch_get.assert_called_once()
+        uploader.sheets_reporter._update_existing_row.assert_called_once()
+        uploader.sheets_reporter.worksheet.append_rows.assert_called_once()
+        uploader._perform_upload.assert_not_called()
+
+    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    def test_upsert_failover_state_records_batches_multiple_appends_into_single_request(self, mock_connection_factory):
+        uploader = Mock()
+        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {"Дата": "B", "target_pvz": "C"}.get(name)
+        uploader.table_config.get_column.side_effect = lambda name: None
+        uploader.sheets_reporter.get_last_row_with_data.return_value = 5
+        uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
+        uploader.sheets_reporter._normalize_for_comparison.side_effect = lambda value: value
+        uploader.sheets_reporter.worksheet.batch_get.return_value = [
+            [["01.04.2026"]],
+            [["PVZ0"]],
+        ]
+        uploader.sheets_reporter.worksheet.row_values.return_value = [
+            "request_id",
+            "Дата",
+            "target_pvz",
+            "owner_pvz",
+            "status",
+            "updated_at",
+        ]
+        uploader.sheets_reporter._create_result.side_effect = lambda **kwargs: kwargs
+        connection = mock_connection_factory.return_value
+        connection.__enter__.return_value = uploader
+        connection.__exit__.return_value = False
+
+        result = failover_state.upsert_failover_state_records(
+            [
+                {"Дата": "2026-03-14", "target_pvz": "PVZ1", "owner_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS, "updated_at": "14.03.2026 21:30:00"},
+                {"Дата": "2026-03-15", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED, "updated_at": "15.03.2026 21:30:00"},
+            ],
+            logger=Mock(),
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["updated"], 2)
+        uploader.sheets_reporter.worksheet.append_rows.assert_called_once()
+        appended_values = uploader.sheets_reporter.worksheet.append_rows.call_args.kwargs["values"]
+        self.assertEqual(len(appended_values), 2)
+        self.assertEqual(result["results"][0]["row_number"], 6)
+        self.assertEqual(result["results"][1]["row_number"], 7)
+        uploader.sheets_reporter._update_existing_row.assert_not_called()
+        uploader._perform_upload.assert_not_called()
 
     @patch("scheduler_runner.tasks.reports.failover_state.urllib.request.urlopen")
     def test_try_claim_failover_via_apps_script_returns_remote_payload(self, mock_urlopen):
