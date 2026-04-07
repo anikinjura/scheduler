@@ -368,7 +368,19 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
     logger = logger or create_failover_state_logger()
     normalized_records = [record for record in (records or []) if record]
     if not normalized_records:
-        return {"success": True, "updated": 0, "results": []}
+        return {
+            "success": True,
+            "updated": 0,
+            "results": [],
+            "diagnostics": {
+                "requested_records_count": 0,
+                "prefetch_last_data_row": 0,
+                "prefetch_keys_count": 0,
+                "prefetch_matches_count": 0,
+                "updated_count": 0,
+                "appended_count": 0,
+            },
+        }
 
     results = []
     with failover_state_connection(logger=logger) as uploader:
@@ -396,10 +408,23 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
         if append_queue:
             results.extend(_append_failover_state_rows_bulk(uploader, rows_to_append=append_queue))
 
+    diagnostics = {
+        "requested_records_count": len(normalized_records),
+        "prefetch_last_data_row": last_data_row,
+        "prefetch_keys_count": len({
+            (record.get("Дата", ""), record.get("target_pvz", ""))
+            for record in normalized_records
+        }),
+        "prefetch_matches_count": len(row_lookup),
+        "updated_count": sum(1 for result in results if result.get("action") == "updated"),
+        "appended_count": sum(1 for result in results if result.get("action") == "appended"),
+    }
+
     return {
         "success": all(result.get("success", False) for result in results),
         "updated": len(results),
         "results": results,
+        "diagnostics": diagnostics,
     }
 
 

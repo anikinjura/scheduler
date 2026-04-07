@@ -870,6 +870,9 @@ def sync_owner_failover_state_from_batch_result(
         "suppressed_success_dates": built_result["suppressed_success_dates"],
         "success_persistence_by_date": built_result["success_persistence_by_date"],
         "persisted_rows_count": len(built_result["records"]),
+        "existing_state_prefetch_keys_count": len(missing_dates or []),
+        "existing_state_prefetch_rows_found": len(existing_rows),
+        "upsert_diagnostics": upsert_result.get("diagnostics", {}),
         "results": upsert_result.get("results", []),
     }
 
@@ -2077,7 +2080,7 @@ def main():
                     if upload_result.get("success", False):
                         owner_state_sync_result["attempted"] = True
                         try:
-                            sync_owner_failover_state_from_batch_result(
+                            owner_state_sync_payload = sync_owner_failover_state_from_batch_result(
                                 owner_pvz=pvz_id,
                                 missing_dates=missing_dates,
                                 batch_result=batch_result,
@@ -2086,6 +2089,17 @@ def main():
                                 source_run_id=source_run_id,
                             )
                             owner_state_sync_result["success"] = True
+                            owner_state_sync_result["payload"] = owner_state_sync_payload
+                            processor_logger.info(
+                                "Owner state sync metrics: "
+                                f"prefetch_keys={owner_state_sync_payload.get('existing_state_prefetch_keys_count', 0)}, "
+                                f"prefetch_rows_found={owner_state_sync_payload.get('existing_state_prefetch_rows_found', 0)}, "
+                                f"persisted_rows={owner_state_sync_payload.get('persisted_rows_count', 0)}, "
+                                f"suppressed_success={len(owner_state_sync_payload.get('suppressed_success_dates', []))}, "
+                                f"upsert_updated={owner_state_sync_payload.get('upsert_diagnostics', {}).get('updated_count', 0)}, "
+                                f"upsert_appended={owner_state_sync_payload.get('upsert_diagnostics', {}).get('appended_count', 0)}, "
+                                f"upsert_prefetch_matches={owner_state_sync_payload.get('upsert_diagnostics', {}).get('prefetch_matches_count', 0)}"
+                            )
                         except Exception as exc:
                             owner_state_sync_result["success"] = False
                             owner_state_sync_result["error"] = str(exc)

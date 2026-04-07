@@ -263,6 +263,7 @@ class TestReportsProcessor(unittest.TestCase):
         mock_upsert_failover_state_records.return_value = {
             "success": True,
             "results": [{"success": True}, {"success": True}],
+            "diagnostics": {"updated_count": 1, "appended_count": 1, "prefetch_matches_count": 1},
         }
 
         result = reports_processor.sync_owner_failover_state_from_batch_result(
@@ -288,6 +289,9 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["failed_dates"], ["2026-03-02"])
         self.assertEqual(result["suppressed_success_dates"], [])
         self.assertEqual(result["persisted_rows_count"], 2)
+        self.assertEqual(result["existing_state_prefetch_keys_count"], 2)
+        self.assertEqual(result["existing_state_prefetch_rows_found"], 1)
+        self.assertEqual(result["upsert_diagnostics"]["updated_count"], 1)
         self.assertEqual(len(result["results"]), 2)
 
     @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys")
@@ -338,6 +342,9 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["failed_dates"], [])
         self.assertEqual(result["suppressed_success_dates"], ["2026-03-01"])
         self.assertEqual(result["persisted_rows_count"], 0)
+        self.assertEqual(result["existing_state_prefetch_keys_count"], 1)
+        self.assertEqual(result["existing_state_prefetch_rows_found"], 0)
+        self.assertEqual(result["upsert_diagnostics"], {})
         self.assertEqual(result["results"], [])
 
     @patch("scheduler_runner.tasks.reports.reports_processor.get_failover_state_rows_by_keys")
@@ -350,7 +357,11 @@ class TestReportsProcessor(unittest.TestCase):
         mock_get_existing.return_value = {
             ("2026-03-01", "pvz1"): {"Дата": "01.03.2026", "target_pvz": "PVZ1", "status": reports_processor.STATUS_OWNER_FAILED}
         }
-        mock_upsert.return_value = {"success": True, "results": [{"success": True}]}
+        mock_upsert.return_value = {
+            "success": True,
+            "results": [{"success": True}],
+            "diagnostics": {"updated_count": 1, "appended_count": 0, "prefetch_matches_count": 1},
+        }
 
         result = reports_processor.sync_owner_failover_state_from_batch_result(
             owner_pvz="PVZ1",
@@ -373,6 +384,9 @@ class TestReportsProcessor(unittest.TestCase):
         self.assertEqual(result["successful_dates"], ["2026-03-01", "2026-03-02"])
         self.assertEqual(result["suppressed_success_dates"], ["2026-03-02"])
         self.assertEqual(result["persisted_rows_count"], 1)
+        self.assertEqual(result["existing_state_prefetch_keys_count"], 2)
+        self.assertEqual(result["existing_state_prefetch_rows_found"], 1)
+        self.assertEqual(result["upsert_diagnostics"]["updated_count"], 1)
 
     def test_run_google_sheets_upload_with_retry_retries_retryable_errors(self):
         logger = Mock()
