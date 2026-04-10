@@ -1,4 +1,4 @@
-"""
+﻿"""
 kpi_google_sheets_config.py
 
 Конфигурация для загрузки KPI данных в Google Sheets.
@@ -75,3 +75,4 @@ KPI_GOOGLE_SHEETS_CONFIG = {
     "WORKSHEET_NAME": WORKSHEET_NAME,
     "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"]
 }
+

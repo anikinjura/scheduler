@@ -1,4 +1,4 @@
-"""
+﻿"""
 kpi_failover_state_google_sheets_config.py
 
 Конфигурация worksheet `KPI_FAILOVER_STATE` для coordination/failover state.
@@ -65,3 +65,4 @@ KPI_FAILOVER_STATE_GOOGLE_SHEETS_CONFIG = {
     "WORKSHEET_NAME": "KPI_FAILOVER_STATE",
     "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"],
 }
+

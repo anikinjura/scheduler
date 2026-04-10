@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ import sys
 
 from config.base_config import PVZ_ID
 from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
-from scheduler_runner.tasks.reports.failover_state import (
+from scheduler_runner.tasks.reports.storage.failover_state import (
     STATUS_OWNER_FAILED,
     create_failover_state_logger,
     get_failover_state,
@@ -91,3 +91,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

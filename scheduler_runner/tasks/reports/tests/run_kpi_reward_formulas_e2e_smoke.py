@@ -1,14 +1,25 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
+"""
+E2E smoke для проверки автоподстановки KPI reward-формул через refactored модули.
+
+Импортирует из refactored_modules.reports_upload вместо боевого reports_processor.py.
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from gspread.utils import DateTimeOption, ValueRenderOption
 from config.base_config import ENV_MODE, PVZ_ID
-from scheduler_runner.tasks.reports.reports_processor import (
+from scheduler_runner.tasks.reports.reports_upload import (
     create_uploader_logger,
     prepare_connection_params,
 )
@@ -21,7 +32,7 @@ from scheduler_runner.utils.uploader.implementations.google_sheets_uploader impo
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="E2E smoke для проверки автоподстановки KPI reward-формул в Google Sheets"
+        description="E2E smoke для проверки автоподстановки KPI reward-формул в Google Sheets (refactored)"
     )
     parser.add_argument("--execution_date", default="2099-12-30", help="Synthetic execution date in YYYY-MM-DD")
     parser.add_argument("--pvz", default=PVZ_ID, help="PVZ id for the smoke row")
@@ -277,3 +288,4 @@ def print_result_and_exit(result: dict, pretty: bool, exit_code: int):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

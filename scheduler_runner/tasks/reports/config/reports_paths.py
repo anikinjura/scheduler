@@ -1,4 +1,4 @@
-"""
+﻿"""
 reports_paths.py
 
 Определяет все специфичные для задачи reports пути и переменные, зависящие от среды (production/test) и PVZ_ID.
@@ -99,3 +99,4 @@ REPORTS_PATHS = {
         "3f2e8f5b7f8d4e9a9b2c1d6e7f8a1b3c",
     ),
 }
+

@@ -1,4 +1,4 @@
-"""
+﻿"""
 reports_processor_config.py
 
 Конфиг для reports_processor задачи reports.
@@ -60,3 +60,4 @@ SCHEDULE = [
         "timeout": 1200,
     },
 ]
+

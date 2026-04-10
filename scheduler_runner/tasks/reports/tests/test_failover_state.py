@@ -1,7 +1,7 @@
-import unittest
+﻿import unittest
 from unittest.mock import Mock, patch
 
-from scheduler_runner.tasks.reports import failover_state
+import scheduler_runner.tasks.reports.storage.google_sheets_store as failover_state
 
 
 class TestFailoverState(unittest.TestCase):
@@ -37,9 +37,9 @@ class TestFailoverState(unittest.TestCase):
 
         self.assertFalse(failover_state.is_claim_active(state_row, now=now))
 
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_claim_backend", return_value="sheets")
-    @patch("scheduler_runner.tasks.reports.failover_state.upsert_failover_state")
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_claim_backend", return_value="sheets")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.upsert_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_state")
     def test_try_claim_failover_claims_when_no_active_claim(self, mock_get_failover_state, mock_upsert_failover_state, _mock_backend):
         mock_get_failover_state.side_effect = [
             {
@@ -72,8 +72,8 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["state"]["claimed_by"], "ЧЕБОКСАРЫ_144")
         self.assertEqual(result["state"]["attempt_no"], 2)
 
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_claim_backend", return_value="sheets")
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_claim_backend", return_value="sheets")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_state")
     def test_try_claim_failover_returns_already_claimed_when_claim_is_active(self, mock_get_failover_state, _mock_backend):
         mock_get_failover_state.return_value = {
             "status": failover_state.STATUS_FAILOVER_CLAIMED,
@@ -93,9 +93,9 @@ class TestFailoverState(unittest.TestCase):
         self.assertFalse(result["claimed"])
         self.assertEqual(result["reason"], "already_claimed")
 
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_claim_backend", return_value="sheets")
-    @patch("scheduler_runner.tasks.reports.failover_state.upsert_failover_state")
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_claim_backend", return_value="sheets")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.upsert_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_state")
     def test_try_claim_failover_returns_verification_failed_on_ownership_mismatch(self, mock_get_failover_state, mock_upsert_failover_state, _mock_backend):
         mock_get_failover_state.side_effect = [
             {
@@ -124,8 +124,8 @@ class TestFailoverState(unittest.TestCase):
         self.assertFalse(result["claimed"])
         self.assertEqual(result["reason"], "claim_verification_failed")
 
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_claim_backend", return_value="sheets")
-    @patch("scheduler_runner.tasks.reports.failover_state.get_failover_state")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_claim_backend", return_value="sheets")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_state")
     def test_try_claim_failover_returns_already_completed_for_terminal_state(self, mock_get_failover_state, _mock_backend):
         mock_get_failover_state.return_value = {
             "status": failover_state.STATUS_FAILOVER_SUCCESS,
@@ -144,7 +144,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertFalse(result["claimed"])
         self.assertEqual(result["reason"], "already_completed")
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_get_failover_state_reads_row_by_unique_keys(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config = Mock()
@@ -162,7 +162,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["status"], failover_state.STATUS_OWNER_PENDING)
         uploader.sheets_reporter.get_row_by_unique_keys.assert_called_once()
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_upsert_failover_state_records_reuses_single_connection(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
@@ -210,7 +210,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["updated_count"], 1)
         self.assertEqual(result["diagnostics"]["appended_count"], 1)
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_upsert_failover_state_records_batches_multiple_appends_into_single_request(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
@@ -257,7 +257,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["updated_count"], 0)
         self.assertEqual(result["diagnostics"]["appended_count"], 2)
 
-    @patch("scheduler_runner.tasks.reports.failover_state.urllib.request.urlopen")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.urllib.request.urlopen")
     def test_try_claim_failover_via_apps_script_returns_remote_payload(self, mock_urlopen):
         response = Mock()
         response.read.return_value = (
@@ -266,7 +266,7 @@ class TestFailoverState(unittest.TestCase):
         mock_urlopen.return_value.__enter__.return_value = response
 
         with patch(
-            "scheduler_runner.tasks.reports.failover_state.get_failover_apps_script_config",
+            "scheduler_runner.tasks.reports.storage.google_sheets_store.get_failover_apps_script_config",
             return_value={
                 "url": "https://example.test/exec",
                 "shared_secret": "secret",
@@ -286,7 +286,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertTrue(result["claimed"])
         self.assertEqual(result["reason"], "claimed")
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_list_failover_state_rows_filters_by_status_and_target(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.column_names = ["request_id", "Дата", "target_pvz", "status"]
@@ -307,7 +307,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["target_pvz"], "PVZ1")
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_list_candidate_failover_rows_fast_uses_batch_get_and_filters_statuses(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {
@@ -429,7 +429,7 @@ class TestFailoverState(unittest.TestCase):
         self.assertTrue(result["success"])
         uploader._perform_upload.assert_called_once()
 
-    @patch("scheduler_runner.tasks.reports.failover_state.failover_state_connection")
+    @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_get_failover_state_rows_by_keys_uses_batch_get_and_returns_keyed_rows(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {
@@ -533,3 +533,5 @@ class TestFailoverState(unittest.TestCase):
 
         self.assertEqual(result[("2026-03-14", "PVZ1")]["status"], failover_state.STATUS_OWNER_FAILED)
         uploader.sheets_reporter.worksheet.batch_get.assert_called_once()
+
+
