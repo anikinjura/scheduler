@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ from scheduler_runner.tasks.reports.config.scripts.reports_processor_config impo
     FAILOVER_POLICY_CONFIG,
 )
 from scheduler_runner.tasks.reports.failover_policy import can_attempt_failover_claim, filter_claimable_rows_by_policy
-from scheduler_runner.tasks.reports.failover_state import (
+from scheduler_runner.tasks.reports.storage.failover_state import (
     STATUS_CLAIM_EXPIRED,
     STATUS_OWNER_FAILED,
     STATUS_OWNER_SUCCESS,
@@ -290,3 +290,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

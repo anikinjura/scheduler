@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
+"""
+Synthetic smoke для owner_success suppression policy через refactored модули.
+
+Импортирует sync_owner_failover_state_from_batch_result из refactored_modules.owner_state_sync
+вместо боевого reports_processor.py.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,11 +13,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[4]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scheduler_runner.tasks.reports.failover_state import (  # noqa: E402
+from scheduler_runner.tasks.reports.storage.failover_state import (  # noqa: E402
     STATUS_OWNER_FAILED,
     STATUS_OWNER_SUCCESS,
     build_failover_state_record,
@@ -19,11 +25,11 @@ from scheduler_runner.tasks.reports.failover_state import (  # noqa: E402
     get_failover_state,
     upsert_failover_state_records,
 )
-from scheduler_runner.tasks.reports.reports_processor import sync_owner_failover_state_from_batch_result  # noqa: E402
+from scheduler_runner.tasks.reports.owner_state_sync import sync_owner_failover_state_from_batch_result  # noqa: E402
 
 
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Synthetic smoke for owner_success suppression policy in KPI_FAILOVER_STATE")
+    parser = argparse.ArgumentParser(description="Synthetic smoke for owner_success suppression policy (refactored)")
     parser.add_argument("--target_prefix", default="SMOKE_OWNER_POLICY", help="Prefix for synthetic owner/target ids")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON result")
     return parser
@@ -153,3 +159,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

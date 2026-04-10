@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.failover_state import (
+from scheduler_runner.tasks.reports.storage.failover_state import (
     STATUS_OWNER_FAILED,
     STATUS_OWNER_SUCCESS,
     build_failover_state_record,
@@ -134,3 +134,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

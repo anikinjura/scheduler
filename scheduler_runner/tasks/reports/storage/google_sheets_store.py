@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import urllib.request
@@ -781,3 +781,4 @@ def mark_failover_state(
     result = upsert_failover_state(record, logger=logger)
     result["state"] = record
     return result
+

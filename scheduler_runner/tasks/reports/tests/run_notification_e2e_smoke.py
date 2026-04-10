@@ -1,20 +1,26 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-E2E smoke для проверки Telegram-уведомлений reports-домена.
+E2E smoke для проверки notification-уведомлений через refactored модули.
 
-Скрипт использует те же Telegram credentials, что и production flow
-`reports_processor.send_notification_microservice()`.
+Импортирует из refactored_modules.reports_notifications вместо боевого reports_processor.py.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# Добавляем корень проекта в sys.path для импортов config и utils
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from config.base_config import ENV_MODE, PVZ_ID
 from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
-from scheduler_runner.tasks.reports.reports_processor import (
+from scheduler_runner.tasks.reports.reports_notifications import (
     create_notification_logger,
     send_notification_microservice,
 )
@@ -29,7 +35,7 @@ def build_default_message(label: str | None = None) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     prefix = f"[{label}] " if label else ""
     return (
-        f"{prefix}Reports notification e2e smoke\n"
+        f"{prefix}Refactored reports notification e2e smoke\n"
         f"ENV_MODE: {ENV_MODE}\n"
         f"PVZ_ID: {PVZ_ID}\n"
         f"Timestamp: {timestamp}"
@@ -37,7 +43,7 @@ def build_default_message(label: str | None = None) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="E2E smoke для проверки Telegram send-path reports")
+    parser = argparse.ArgumentParser(description="E2E smoke для проверки notification send-path из refactored modules")
     parser.add_argument("--message", help="Явный текст сообщения")
     parser.add_argument("--label", help="Короткая метка для префикса сообщения")
     parser.add_argument(
@@ -85,3 +91,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
