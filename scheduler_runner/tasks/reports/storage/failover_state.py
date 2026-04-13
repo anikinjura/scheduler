@@ -13,7 +13,7 @@ failover_state.py — backward-compatible re-export layer.
 from __future__ import annotations
 
 # ── Protocol + status constants + helpers ──
-from scheduler_runner.tasks.reports.storage.failover_state_protocol import (
+from .failover_state_protocol import (
     STATUS_CLAIM_EXPIRED,
     STATUS_FAILOVER_CLAIMED,
     STATUS_FAILOVER_FAILED,
@@ -30,7 +30,7 @@ from scheduler_runner.tasks.reports.storage.failover_state_protocol import (
 )
 
 # ── Google Sheets implementation ──
-from scheduler_runner.tasks.reports.storage.google_sheets_store import (
+from .google_sheets_store import (
     create_failover_state_logger,
     failover_state_connection,
     get_failover_state,
@@ -61,7 +61,7 @@ def get_default_store() -> FailoverStateStore:
     """Получить default store (Google Sheets singleton)."""
     global _default_store
     if _default_store is None:
-        from scheduler_runner.tasks.reports.storage.google_sheets_failover_store import GoogleSheetsFailoverStore
+        from .google_sheets_failover_store import GoogleSheetsFailoverStore
         _default_store = GoogleSheetsFailoverStore()
     return _default_store
 

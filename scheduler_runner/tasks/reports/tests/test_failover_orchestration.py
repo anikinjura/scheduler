@@ -20,7 +20,7 @@ class TestShouldScanFailoverCandidatesLegacy(unittest.TestCase):
     def test_no_explicit_rule_scans(self, mock_mode, mock_priority, mock_has_rule):
         mock_mode.return_value = "priority_map_legacy"
         mock_has_rule.return_value = False
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_legacy
+        from ..failover_orchestration import should_scan_failover_candidates_legacy
 
         result = should_scan_failover_candidates_legacy(
             configured_pvz_id="PVZ1",
@@ -36,7 +36,7 @@ class TestShouldScanFailoverCandidatesLegacy(unittest.TestCase):
         mock_mode.return_value = "priority_map_legacy"
         mock_has_rule.return_value = True
         mock_priority.return_value = []
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_legacy
+        from ..failover_orchestration import should_scan_failover_candidates_legacy
 
         result = should_scan_failover_candidates_legacy(
             configured_pvz_id="PVZ1",
@@ -52,7 +52,7 @@ class TestShouldScanFailoverCandidatesLegacy(unittest.TestCase):
         mock_mode.return_value = "priority_map_legacy"
         mock_has_rule.return_value = True
         mock_priority.return_value = ["PVZ2"]
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_legacy
+        from ..failover_orchestration import should_scan_failover_candidates_legacy
 
         result = should_scan_failover_candidates_legacy(
             configured_pvz_id="PVZ1",
@@ -68,7 +68,7 @@ class TestShouldScanFailoverCandidatesLegacy(unittest.TestCase):
         mock_mode.return_value = "priority_map_legacy"
         mock_has_rule.return_value = True
         mock_priority.return_value = ["PVZ3"]
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_legacy
+        from ..failover_orchestration import should_scan_failover_candidates_legacy
 
         result = should_scan_failover_candidates_legacy(
             configured_pvz_id="PVZ1",
@@ -82,7 +82,7 @@ class TestShouldScanCapabilityRanked(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.failover_orchestration.get_capability_targets_for_helper")
     def test_empty_capability_list_skips(self, mock_targets):
         mock_targets.return_value = []
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_capability_ranked
+        from ..failover_orchestration import should_scan_failover_candidates_capability_ranked
 
         result = should_scan_failover_candidates_capability_ranked(
             configured_pvz_id="PVZ1",
@@ -94,7 +94,7 @@ class TestShouldScanCapabilityRanked(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.failover_orchestration.get_capability_targets_for_helper")
     def test_accessible_targets_scan(self, mock_targets):
         mock_targets.return_value = ["PVZ2"]
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_capability_ranked
+        from ..failover_orchestration import should_scan_failover_candidates_capability_ranked
 
         result = should_scan_failover_candidates_capability_ranked(
             configured_pvz_id="PVZ1",
@@ -106,7 +106,7 @@ class TestShouldScanCapabilityRanked(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.failover_orchestration.get_capability_targets_for_helper")
     def test_targets_not_accessible_skips(self, mock_targets):
         mock_targets.return_value = ["PVZ3"]
-        from scheduler_runner.tasks.reports.failover_orchestration import should_scan_failover_candidates_capability_ranked
+        from ..failover_orchestration import should_scan_failover_candidates_capability_ranked
 
         result = should_scan_failover_candidates_capability_ranked(
             configured_pvz_id="PVZ1",
@@ -118,7 +118,7 @@ class TestShouldScanCapabilityRanked(unittest.TestCase):
 
 class TestNormalizeClaimableFailoverEvaluation(unittest.TestCase):
     def test_none_returns_default(self):
-        from scheduler_runner.tasks.reports.failover_orchestration import normalize_claimable_failover_evaluation
+        from ..failover_orchestration import normalize_claimable_failover_evaluation
 
         result = normalize_claimable_failover_evaluation(None)
         self.assertEqual(result["mode"], "unknown")
@@ -126,7 +126,7 @@ class TestNormalizeClaimableFailoverEvaluation(unittest.TestCase):
         self.assertEqual(result["selected_rows"], [])
 
     def test_valid_evaluation_passes_through(self):
-        from scheduler_runner.tasks.reports.failover_orchestration import normalize_claimable_failover_evaluation
+        from ..failover_orchestration import normalize_claimable_failover_evaluation
 
         result = normalize_claimable_failover_evaluation({
             "mode": "capability_ranked",
@@ -134,7 +134,7 @@ class TestNormalizeClaimableFailoverEvaluation(unittest.TestCase):
             "eligible_count": 5,
             "selected_count": 2,
             "rejected_count": 3,
-            "rejected_reasons": {"not_accessible": 2, "own_target_pvz": 1},
+            "rejected_reasons": {"not_accessible": 2, "own_target_object_name": 1},
             "selected_rows": [{"row1": "data"}],
             "decisions": [],
         })
@@ -152,7 +152,7 @@ class TestCollectFailoverScanDecisions(unittest.TestCase):
 
         # Override dry_run config
         with patch("scheduler_runner.tasks.reports.failover_orchestration.FAILOVER_POLICY_CONFIG", {"enabled": True}):
-            from scheduler_runner.tasks.reports.failover_orchestration import collect_failover_scan_decisions
+            from ..failover_orchestration import collect_failover_scan_decisions
 
             result = collect_failover_scan_decisions(
                 configured_pvz_id="PVZ1",
@@ -166,12 +166,12 @@ class TestCollectFailoverScanDecisions(unittest.TestCase):
 class TestClaimFailoverRows(unittest.TestCase):
     def test_claims_successful_rows(self, mock_claim):
         mock_claim.return_value = {"claimed": True}
-        from scheduler_runner.tasks.reports.failover_orchestration import claim_failover_rows
+        from ..failover_orchestration import claim_failover_rows
 
         claimed = claim_failover_rows(
             candidate_rows=[
-                {"Дата": "2026-04-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2"},
-                {"Дата": "2026-04-02", "target_pvz": "PVZ3", "owner_pvz": "PVZ3"},
+                {"work_date": "2026-04-01", "target_object_name": "PVZ2", "owner_object_name": "PVZ2"},
+                {"work_date": "2026-04-02", "target_object_name": "PVZ3", "owner_object_name": "PVZ3"},
             ],
             claimer_pvz="PVZ1",
             ttl_minutes=15,
@@ -182,12 +182,12 @@ class TestClaimFailoverRows(unittest.TestCase):
 
     def test_skips_unclaimed_rows(self, mock_claim):
         mock_claim.side_effect = [{"claimed": True}, {"claimed": False}]
-        from scheduler_runner.tasks.reports.failover_orchestration import claim_failover_rows
+        from ..failover_orchestration import claim_failover_rows
 
         claimed = claim_failover_rows(
             candidate_rows=[
-                {"Дата": "2026-04-01", "target_pvz": "PVZ2", "owner_pvz": "PVZ2"},
-                {"Дата": "2026-04-02", "target_pvz": "PVZ3", "owner_pvz": "PVZ3"},
+                {"work_date": "2026-04-01", "target_object_name": "PVZ2", "owner_object_name": "PVZ2"},
+                {"work_date": "2026-04-02", "target_object_name": "PVZ3", "owner_object_name": "PVZ3"},
             ],
             claimer_pvz="PVZ1",
             ttl_minutes=15,

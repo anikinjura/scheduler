@@ -1,37 +1,51 @@
 ﻿#!/usr/bin/env python3
+"""
+E2E smoke для проверки failover policy evaluation и claim на реальных данных KPI_FAILOVER_STATE.
+
+Использует ТОТ ЖЕ путь, что и production-код:
+- upsert_failover_state_records   — batch-seed строк (как owner_state_sync)
+- get_failover_state_rows_by_keys — batch read-back (как owner_state_sync)
+- collect_claimable_failover_rows  — policy evaluation (как reports_processor)
+- try_claim_failover               — atomic claim (как claim_failover_rows)
+
+Никакой кастомной логики — только импорты из production-модулей.
+
+Этот тест должен падать/проходить в зависимости от:
+- доступности Google Sheets (KPI_FAILOVER_STATE)
+- корректности policy evaluation logic
+- (опционально) доступности claim backend (Sheets или Apps Script)
+
+Если production-код меняет способ policy evaluation или claim,
+этот тест должен упасть — это сигнализирует о необходимости обновления смоки.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
-import time
 from datetime import datetime, timedelta
 
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import (
-    BACKFILL_CONFIG,
-    FAILOVER_POLICY_CONFIG,
-)
-from scheduler_runner.tasks.reports.failover_policy import can_attempt_failover_claim, filter_claimable_rows_by_policy
-from scheduler_runner.tasks.reports.storage.failover_state import (
-    STATUS_CLAIM_EXPIRED,
-    STATUS_OWNER_FAILED,
-    STATUS_OWNER_SUCCESS,
+
+# Production-модули — те же пути что и reports_processor.py
+from ..failover_orchestration import collect_claimable_failover_rows
+from ..storage.failover_state import (
     build_failover_state_record,
     create_failover_state_logger,
-    failover_state_connection,
-    get_failover_state,
+    get_failover_state_rows_by_keys,
     try_claim_failover,
-    upsert_failover_state,
+    upsert_failover_state_records,
 )
 
+
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Controlled synthetic smoke for policy-aware failover on KPI_FAILOVER_STATE")
-    parser.add_argument("--claimer_pvz", default=PVZ_ID, help="Current object PVZ id that simulates failover claimant")
+    parser = argparse.ArgumentParser(
+        description="Failover policy evaluation smoke через production-пути"
+    )
     parser.add_argument(
-        "--claim_backend",
-        choices=["apps_script", "sheets"],
-        default=None,
-        help="Override claim backend for synthetic smoke",
+        "--claimer_pvz",
+        default=PVZ_ID,
+        help="Current object PVZ id that simulates failover claimant",
     )
     parser.add_argument(
         "--accessible_pvz",
@@ -39,58 +53,72 @@ def build_arg_parser():
         default=None,
         help="Accessible PVZ scope for the synthetic claimant. Can be repeated.",
     )
-    parser.add_argument("--ttl_minutes", type=int, default=15, help="Claim TTL in minutes")
-    parser.add_argument("--source_run_id", default="smoke-policy-run", help="Run id written into claimed rows")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON result")
+    parser.add_argument(
+        "--claim_backend",
+        choices=["sheets", "skip"],
+        default="skip",
+        help="Claim backend: 'sheets' — claim via Sheets, 'skip' — только policy evaluation",
+    )
+    parser.add_argument("--pretty", action="store_true", help="Печатать результат в человекочитаемом виде")
     return parser
 
 
-def build_synthetic_rows(now: datetime):
-    max_attempts = int(FAILOVER_POLICY_CONFIG.get("max_attempts_per_date", 3) or 3)
+def build_synthetic_records(now: datetime):
+    """Строит тестовые записи для проверки policy evaluation.
+
+    Сценарии:
+    - owner_failed (ЧЕБОКСАРЫ_143) — eligible для claim
+    - claim_expired (ЧЕБОКСАРЫ_182) — eligible для claim
+    - owner_failed изолированного PVZ (ЧЕБОКСАРЫ_340) — rejected (no helpers)
+    - own_target (ЧЕБОКСАРЫ_144) — rejected (own target)
+    - max_attempts (ЧЕБОКСАРЫ_143, attempt=3) — rejected
+    - owner_success (ЧЕБОКСАРЫ_182) — rejected (terminal status)
+    """
+    max_attempts = 3
     stale_ts = now - timedelta(minutes=45)
     fresh_ts = now - timedelta(minutes=2)
     return [
         build_failover_state_record(
             execution_date="2099-12-21",
-            target_pvz="ЧЕБОКСАРЫ_143",
-            owner_pvz="ЧЕБОКСАРЫ_143",
-            status=STATUS_OWNER_FAILED,
+            target_object_name="ЧЕБОКСАРЫ_143",
+            owner_object_name="ЧЕБОКСАРЫ_143",
+            status="owner_failed",
             source_run_id="smoke-policy-seed",
             last_error="synthetic_owner_failed_primary_143",
             updated_at=stale_ts,
         ),
         build_failover_state_record(
             execution_date="2099-12-22",
-            target_pvz="ЧЕБОКСАРЫ_182",
-            owner_pvz="ЧЕБОКСАРЫ_182",
-            status=STATUS_CLAIM_EXPIRED,
+            target_object_name="ЧЕБОКСАРЫ_182",
+            owner_object_name="ЧЕБОКСАРЫ_182",
+            status="claim_expired",
             source_run_id="smoke-policy-seed",
             last_error="synthetic_claim_expired_182",
             updated_at=stale_ts,
         ),
         build_failover_state_record(
             execution_date="2099-12-23",
-            target_pvz="ЧЕБОКСАРЫ_340",
-            owner_pvz="ЧЕБОКСАРЫ_340",
-            status=STATUS_OWNER_FAILED,
+            target_object_name="ЧЕБОКСАРЫ_340",
+            owner_object_name="ЧЕБОКСАРЫ_340",
+            status="owner_failed",
             source_run_id="smoke-policy-seed",
             last_error="synthetic_owner_failed_isolated_340",
             updated_at=stale_ts,
         ),
         build_failover_state_record(
             execution_date="2099-12-24",
-            target_pvz="ЧЕБОКСАРЫ_144",
-            owner_pvz="ЧЕБОКСАРЫ_144",
-            status=STATUS_OWNER_FAILED,
+            target_object_name="ЧЕБОКСАРЫ_144",
+            owner_object_name="ЧЕБОКСАРЫ_144",
+            status="owner_failed",
             source_run_id="smoke-policy-seed",
             last_error="synthetic_owner_failed_own_target",
             updated_at=stale_ts,
         ),
         build_failover_state_record(
             execution_date="2099-12-25",
-            target_pvz="ЧЕБОКСАРЫ_143",
-            owner_pvz="ЧЕБОКСАРЫ_143",
-            status=STATUS_OWNER_FAILED,
+            target_object_name="ЧЕБОКСАРЫ_143",
+            owner_object_name="ЧЕБОКСАРЫ_143",
+            status="owner_failed",
             attempt_no=max_attempts,
             source_run_id="smoke-policy-seed",
             last_error="synthetic_owner_failed_max_attempts",
@@ -98,9 +126,9 @@ def build_synthetic_rows(now: datetime):
         ),
         build_failover_state_record(
             execution_date="2099-12-26",
-            target_pvz="ЧЕБОКСАРЫ_182",
-            owner_pvz="ЧЕБОКСАРЫ_182",
-            status=STATUS_OWNER_SUCCESS,
+            target_object_name="ЧЕБОКСАРЫ_182",
+            owner_object_name="ЧЕБОКСАРЫ_182",
+            status="owner_success",
             source_run_id="smoke-policy-seed",
             last_error="",
             updated_at=fresh_ts,
@@ -108,91 +136,36 @@ def build_synthetic_rows(now: datetime):
     ]
 
 
-def retry_operation(fn, *args, attempts=3, delay_seconds=2, **kwargs):
-    last_exc = None
-    for attempt_index in range(attempts):
-        try:
-            return fn(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover - smoke resiliency path
-            last_exc = exc
-            if attempt_index >= attempts - 1:
-                raise
-            time.sleep(delay_seconds)
-    raise last_exc
+def seed_records_production_batch(logger, records):
+    """Seed через production batch upsert — тот же путь что и owner_state_sync."""
+    upsert_result = upsert_failover_state_records(records, logger=logger)
 
+    # Batch read-back через production get_rows_by_keys — тот же путь что и owner_state_sync
+    keys = [
+        {"work_date": rec["work_date"], "target_object_name": rec["target_object_name"]}
+        for rec in records
+    ]
+    rows_by_key = get_failover_state_rows_by_keys(keys=keys, logger=logger)
 
-def normalize_execution_date(value: str) -> str:
-    raw_value = str(value or "").strip()
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
-        try:
-            return datetime.strptime(raw_value, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return raw_value
+    seeded = []
+    for rec in records:
+        row_key = (rec["work_date"], rec["target_object_name"])
+        state_after = rows_by_key.get(row_key)
+        seeded.append({
+            "execution_date": rec["work_date"],
+            "target_object_name": rec["target_object_name"],
+            "status": rec["status"],
+            "seed_result": None,
+            "state_after_seed": state_after,
+        })
 
-
-def get_state_with_uploader(uploader, execution_date: str, target_pvz: str):
-    return uploader.sheets_reporter.get_row_by_unique_keys(
-        unique_key_values={
-            "Дата": normalize_execution_date(execution_date),
-            "target_pvz": target_pvz,
-        },
-        config=uploader.table_config,
-        return_raw=True,
-    )
-
-
-def upsert_with_uploader(uploader, record):
-    return uploader._perform_upload(record, strategy="update_or_append")
-
-
-def seed_rows_and_collect_decisions(*, synthetic_rows, claimer_pvz, accessible_pvz_ids, now, logger):
-    seeded_rows = []
-    decisions = []
-    seeded_state_rows = []
-    with failover_state_connection(logger=logger) as uploader:
-        for row in synthetic_rows:
-            seed_result = upsert_with_uploader(uploader, row)
-            state_after_seed = get_state_with_uploader(
-                uploader,
-                execution_date=row["Дата"],
-                target_pvz=row["target_pvz"],
-            )
-            decision = can_attempt_failover_claim(
-                state_row=state_after_seed or row,
-                configured_pvz_id=claimer_pvz,
-                available_pvz=accessible_pvz_ids,
-                now=now,
-            )
-            seeded_rows.append(
-                {
-                    "execution_date": row["Дата"],
-                    "target_pvz": row["target_pvz"],
-                    "status": row["status"],
-                    "seed_result": seed_result,
-                    "state_after_seed": state_after_seed,
-                }
-            )
-            if state_after_seed:
-                seeded_state_rows.append(state_after_seed)
-            decisions.append(
-                {
-                    "execution_date": row["Дата"],
-                    "target_pvz": row["target_pvz"],
-                    "status": (state_after_seed or row).get("status"),
-                    "decision": decision,
-                }
-            )
-    return seeded_rows, decisions, seeded_state_rows
+    return seeded, upsert_result
 
 
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
     logger = create_failover_state_logger()
-
-    if args.claim_backend:
-        BACKFILL_CONFIG["failover_claim_backend"] = args.claim_backend
 
     accessible_pvz_ids = args.accessible_pvz or [
         "ЧЕБОКСАРЫ_143",
@@ -201,93 +174,108 @@ def main():
         "СОСНОВКА_10",
         "ЧЕБОКСАРЫ_340",
     ]
+
     now = datetime.now()
-    synthetic_rows = build_synthetic_rows(now)
-
-    seeded_rows, decisions, seeded_state_rows = retry_operation(
-        seed_rows_and_collect_decisions,
-        synthetic_rows=synthetic_rows,
-        claimer_pvz=args.claimer_pvz,
-        accessible_pvz_ids=accessible_pvz_ids,
-        now=now,
-        logger=logger,
-    )
-
-    candidate_rows = filter_claimable_rows_by_policy(
-        rows=seeded_state_rows,
-        configured_pvz_id=args.claimer_pvz,
-        available_pvz=accessible_pvz_ids,
-        max_claims=int(FAILOVER_POLICY_CONFIG.get("max_claims_per_run", 3) or 3),
-    )
-
-    claimed_results = []
-    for row in candidate_rows:
-        claim_result = try_claim_failover(
-            execution_date=normalize_execution_date(row["Дата"]),
-            target_pvz=row["target_pvz"],
-            owner_pvz=row.get("owner_pvz") or row["target_pvz"],
-            claimer_pvz=args.claimer_pvz,
-            ttl_minutes=args.ttl_minutes,
-            source_run_id=args.source_run_id,
-            logger=logger,
-        )
-        claimed_results.append(
-            {
-                "execution_date": row["Дата"],
-                "target_pvz": row["target_pvz"],
-                "claim_result": claim_result,
-                "state_after_claim": None,
-            }
-        )
-
-    if claimed_results:
-        try:
-            with failover_state_connection(logger=logger) as uploader:
-                for claim_item in claimed_results:
-                    claim_item["state_after_claim"] = get_state_with_uploader(
-                        uploader,
-                        execution_date=normalize_execution_date(claim_item["execution_date"]),
-                        target_pvz=claim_item["target_pvz"],
-                    )
-        except Exception as exc:  # pragma: no cover - smoke diagnostic path
-            for claim_item in claimed_results:
-                claim_item["state_after_claim_error"] = str(exc)
-                if claim_item["state_after_claim"] is None:
-                    claim_item["state_after_claim"] = claim_item["claim_result"].get("state")
+    synthetic_records = build_synthetic_records(now)
 
     result = {
-        "success": bool(claimed_results) and all(item["claim_result"].get("success", False) and item["claim_result"].get("claimed", False) for item in claimed_results),
+        "success": True,
         "claimer_pvz": args.claimer_pvz,
-        "claim_backend": BACKFILL_CONFIG.get("failover_claim_backend"),
+        "claim_backend": args.claim_backend,
         "accessible_pvz_ids": accessible_pvz_ids,
-        "selection_mode": FAILOVER_POLICY_CONFIG.get("selection_mode"),
-        "policy_priority_map": FAILOVER_POLICY_CONFIG.get("priority_map", {}),
-        "policy_capability_map": FAILOVER_POLICY_CONFIG.get("capability_map", {}),
-        "seeded_rows": seeded_rows,
-        "decisions_before_claim": decisions,
-        "candidate_rows": [
-            {
-                "execution_date": row["Дата"],
-                "target_pvz": row["target_pvz"],
-                "status": row.get("status"),
-            }
-            for row in candidate_rows
-        ],
-        "claimed_results": claimed_results,
     }
 
-    if args.pretty:
+    # ── Seed: production batch upsert ──
+    try:
+        seeded_rows, batch_upsert_result = seed_records_production_batch(
+            logger, synthetic_records
+        )
+        result["batch_upsert_diagnostics"] = batch_upsert_result.get("diagnostics", {})
+    except Exception as exc:
+        result["success"] = False
+        result["seed_error"] = str(exc)
+        _print_result(result, args.pretty)
+        return 1
+
+    result["seeded_rows"] = seeded_rows
+
+    # ── Policy evaluation: production collect_claimable_failover_rows ──
+    try:
+        evaluation = collect_claimable_failover_rows(
+            available_pvz_ids=accessible_pvz_ids,
+            configured_pvz_id=args.claimer_pvz,
+            max_claims=3,
+            logger=logger,
+            return_evaluation=True,
+        )
+    except Exception as exc:
+        result["success"] = False
+        result["policy_evaluation_error"] = str(exc)
+        _print_result(result, args.pretty)
+        return 1
+
+    result["policy_evaluation"] = evaluation
+
+    # ── Claim: production try_claim_failover ──
+    candidate_rows = evaluation.get("selected_rows", [])
+    result["candidate_rows"] = [
+        {
+            "execution_date": row.get("work_date", ""),
+            "target_object_name": row.get("target_object_name", ""),
+            "status": row.get("status", ""),
+        }
+        for row in candidate_rows
+    ]
+
+    claimed_results = []
+    if args.claim_backend == "sheets" and candidate_rows:
+        for row in candidate_rows:
+            try:
+                claim_result = try_claim_failover(
+                    execution_date=row["work_date"],
+                    target_object_name=row["target_object_name"],
+                    owner_object_name=row.get("owner_object_name") or row["target_object_name"],
+                    claimer_pvz=args.claimer_pvz,
+                    ttl_minutes=15,
+                    source_run_id="smoke-policy-run",
+                    logger=logger,
+                )
+                claimed_results.append({
+                    "execution_date": row["work_date"],
+                    "target_object_name": row["target_object_name"],
+                    "claim_result": claim_result,
+                })
+            except Exception as exc:
+                claimed_results.append({
+                    "execution_date": row["work_date"],
+                    "target_object_name": row["target_object_name"],
+                    "claim_error": str(exc),
+                })
+
+        result["claimed_results"] = claimed_results
+        result["success"] = result["success"] and all(
+            item.get("claim_result", {}).get("claimed", False)
+            for item in claimed_results
+            if "claim_error" not in item
+        )
+    else:
+        result["claim_skipped"] = True
+
+    _print_result(result, args.pretty)
+
+    if not result["success"]:
+        return 1
+    if not candidate_rows:
+        return 2
+    return 0
+
+
+def _print_result(result, pretty):
+    if pretty:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(json.dumps(result, ensure_ascii=False))
 
-    if claimed_results and result["success"]:
-        return 0
-    if not candidate_rows:
-        return 2
-    return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

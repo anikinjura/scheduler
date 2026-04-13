@@ -37,9 +37,9 @@ scheduler_runner/tasks/reports/
 
 | Метод | Назначение |
 |---|---|
-| `get_row(date, target_pvz)` | Read single row |
+| `get_row(date, target_object_name)` | Read single row |
 | `get_rows_by_keys(keys)` | Batch read |
-| `list_rows(statuses, target_pvz)` | Filtered list |
+| `list_rows(statuses, target_object_name)` | Filtered list |
 | `list_candidate_rows(statuses)` | Candidate scan |
 | `upsert_record(record)` | Single upsert |
 | `upsert_records(records)` | Batch upsert |
@@ -130,7 +130,7 @@ Apps Script URL / secret:
 Для замены storage backend:
 
 ```python
-from refactored_modules.storage import set_default_store, FailoverStateStore
+from scheduler_runner.tasks.reports.storage import set_default_store, FailoverStateStore
 
 class MyPostgreSQLStore(FailoverStateStore):
     def get_store_type(self): return "postgresql"
@@ -160,9 +160,23 @@ set_default_store(MyPostgreSQLStore())
 Полезные сигналы в `Processor` логах:
 
 ```
+Owner state sync metrics: prefetch_keys=N, prefetch_rows_found=N, persisted_rows=N, suppressed_success=N, upsert_updated=N, upsert_appended=N, upsert_prefetch_matches=N
 Failover coordination dry-run: capability_ranked decision=...
 Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...
+Retryable error при owner state prefetch: [429] ...; attempt=1/3, retry в N.Ns
 ```
+
+### Каскадный 429 и Retry
+
+При одновременном старте нескольких объектов возникает Google Sheets API 429
+(`Read requests per minute per user`). Начиная с модульной версии, `owner_state_sync`
+обёрнут в retry с exponential backoff + random jitter:
+
+- **max_attempts**: 3 (конфигурируется: `owner_state_sync_max_attempts`)
+- **backoff**: 2s → 4s (exponential, configurable: `base_delay_seconds`, `max_delay_seconds`)
+- **jitter**: ±1s (configurable: `owner_state_sync_jitter_seconds`)
+
+Non-retryable ошибки (auth, connection) пробрасываются немедленно.
 
 ## Quota Discipline
 
@@ -184,9 +198,6 @@ Failover coordination arbitration: mode=..., eligible=..., selected=..., rejecte
 ## Проверка Кода
 
 ```powershell
-# Refactored module tests
-.venv\Scripts\python.exe -m pytest .tmp\refactored_modules\tests\test_failover_state.py .tmp\refactored_modules\tests\test_failover_policy.py .tmp\refactored_modules\tests\test_owner_state_sync.py .tmp\refactored_modules\tests\test_failover_orchestration.py -q
-
-# Battle tests (unchanged)
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_failover_state.py scheduler_runner\tasks\reports\tests\test_failover_policy.py -q
+# All refactored module tests
+.venv\Scripts\python.exe -m pytest scheduler_runner/tasks/reports/tests/ -q
 ```

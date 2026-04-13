@@ -1344,10 +1344,31 @@ class GoogleSheetsReporter:
                     self.logger.warning(f"Колонки '{missing_columns}' не найдены в заголовках (нормализованные заголовки: {list(normalized_header_to_idx.keys())})")
                     return []
 
-            # Определяем максимальное количество строк для чтения
-            # Используем get_last_row_with_data() для оптимизации, но добавляем буфер для свежих данных
-            last_data_row = self.get_last_row_with_data()
-            max_row = min(self.worksheet.row_count, last_data_row + 10)  # добавляем буфер в 10 строк для свежих данных
+            # Определяем максимальное количество строк для чтения.
+            # Сканируем DATA-колонки (не формульные) чтобы найти последнюю строку
+            # с реальными данными, + буфер для свежих данных.
+            data_column_index = None
+            for col_def in config.columns:
+                if col_def.column_type == ColumnType.DATA and col_def.required:
+                    data_column_index = config.get_column_index(col_def.name)
+                    if data_column_index:
+                        break
+            if not data_column_index:
+                for col_def in config.columns:
+                    if col_def.column_type == ColumnType.DATA:
+                        data_column_index = config.get_column_index(col_def.name)
+                        if data_column_index:
+                            break
+
+            if data_column_index:
+                data_last_row = self.get_last_row_with_data(column_index=data_column_index)
+            else:
+                data_last_row = 1
+            # Используем фактическую последнюю строку с данными + буфер
+            # Не используем row_count т.к. он может быть больше реального контента
+            last_data_row = data_last_row
+            # Добавляем буфер чтобы захватить свежие данные
+            max_row = last_data_row + 50 if last_data_row > 1 else 200
 
             # Формируем диапазоны для batch_get
             ranges = []
@@ -1446,8 +1467,32 @@ class GoogleSheetsReporter:
             # Получаем заголовки
             headers = self.worksheet.row_values(1)
 
-            # Подготавливаем значения для обновления
-            values = self._prepare_row_values(data, config, row_number, formula_row_placeholder)
+            # Подготавливаем значения для обновления, исключая timestamp.
+            # timestamp — время создания записи, его нельзя перезаписывать при update.
+            values = []
+            for header in headers:
+                if header == "timestamp":
+                    # Сохраняем существующее значение timestamp
+                    col_letter = config.get_column_letter(header)
+                    if not col_letter:
+                        col_idx = config.get_column_index(header)
+                        col_letter = _index_to_column_letter(col_idx) if col_idx else None
+                    if col_letter:
+                        existing_val = self.worksheet.acell(f"{col_letter}{row_number}").value
+                        values.append(existing_val or "")
+                    else:
+                        values.append("")
+                else:
+                    col_def = config.get_column(header)
+                    if not col_def:
+                        values.append("")
+                    elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+                        formula = col_def.formula_template.replace(formula_row_placeholder, str(row_number))
+                        values.append(formula)
+                    elif col_def.name in data:
+                        values.append(data[col_def.name])
+                    else:
+                        values.append("")
 
             # Обновляем строку
             start_col = config.get_column_letter(headers[0]) or "A"
@@ -1532,27 +1577,74 @@ class GoogleSheetsReporter:
             Результат операции
         """
         try:
-            last_row = self.get_last_row_with_data()
-            new_row_num = last_row + 1
+            # Шаг 1: Подготавливаем значения БЕЗ формул (пустые строки для FORMULA-колонок).
+            # Это нужно т.к. мы не знаем реальный номер строки до append_rows.
+            values_no_formulas = []
+            formula_col_indices = []
+            headers = self.worksheet.row_values(1)
 
-            # Подготавливаем значения с формулами
-            values = self._prepare_row_values(data, config, new_row_num, formula_row_placeholder)
+            for col_idx, header in enumerate(headers):
+                col_def = config.get_column(header)
+                if not col_def:
+                    values_no_formulas.append("")
+                elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+                    formula_col_indices.append(col_idx)
+                    values_no_formulas.append("")  # placeholder
+                elif col_def.name in data:
+                    values_no_formulas.append(data[col_def.name])
+                else:
+                    values_no_formulas.append("")
 
-            # ОДИН запрос к API
-            self.worksheet.append_rows(
-                values=[values],
+            # Шаг 2: append_rows — Google сам определяет куда добавить строку
+            response = self.worksheet.append_rows(
+                values=[values_no_formulas],
                 value_input_option='USER_ENTERED'
             )
 
+            # Шаг 3: Извлекаем реальный номер строки из ответа API
+            import re
+            actual_row_num = None
+            updated_range = ""
+            if isinstance(response, dict):
+                updates = response.get('updates', response)
+                updated_range = updates.get('updatedRange', '')
+            if updated_range:
+                match = re.search(r'!(\d+)', updated_range)
+                if match:
+                    actual_row_num = int(match.group(1))
+
+            # Fallback: ищем строку по уникальным ключам
+            if actual_row_num is None and config.unique_key_columns:
+                search_keys = {k: data.get(k) for k in config.unique_key_columns if data.get(k) is not None}
+                if search_keys:
+                    found = self.get_rows_by_unique_keys(search_keys, config=config, first_only=True)
+                    if found and '_row_number' in found:
+                        actual_row_num = found['_row_number']
+
+            if actual_row_num is None:
+                self.logger.warning(f"Не удалось определить номер строки из ответа: {response}")
+                actual_row_num = 0
+
+            # Шаг 4: Обновляем формульные ячейки с правильным номером строки
+            if actual_row_num and actual_row_num > 0:
+                for col_idx in formula_col_indices:
+                    header = headers[col_idx]
+                    col_def = config.get_column(header)
+                    if col_def and col_def.formula_template:
+                        formula = col_def.formula_template.replace(formula_row_placeholder, str(actual_row_num))
+                        col_letter = _index_to_column_letter(col_idx + 1)
+                        cell_range = f"{col_letter}{actual_row_num}"
+                        self.worksheet.update(cell_range, [[formula]], value_input_option='USER_ENTERED')
+
             # Логирование
-            self.logger.info(f"Новая строка {new_row_num} добавлена")
+            self.logger.info(f"Новая строка {actual_row_num} добавлена")
 
             return self._create_result(
                 success=True,
                 action="appended",
-                message=f"Строка {new_row_num} добавлена",
+                message=f"Строка {actual_row_num} добавлена",
                 data=data,
-                row_number=new_row_num
+                row_number=actual_row_num
             )
 
         except Exception as e:

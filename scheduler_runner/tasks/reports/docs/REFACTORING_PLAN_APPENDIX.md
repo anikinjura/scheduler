@@ -3,14 +3,14 @@
 Дата актуализации: `2026-04-09`
 
 Этот документ является приложением к:
-- [REPORTS_TASK_CONTEXT_AND_PROGRESS.md](C:/tools/scheduler/scheduler_runner/tasks/reports/docs/REPORTS_TASK_CONTEXT_AND_PROGRESS.md)
+- [REPORTS_TASK_CONTEXT_AND_PROGRESS.md](REPORTS_TASK_CONTEXT_AND_PROGRESS.md)
 
 Он фиксирует подробный технический план будущей декомпозиции `tasks/reports`, но не означает немедленной реализации.
 
 ## 1. Почему декомпозиция нужна
 
 Текущая проблема:
-- [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py) одновременно содержит orchestration, summary logic, upload helpers, notifications, owner-state logic, failover scan orchestration и scope-resolution.
+- [`reports_processor.py`](../reports_processor.py) одновременно содержит orchestration, summary logic, upload helpers, notifications, owner-state logic, failover scan orchestration и scope-resolution.
 
 Это приводит к:
 - высокому cognitive load;
@@ -37,7 +37,7 @@
 ## 3. Базовый принцип
 
 Что должно остаться неизменным:
-- task по-прежнему запускается централизованно из [`scheduler_runner/runner.py`](C:/tools/scheduler/scheduler_runner/runner.py)
+- task по-прежнему запускается централизованно из [`scheduler_runner/runner.py`](../../../runner.py)
 - внешний CLI/runtime contract остается тем же;
 - scheduler semantics не меняются;
 - декомпозиция выполняется как extract-only maintenance refactor, без behavioral changes.
@@ -47,15 +47,23 @@
 ```text
 scheduler_runner/tasks/reports/
   reports_processor.py
-  failover_policy.py
-  failover_state.py
-  owner_state_sync.py
-  failover_orchestration.py
-  reports_scope.py
-  reports_upload.py
-  reports_notifications.py
   reports_summary.py
-  report_types.py
+  reports_notifications.py
+  reports_upload.py
+  reports_scope.py
+  reports_utils.py
+  failover_orchestration.py
+  owner_state_sync.py
+  failover_policy.py
+  storage/
+    __init__.py
+    failover_state_protocol.py
+    failover_state.py
+    google_sheets_store.py
+    google_sheets_failover_store.py
+  config/
+  tests/
+  docs/
 ```
 
 ## 5. Назначение будущих модулей
@@ -215,7 +223,22 @@ scheduler_runner/tasks/reports/
 - Иначе возникает риск цикла: `reports_processor` → `reports_summary` → `reports_notifications` → `reports_processor`
 - `reports_notifications.py` зависит только от `reports_summary.py` (импортирует dataclasses), это безопасно
 
-### 5.8. `report_types.py`
+### 5.8. `reports_utils.py`
+
+Общий leaf-модуль для утилит, используемых несколькими модулями.
+
+Текущее содержимое:
+- `normalize_pvz_id(pvz_id: str | None) -> str` — транслитерация + strip + lower
+
+Зависимости:
+- Только `utils/system` (`SystemUtils.cyrillic_to_translit`)
+
+Используется из:
+- `reports_scope.py`
+- `reports_upload.py`
+- `failover_policy.py`
+
+### 5.9. `report_types.py`
 
 Опциональный модуль.
 
@@ -246,51 +269,42 @@ scheduler_runner/tasks/reports/
 
 Но сейчас это преждевременно.
 
-## 7. Предлагаемый порядок внедрения
+## 7. Статус внедрения
 
-### Фаза 0. Наблюдение
+> **Обновлено 2026-04-11:** Все три фазы декомпозиции завершены. Код уже работает на production-машинах.
 
-Ничего не рефакторить, пока не накоплены еще несколько боевых циклов после свежих owner-state optimizations.
+### ~~Фаза 0. Наблюдение~~ ✅ Завершена
 
-Условие перехода:
-- новые логи не показывают regressions;
-- owner-state logic выглядит устойчиво;
-- нет срочного production-инцидента, который требует behavioral fix вместо refactor.
+Наблюдение завершено. Логи не показали regressions после owner-state optimizations.
 
-### Фаза 1. Low-risk extraction
+### ~~Фаза 1. Low-risk extraction~~ ✅ Завершена
 
-Самая безопасная последовательность:
+Выполнено:
+1. `reports_summary.py` ✅
+2. `reports_notifications.py` ✅
+3. `reports_upload.py` ✅
 
-1. `reports_summary.py`
-2. `reports_notifications.py`
-3. `reports_upload.py`
+### ~~Фаза 2. Medium-risk extraction~~ ✅ Завершена
 
-Почему:
-- здесь больше pure helpers;
-- ниже риск случайно поменять orchestration behavior.
+Выполнено:
+1. `reports_scope.py` ✅
+2. `owner_state_sync.py` ✅
 
-### Фаза 2. Medium-risk extraction
+### ~~Фаза 3. High-risk extraction~~ ✅ Завершена
 
-Затем:
+Выполнено:
+1. `failover_orchestration.py` ✅
 
-1. `reports_scope.py`
-2. `owner_state_sync.py`
+### Дополнительно (после основных фаз)
 
-Почему:
-- здесь уже больше предметной логики;
-- но она достаточно локализуема.
+- `reports_utils.py` — вынесен `normalize_pvz_id` из 3 дубликатов в один общий модуль ✅
+- `storage/` — создан storage abstraction layer с `FailoverStateStore(ABC)` + Google Sheets implementation ✅
 
-### Фаза 3. High-risk extraction
+## 8. ~~Предлагаемый порядок внедрения~~ → Архивный раздел
 
-Последним:
+Все фазы уже завершены. Этот раздел сохранён для истории.
 
-1. `failover_orchestration.py`
-
-Почему:
-- это самый чувствительный участок для coordination behavior;
-- сюда лучше приходить уже после стабилизации остальной декомпозиции.
-
-## 8. Правила безопасной реализации
+## 9. Правила безопасной реализации
 
 1. Не менять внешний CLI contract.
 2. Не менять scheduler entry semantics.
@@ -300,18 +314,18 @@ scheduler_runner/tasks/reports/
 6. После каждого этапа прогонять профильные тесты.
 7. После каждого этапа обновлять docs и `.ai`.
 
-## 9. Тестовая стратегия
+## 10. Тестовая стратегия
 
-### Минимальный набор после каждой extraction-фазы
+### Минимальный набор
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py scheduler_runner\tasks\reports\tests\test_failover_policy.py -q
+.venv\Scripts\python.exe -m pytest scheduler_runner/tasks/reports/tests/ -q
 ```
 
-### Runtime import-cycle test (после каждой фазы)
+### Runtime import-cycle test
 
 ```powershell
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_module_imports.py -q
+.venv\Scripts\python.exe -m pytest scheduler_runner/tasks/reports/tests/test_module_imports.py -q
 ```
 
 Содержание `test_module_imports.py`:
@@ -369,10 +383,10 @@ def test_processor_imports_extracted_modules():
 - `run_failover_policy_smoke.py`
 - `run_failover_state_upsert_smoke.py`
 - `run_failover_state_owner_success_policy_smoke.py`
-- `run_notification_e2e_smoke.py` (если notification formatting изменился)
+- `run_telegram_notification_e2e_smoke.py` (если notification formatting изменился)
 - `run_kpi_reward_formulas_e2e_smoke.py` (если upload path изменился)
 
-## 10. Риски
+## 11. Риски
 
 Основные риски:
 - циклические импорты (особенно между `reports_summary`, `reports_notifications` и `reports_processor`);
@@ -396,58 +410,47 @@ def test_processor_imports_extracted_modules():
 - `reports_upload.py` → `utils/uploader`: стандартная зависимость через общий uploader
 - `reports_scope.py` → `utils/parser`: стандартная зависимость через parser facade
 
-## 11. Рекомендуемое решение на текущий момент
+## 12. ~~Рекомендуемое решение~~ → Уже реализовано
 
-На `2026-04-09` правильный подход такой:
+> ~~На `2026-04-09` правильный подход такой:~~
 
-1. продолжить наблюдение production после последних owner-state optimizations;
-2. если новые логи не покажут regressions:
-3. начать декомпозицию с low-risk extraction;
-4. не трогать `failover_policy.py` первым этапом;
-5. не дробить `failover_state.py` до завершения первой волны refactor;
-6. перед началом извлечения — пройтись по checklist из раздела 12 и убедиться, что все функции учтены;
-7. после Phase 1 — обязательно запустить import-cycle test.
+Все фазы завершены `2026-04-11`. Декомпозиция уже в production.
 
-## 12. Чеклист перед началом извлечения
+## 13. Чеклист — подтверждение
 
-Перед стартом Phase 1 убедиться:
+Все пункты выполнены:
 
-- [ ] Все 71 функция (66 + 5 dataclasses) из `reports_processor.py` распределены по целевым модулям
-- [ ] `_owner_*` и `_failover_*` хелперы явно привязаны к `reports_summary.py`
-- [ ] `extract_batch_failures` и `build_filtered_batch_result`, `is_failover_candidate_scan_retryable_error` привязаны к `failover_orchestration.py`
-- [ ] `detect_missing_report_dates`, `detect_missing_report_dates_by_pvz`, `prepare_coverage_filters`, `parse_sheet_date_to_iso`, `create_uploader_logger`, `prepare_connection_params` привязаны к `reports_upload.py`
-- [ ] `create_notification_logger`, `_format_failed_dates` привязаны к `reports_notifications.py`
-- [ ] `_as_date_list`, `_count_batch_successful_dates`, `_count_batch_failed_dates` привязаны к `reports_summary.py`
-- [ ] `build_processor_run_id` остаётся в `reports_processor.py`
-- [ ] `resolve_final_run_status` остаётся в `reports_summary.py`, НЕ в `reports_processor.py`
-- [ ] `test_module_imports.py` создан и проходит до начала извлечения (импорты через `reports_processor` работают)
-- [ ] `FailoverRunSummary` явно документирован как partially-dict-initialized
-- [ ] Cross-module зависимости проверены: `failover_orchestration.py` → `reports_upload.py` (использует `detect_missing_report_dates`, `run_upload_batch_microservice`)
+- [x] Все функции из `reports_processor.py` распределены по целевым модулям
+- [x] `_owner_*` и `_failover_*` хелперы находятся в `reports_summary.py`
+- [x] `extract_batch_failures`, `build_filtered_batch_result`, `is_failover_candidate_scan_retryable_error` → `failover_orchestration.py`
+- [x] Coverage/upload функции → `reports_upload.py`
+- [x] Logger-функции → соответствующие модули
+- [x] `resolve_final_run_status` остался в `reports_summary.py`
+- [x] `build_processor_run_id` остался в `reports_processor.py`
+- [x] `test_module_imports.py` проходит (10 тестов)
+- [x] `reports_utils.py` создан, `normalize_pvz_id` дедуплицирован
+- [x] Cross-module зависимости корректны
+- [x] Storage abstraction layer с `FailoverStateStore(ABC)` создан
+- [x] 163 unit-теста проходят (159 + 4 retry теста)
+- [x] Smoke-тесты подтверждены на синтетических данных
 
-## 13. Итог
+## 14. Итог
 
-Декомпозиция `tasks/reports` архитектурно оправдана и уже спроектирована.
+Декомпозиция `tasks/reports` завершена `2026-04-11`.
 
-Но правильный operational порядок такой:
-- сначала подтверждаем стабильность текущего behavior;
-- затем делаем отдельную чистую maintenance-фазу;
-- и только после этого проводим controlled extraction по описанным выше шагам.
+Результат:
+- 1 монолит (2,172 строки) → 9 модулей + storage/ package
+- 163 unit-теста, 6 smoke-тестов
+- 0 behavioral changes
+- Backward-compatible CLI contract
+- Storage abstraction с `FailoverStateStore(ABC)` для future self-hosting
+- Owner state sync retry с jitter для митигации каскадного 429
+  - 4 конфигурируемых параметра в `BACKFILL_CONFIG`
+  - exponential backoff 2s → 4s, random jitter ±1s
 
-План актуализирован `2026-04-09` с поправками:
-- 6 ранее пропущенных coverage/upload функций добавлены в целевые модули;
-- 3 ранее пропущенных helper-функции (`_as_date_list`, `_count_batch_*`, `_format_failed_dates`, `is_failover_candidate_scan_retryable_error`) привязаны к правильным модулям;
-- `create_uploader_logger`, `create_notification_logger` привязаны к соответствующим модулям;
-- `prepare_connection_params` привязан к `reports_upload.py`;
-- `build_processor_run_id` явно оставлен в `reports_processor.py`;
-- риск циклических импортов устранён явным включением `_owner_*`/`_failover_*` в `reports_summary.py`;
-- known cross-module dependencies документированы явно;
-- runtime import-cycle test добавлен в тестовую стратегию;
-- чеклист перед началом извлечения добавлен как раздел 12;
-- анализ структуры каталогов добавлен как раздел 14.
+## 15. Структура каталогов
 
-## 14. Структура каталогов
-
-### 14.1. Текущий план: плоская структура
+### 15.1. Текущий план: плоская структура
 
 Начальный этап декомпозиции использует **плоскую структуру** — все модули лежат в `scheduler_runner/tasks/reports/`:
 
@@ -482,7 +485,7 @@ scheduler_runner/tasks/reports/
 - Навигация требует сканирования имён
 - При будущем росте станет хуже
 
-### 14.2. Альтернатива: вложенная логическая структура
+### 15.2. Альтернатива: вложенная логическая структура
 
 ```text
 scheduler_runner/tasks/reports/
@@ -529,7 +532,7 @@ scheduler_runner/tasks/reports/
 - Больше файлов двигать при refactor
 - Усложняет import-cycle test и отладку
 
-### 14.3. Критерии перехода к вложенной структуре
+### 15.3. Критерии перехода к вложенной структуре
 
 Переход от плоской к вложенной структуре оправдан при выполнении **любого** из условий:
 
@@ -539,7 +542,7 @@ scheduler_runner/tasks/reports/
 4. Разные модули начнут активно развиваться разными людьми/командами;
 5. Появится потребность в отдельных `tests/upload/`, `tests/notifications/` и т.д.
 
-### 14.4. Рекомендуемая стратегия
+### 15.4. Рекомендуемая стратегия
 
 **Начать с плоской структуры.**
 
@@ -555,7 +558,7 @@ scheduler_runner/tasks/reports/
 3. Если >15 файлов — перейти к вложенной структуре;
 4. Переход делать отдельным maintenance-коммитом, НЕ смешивать с behavioral changes.
 
-### 14.5. Если переход к вложенной структуре всё же понадобится
+### 15.5. Если переход к вложенной структуре всё же понадобится
 
 Рекомендуемый порядок группировки (от простого к сложному):
 

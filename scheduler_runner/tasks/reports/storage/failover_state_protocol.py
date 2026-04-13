@@ -27,7 +27,7 @@ STATUS_FAILOVER_FAILED = "failover_failed"
 STATUS_CLAIM_EXPIRED = "claim_expired"
 
 TERMINAL_STATUSES = {STATUS_OWNER_SUCCESS, STATUS_FAILOVER_SUCCESS}
-FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["Дата", "target_pvz"]
+FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["work_date", "target_object_name"]
 
 
 # ──────────────────────────────────────────────
@@ -42,7 +42,7 @@ class FailoverStateStore(ABC):
     реализовать все abstract-методы.
 
     Contract:
-    - Ключ записи: (execution_date: str YYYY-MM-DD, target_pvz: str)
+    - Ключ записи: (execution_date: str YYYY-MM-DD, target_object_name: str)
     - Все даты возвращаются/принимаются в формате YYYY-MM-DD
     - record dict содержит все поля строки состояния
     """
@@ -50,8 +50,8 @@ class FailoverStateStore(ABC):
     # ── Read operations ──
 
     @abstractmethod
-    def get_row(self, execution_date: str, target_pvz: str) -> Optional[Dict[str, Any]]:
-        """Получить одну строку по уникальному ключу (Дата, target_pvz)."""
+    def get_row(self, execution_date: str, target_object_name: str) -> Optional[Dict[str, Any]]:
+        """Получить одну строку по уникальному ключу (work_date, target_object_name)."""
         ...
 
     @abstractmethod
@@ -63,10 +63,10 @@ class FailoverStateStore(ABC):
         Batch-read строк по списку ключей.
 
         Args:
-            keys: [{"Дата": "2026-04-01", "target_pvz": "PVZ1"}, ...]
+            keys: [{"work_date": "2026-04-01", "target_object_name": "PVZ1"}, ...]
 
         Returns:
-            Dict[(normalized_date, normalized_target_pvz) -> row_dict]
+            Dict[(normalized_date, normalized_target_object_name) -> row_dict]
         """
         ...
 
@@ -74,9 +74,9 @@ class FailoverStateStore(ABC):
     def list_rows(
         self,
         statuses: Optional[List[str]] = None,
-        target_pvz: Optional[str] = None,
+        target_object_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Получить строки с фильтрацией по статусам и target_pvz."""
+        """Получить строки с фильтрацией по статусам и target_object_name."""
         ...
 
     @abstractmethod
@@ -126,8 +126,8 @@ class FailoverStateStore(ABC):
     def mark_state(
         self,
         execution_date: str,
-        target_pvz: str,
-        owner_pvz: str,
+        target_object_name: str,
+        owner_object_name: str,
         status: str,
         source_run_id: str = "",
         last_error: str = "",
@@ -158,8 +158,8 @@ class FailoverStateStore(ABC):
     def try_claim(
         self,
         execution_date: str,
-        target_pvz: str,
-        owner_pvz: str,
+        target_object_name: str,
+        owner_object_name: str,
         claimer_pvz: str,
         ttl_minutes: int,
         source_run_id: str = "",
@@ -188,15 +188,15 @@ class FailoverStateStore(ABC):
 # Helpers, не зависящие от storage
 # ──────────────────────────────────────────────
 
-def build_failover_request_id(execution_date: str, target_pvz: str) -> str:
+def build_failover_request_id(execution_date: str, target_object_name: str) -> str:
     """Создать уникальный request_id для строки failover state."""
-    return f"{execution_date}|{target_pvz}"
+    return f"{execution_date}|{target_object_name}"
 
 
 def build_failover_state_record(
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     status: str,
     source_run_id: str = "",
     last_error: str = "",
@@ -207,18 +207,20 @@ def build_failover_state_record(
 ) -> Dict[str, Any]:
     """Создать record для upsert в failover state."""
     from datetime import datetime
+    now_str = (updated_at or datetime.now()).strftime("%d.%m.%Y %H:%M:%S")
     return {
-        "request_id": build_failover_request_id(execution_date, target_pvz),
-        "Дата": execution_date,
-        "target_pvz": target_pvz,
-        "owner_pvz": owner_pvz,
+        "request_id": build_failover_request_id(execution_date, target_object_name),
+        "work_date": execution_date,
+        "target_object_name": target_object_name,
+        "owner_object_name": owner_object_name,
         "status": status,
         "claimed_by": claimed_by,
         "claim_expires_at": claim_expires_at,
         "attempt_no": attempt_no,
         "source_run_id": source_run_id,
         "last_error": last_error,
-        "updated_at": (updated_at or datetime.now()).strftime("%d.%m.%Y %H:%M:%S"),
+        "updated_at": now_str,
+        "timestamp": now_str,
     }
 
 

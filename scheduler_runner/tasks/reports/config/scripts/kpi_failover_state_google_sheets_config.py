@@ -10,7 +10,7 @@ from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_
     ColumnType,
     TableConfig,
 )
-from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import SPREADSHEET_ID
+from .kpi_google_sheets_config import SPREADSHEET_ID
 
 
 FAILOVER_STATE_TABLE_CONFIG = TableConfig(
@@ -19,11 +19,11 @@ FAILOVER_STATE_TABLE_CONFIG = TableConfig(
     columns=[
         ColumnDefinition(
             name="request_id",
-            column_type=ColumnType.FORMULA,
-            formula_template="=B{row}&C{row}",
+            column_type=ColumnType.DATA,
+            required=True,
         ),
         ColumnDefinition(
-            name="Дата",
+            name="work_date",
             column_type=ColumnType.DATA,
             required=True,
             unique_key=True,
@@ -33,7 +33,7 @@ FAILOVER_STATE_TABLE_CONFIG = TableConfig(
             date_output_format="DD.MM.YYYY",
         ),
         ColumnDefinition(
-            name="target_pvz",
+            name="target_object_name",
             column_type=ColumnType.DATA,
             required=True,
             unique_key=True,
@@ -42,7 +42,7 @@ FAILOVER_STATE_TABLE_CONFIG = TableConfig(
             normalization="strip_lower_str",
         ),
         ColumnDefinition(
-            name="owner_pvz",
+            name="owner_object_name",
             column_type=ColumnType.DATA,
             required=True,
             normalization="strip_lower_str",
@@ -54,8 +54,9 @@ FAILOVER_STATE_TABLE_CONFIG = TableConfig(
         ColumnDefinition(name="source_run_id", column_type=ColumnType.DATA),
         ColumnDefinition(name="last_error", column_type=ColumnType.DATA),
         ColumnDefinition(name="updated_at", column_type=ColumnType.DATA, required=True),
+        ColumnDefinition(name="timestamp", column_type=ColumnType.DATA),
     ],
-    unique_key_columns=["Дата", "target_pvz"],
+    unique_key_columns=["work_date", "target_object_name"],
 )
 
 

@@ -19,7 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from gspread.utils import DateTimeOption, ValueRenderOption
 from config.base_config import ENV_MODE, PVZ_ID
-from scheduler_runner.tasks.reports.reports_upload import (
+from ..reports_upload import (
     create_uploader_logger,
     prepare_connection_params,
 )
@@ -53,11 +53,11 @@ def build_arg_parser():
 def build_smoke_record(args) -> dict:
     execution_dt = datetime.strptime(args.execution_date, "%Y-%m-%d")
     return {
-        "Дата": execution_dt.strftime("%d.%m.%Y"),
-        "ПВЗ": args.pvz,
-        "Количество выдач": args.issued,
-        "Прямой поток": args.direct,
-        "Возвратный поток": args.return_flow,
+        "work_date": execution_dt.strftime("%d.%m.%Y"),
+        "object_name": args.pvz,
+        "issued_packages": args.issued,
+        "direct_flow": args.direct,
+        "return_flow": args.return_flow,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -70,8 +70,8 @@ def read_row_by_unique_keys(connection_params: dict, execution_date: str, pvz: s
     try:
         row = uploader.sheets_reporter.get_row_by_unique_keys(
             unique_key_values={
-                "Дата": execution_date,
-                "ПВЗ": pvz,
+                "work_date": execution_date,
+                "object_name": pvz,
             },
             config=uploader.table_config,
             return_raw=True,
@@ -132,10 +132,10 @@ def read_row_render_diagnostics(connection_params: dict, row_number: int, logger
         formula_row = map_headers_to_values(headers, formulas[0] if formulas else [])
 
         reward_headers = [
-            "Сумма за Количество выдач",
-            "Сумма за Прямой поток",
-            "Сумма за Возвратный поток",
-            "Итого вознаграждение",
+            "reward_issued_packages",
+            "reward_direct_flow",
+            "reward_return_flow",
+            "total_reward",
         ]
         reward_diagnostics = {}
         for header in reward_headers:
@@ -167,10 +167,10 @@ def read_row_render_diagnostics(connection_params: dict, row_number: int, logger
 def extract_reward_snapshot(row: dict | None) -> dict:
     row = row or {}
     return {
-        "Сумма за Количество выдач": row.get("Сумма за Количество выдач", ""),
-        "Сумма за Прямой поток": row.get("Сумма за Прямой поток", ""),
-        "Сумма за Возвратный поток": row.get("Сумма за Возвратный поток", ""),
-        "Итого вознаграждение": row.get("Итого вознаграждение", ""),
+        "reward_issued_packages": row.get("reward_issued_packages", ""),
+        "reward_direct_flow": row.get("reward_direct_flow", ""),
+        "reward_return_flow": row.get("reward_return_flow", ""),
+        "total_reward": row.get("total_reward", ""),
     }
 
 
@@ -232,7 +232,7 @@ def main():
     for attempt in range(1, max(args.read_attempts, 1) + 1):
         row, read_error = read_row_by_unique_keys(
             connection_params=connection_params,
-            execution_date=smoke_record["Дата"],
+            execution_date=args.execution_date,
             pvz=args.pvz,
             logger=logger,
         )

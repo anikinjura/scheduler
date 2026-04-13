@@ -2,21 +2,22 @@
 Unit tests for reports_scope (Phase 2.1).
 
 Проверяют:
-- normalize_pvz_id
 - resolve_pvz_ids
 - should_run_automatic_failover_coordination
 - build_jobs_from_missing_dates_by_pvz (mocked)
 - group_jobs_by_pvz
+
+normalize_pvz_id тестируется отдельно (reports_utils).
 """
 import unittest
 from unittest.mock import patch, MagicMock
 
-from scheduler_runner.tasks.reports.reports_scope import (
-    normalize_pvz_id,
+from ..reports_scope import (
     resolve_pvz_ids,
     should_run_automatic_failover_coordination,
     group_jobs_by_pvz,
 )
+from ..reports_utils import normalize_pvz_id
 
 # PVZ_ID берётся из config.base_config и зависит от машины
 from config.base_config import PVZ_ID

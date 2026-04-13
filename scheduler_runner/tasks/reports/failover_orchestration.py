@@ -8,8 +8,8 @@ Orchestration всего failover-phase: candidate evaluation, claim path, recov
 from datetime import datetime
 
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from .config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
+from .storage.failover_state import (
     STATUS_CLAIM_EXPIRED,
     STATUS_FAILOVER_FAILED,
     STATUS_FAILOVER_SUCCESS,
@@ -20,7 +20,7 @@ from scheduler_runner.tasks.reports.storage.failover_state import (
     mark_failover_state,
     try_claim_failover,
 )
-from scheduler_runner.tasks.reports.failover_policy import (
+from .failover_policy import (
     evaluate_claimable_rows_by_policy,
     filter_claimable_rows_by_policy,
     get_capability_targets_for_helper,
@@ -70,7 +70,7 @@ from .owner_state_sync import (
 
 def collect_claimable_failover_rows(
     *,
-    accessible_pvz_ids,
+    available_pvz_ids,
     configured_pvz_id=PVZ_ID,
     max_claims=None,
     logger=None,
@@ -87,25 +87,25 @@ def collect_claimable_failover_rows(
     if not FAILOVER_POLICY_CONFIG.get("enabled", True):
         filtered_rows = []
         decisions = []
-        normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (accessible_pvz_ids or [])}
+        normalized_accessible = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz_ids or [])}
         normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
         for row in rows:
-            target_pvz = row.get("target_pvz")
-            if not target_pvz:
+            target_object_name = row.get("target_object_name")
+            if not target_object_name:
                 continue
-            normalized_target_pvz = normalize_pvz_id(target_pvz)
+            normalized_target_object_name = normalize_pvz_id(target_object_name)
             decision_item = {
-                "execution_date": row.get("Дата", ""),
-                "target_pvz": target_pvz,
+                "execution_date": row.get("work_date", ""),
+                "target_object_name": target_object_name,
                 "status": row.get("status"),
                 "eligible": False,
                 "reason": "",
             }
-            if normalized_target_pvz == normalized_configured_pvz_id:
-                decision_item["reason"] = "own_target_pvz"
+            if normalized_target_object_name == normalized_configured_pvz_id:
+                decision_item["reason"] = "own_target_object_name"
                 decisions.append(decision_item)
                 continue
-            if normalized_target_pvz not in normalized_accessible:
+            if normalized_target_object_name not in normalized_accessible:
                 decision_item["reason"] = "not_accessible"
                 decisions.append(decision_item)
                 continue
@@ -113,12 +113,12 @@ def collect_claimable_failover_rows(
             decision_item["reason"] = "eligible"
             decisions.append(decision_item)
             filtered_rows.append(row)
-        filtered_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
+        filtered_rows.sort(key=lambda row: (row.get("work_date", ""), row.get("target_object_name", "")))
         selected_rows = filtered_rows[:max_claims] if max_claims else filtered_rows
-        selected_keys = {(row.get("Дата", ""), row.get("target_pvz", "")) for row in selected_rows}
+        selected_keys = {(row.get("work_date", ""), row.get("target_object_name", "")) for row in selected_rows}
         for decision_item in decisions:
             decision_item["selected_for_claim"] = (
-                (decision_item.get("execution_date"), decision_item.get("target_pvz")) in selected_keys
+                (decision_item.get("execution_date"), decision_item.get("target_object_name")) in selected_keys
             )
         evaluation = {
             "mode": "policy_disabled",
@@ -145,24 +145,24 @@ def collect_claimable_failover_rows(
         }
         return evaluation if return_evaluation else []
 
-    filtered_rows, decisions = filter_claimable_rows_by_policy(
-        rows=rows,
-        configured_pvz_id=configured_pvz_id,
-        accessible_pvz_ids=accessible_pvz_ids,
-    )
-    filtered_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
-    selected_rows = filtered_rows[:max_claims] if max_claims else filtered_rows
-    selected_keys = {(row.get("Дата", ""), row.get("target_pvz", "")) for row in selected_rows}
-    for decision_item in decisions:
-        decision_item["selected_for_claim"] = (
-            (decision_item.get("execution_date"), decision_item.get("target_pvz")) in selected_keys
-        )
     evaluation = evaluate_claimable_rows_by_policy(
         rows=rows,
-        filtered_rows=filtered_rows,
-        selected_rows=selected_rows,
-        decisions=decisions,
+        configured_pvz_id=configured_pvz_id,
+        available_pvz=available_pvz_ids,
+        max_claims=max_claims,
+        now=datetime.now(),
     )
+    filtered_rows = evaluation["eligible_rows"]
+    decisions = evaluation["decisions"]
+    filtered_rows.sort(key=lambda row: (row.get("work_date", ""), row.get("target_object_name", "")))
+    selected_rows = filtered_rows[:max_claims] if max_claims else filtered_rows
+    selected_keys = {(row.get("work_date", ""), row.get("target_object_name", "")) for row in selected_rows}
+    for decision_item in decisions:
+        decision_item["selected_for_claim"] = (
+            (decision_item.get("execution_date"), decision_item.get("target_object_name")) in selected_keys
+        )
+    evaluation["selected_rows"] = selected_rows
+    evaluation["selected_count"] = len(selected_rows)
     return evaluation if return_evaluation else selected_rows
 
 
@@ -292,9 +292,9 @@ def claim_failover_rows(
     claimed_rows = []
     for row in candidate_rows or []:
         claim_result = try_claim_failover(
-            execution_date=row.get("Дата"),
-            target_pvz=row.get("target_pvz"),
-            owner_pvz=row.get("owner_pvz") or row.get("target_pvz"),
+            execution_date=row.get("work_date"),
+            target_object_name=row.get("target_object_name"),
+            owner_object_name=row.get("owner_object_name") or row.get("target_object_name"),
             claimer_pvz=claimer_pvz,
             ttl_minutes=ttl_minutes,
             source_run_id=source_run_id,
@@ -316,25 +316,25 @@ def run_claimed_failover_backfill(
     source_run_id="",
 ):
     """Выполняет recovery parse + upload для claimed rows."""
-    from scheduler_runner.tasks.reports.storage.failover_state import mark_failover_state
+    from .storage.failover_state import mark_failover_state
 
     parser_logger = parser_logger or create_parser_logger()
     failover_logger = failover_logger or create_failover_state_logger()
     claimed_dates_by_pvz = {}
     owner_by_key = {}
     for row in claimed_rows or []:
-        target_pvz = row["target_pvz"]
-        execution_date = row["Дата"]
-        claimed_dates_by_pvz.setdefault(target_pvz, []).append(execution_date)
-        owner_by_key[(target_pvz, execution_date)] = row.get("owner_pvz") or target_pvz
+        target_object_name = row["target_object_name"]
+        execution_date = row["work_date"]
+        claimed_dates_by_pvz.setdefault(target_object_name, []).append(execution_date)
+        owner_by_key[(target_object_name, execution_date)] = row.get("owner_object_name") or target_object_name
 
     execution_results = {}
     uploaded_records_total = 0
     recovered_dates_total = 0
     failed_recovery_dates_total = 0
-    for target_pvz, execution_dates in claimed_dates_by_pvz.items():
+    for target_object_name, execution_dates in claimed_dates_by_pvz.items():
         unique_dates = sorted(set(execution_dates))
-        jobs = build_jobs_for_pvz(pvz_id=target_pvz, execution_dates=unique_dates)
+        jobs = build_jobs_for_pvz(pvz_id=target_object_name, execution_dates=unique_dates)
         batch_result = invoke_parser_for_pvz(
             parser_api=parser_api,
             jobs=jobs,
@@ -345,7 +345,7 @@ def run_claimed_failover_backfill(
             date_to=max(unique_dates),
             logger=create_uploader_logger(),
             max_missing_dates=len(unique_dates),
-            pvz_id=target_pvz,
+            pvz_id=target_object_name,
         )
         recoverable_dates = set(unique_dates)
         if coverage_result.get("success", False):
@@ -364,8 +364,8 @@ def run_claimed_failover_backfill(
         for execution_date in unique_dates:
             common_kwargs = {
                 "execution_date": execution_date,
-                "target_pvz": target_pvz,
-                "owner_pvz": owner_by_key[(target_pvz, execution_date)],
+                "target_object_name": target_object_name,
+                "owner_object_name": owner_by_key[(target_object_name, execution_date)],
                 "claimed_by": claimer_pvz,
                 "source_run_id": source_run_id,
                 "logger": failover_logger,
@@ -388,7 +388,7 @@ def run_claimed_failover_backfill(
                     **common_kwargs,
                 )
 
-        execution_results[target_pvz] = {
+        execution_results[target_object_name] = {
             "execution_dates": unique_dates,
             "batch_result": batch_result,
             "filtered_batch_result": filtered_batch_result,
@@ -477,7 +477,7 @@ def run_failover_coordination_pass(
     try:
         with failover_state_connection(logger=failover_logger) as failover_uploader:
             candidate_evaluation = collect_claimable_failover_rows(
-                accessible_pvz_ids=discovery_scope.get("available_pvz", []),
+                available_pvz_ids=discovery_scope.get("available_pvz", []),
                 configured_pvz_id=configured_pvz_id,
                 max_claims=BACKFILL_CONFIG.get("failover_max_claims_per_run"),
                 logger=failover_logger,
@@ -525,7 +525,7 @@ def run_failover_coordination_pass(
         return result
 
     processor_logger.info(
-        f"Failover coordination: claimed_rows={len(result['claimed_rows'])}, targets={sorted(set(row['target_pvz'] for row in result['claimed_rows']))}"
+        f"Failover coordination: claimed_rows={len(result['claimed_rows'])}, targets={sorted(set(row['target_object_name'] for row in result['claimed_rows']))}"
     )
     execution_result = run_claimed_failover_backfill(
         claimed_rows=result["claimed_rows"],

@@ -1,21 +1,21 @@
 ﻿import unittest
 from unittest.mock import Mock, patch
 
-import scheduler_runner.tasks.reports.storage.google_sheets_store as failover_state
+from ..storage import google_sheets_store as failover_state
 
 
 class TestFailoverState(unittest.TestCase):
     def test_build_failover_state_record_formats_primary_fields(self):
         record = failover_state.build_failover_state_record(
             execution_date="2026-03-14",
-            target_pvz="ЧЕБОКСАРЫ_144",
-            owner_pvz="ЧЕБОКСАРЫ_144",
+            target_object_name="ЧЕБОКСАРЫ_144",
+            owner_object_name="ЧЕБОКСАРЫ_144",
             status=failover_state.STATUS_OWNER_PENDING,
         )
 
-        self.assertEqual(record["Дата"], "2026-03-14")
-        self.assertEqual(record["target_pvz"], "ЧЕБОКСАРЫ_144")
-        self.assertEqual(record["owner_pvz"], "ЧЕБОКСАРЫ_144")
+        self.assertEqual(record["work_date"], "2026-03-14")
+        self.assertEqual(record["target_object_name"], "ЧЕБОКСАРЫ_144")
+        self.assertEqual(record["owner_object_name"], "ЧЕБОКСАРЫ_144")
         self.assertEqual(record["request_id"], "2026-03-14|ЧЕБОКСАРЫ_144")
         self.assertEqual(record["status"], failover_state.STATUS_OWNER_PENDING)
 
@@ -58,8 +58,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.try_claim_failover(
             execution_date="2026-03-14",
-            target_pvz="ЧЕБОКСАРЫ_143",
-            owner_pvz="ЧЕБОКСАРЫ_143",
+            target_object_name="ЧЕБОКСАРЫ_143",
+            owner_object_name="ЧЕБОКСАРЫ_143",
             claimer_pvz="ЧЕБОКСАРЫ_144",
             ttl_minutes=10,
             source_run_id="run-1",
@@ -83,8 +83,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.try_claim_failover(
             execution_date="2026-03-14",
-            target_pvz="ЧЕБОКСАРЫ_143",
-            owner_pvz="ЧЕБОКСАРЫ_143",
+            target_object_name="ЧЕБОКСАРЫ_143",
+            owner_object_name="ЧЕБОКСАРЫ_143",
             claimer_pvz="ЧЕБОКСАРЫ_144",
             logger=Mock(),
         )
@@ -113,9 +113,9 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.try_claim_failover(
             execution_date="2026-03-14",
-            target_pvz="Р§Р•Р‘РћРљРЎРђР Р«_143",
-            owner_pvz="Р§Р•Р‘РћРљРЎРђР Р«_143",
-            claimer_pvz="Р§Р•Р‘РћРљРЎРђР Р«_144",
+            target_object_name="Р§Р•Р'РћРљРЎРђР Р«_143",
+            owner_object_name="Р§Р•Р'РћРљРЎРђР Р«_143",
+            claimer_pvz="Р§Р•Р'РћРљРЎРђР Р«_144",
             source_run_id="run-1",
             logger=Mock(),
         )
@@ -134,8 +134,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.try_claim_failover(
             execution_date="2026-03-14",
-            target_pvz="ЧЕБОКСАРЫ_143",
-            owner_pvz="ЧЕБОКСАРЫ_143",
+            target_object_name="ЧЕБОКСАРЫ_143",
+            owner_object_name="ЧЕБОКСАРЫ_143",
             claimer_pvz="ЧЕБОКСАРЫ_144",
             logger=Mock(),
         )
@@ -155,7 +155,7 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.get_failover_state(
             execution_date="2026-03-14",
-            target_pvz="ЧЕБОКСАРЫ_144",
+            target_object_name="ЧЕБОКСАРЫ_144",
             logger=Mock(),
         )
 
@@ -165,8 +165,8 @@ class TestFailoverState(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_upsert_failover_state_records_reuses_single_connection(self, mock_connection_factory):
         uploader = Mock()
-        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
-        uploader.table_config.get_column_letter.side_effect = lambda name: {"Дата": "B", "target_pvz": "C"}.get(name)
+        uploader.table_config.get_column_index.side_effect = lambda name: {"work_date": 2, "target_object_name": 3}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {"work_date": "B", "target_object_name": "C"}.get(name)
         uploader.table_config.get_column.side_effect = lambda name: None
         uploader.sheets_reporter.get_last_row_with_data.return_value = 2
         uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
@@ -177,9 +177,9 @@ class TestFailoverState(unittest.TestCase):
         ]
         uploader.sheets_reporter.worksheet.row_values.return_value = [
             "request_id",
-            "Дата",
-            "target_pvz",
-            "owner_pvz",
+            "work_date",
+            "target_object_name",
+            "owner_object_name",
             "status",
             "updated_at",
         ]
@@ -191,8 +191,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.upsert_failover_state_records(
             [
-                {"Дата": "2026-03-14", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
-                {"Дата": "2026-03-15", "target_pvz": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED},
+                {"work_date": "2026-03-14", "target_object_name": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
+                {"work_date": "2026-03-15", "target_object_name": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED},
             ],
             logger=Mock(),
         )
@@ -213,8 +213,8 @@ class TestFailoverState(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_upsert_failover_state_records_batches_multiple_appends_into_single_request(self, mock_connection_factory):
         uploader = Mock()
-        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2, "target_pvz": 3}.get(name)
-        uploader.table_config.get_column_letter.side_effect = lambda name: {"Дата": "B", "target_pvz": "C"}.get(name)
+        uploader.table_config.get_column_index.side_effect = lambda name: {"work_date": 2, "target_object_name": 3}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {"work_date": "B", "target_object_name": "C"}.get(name)
         uploader.table_config.get_column.side_effect = lambda name: None
         uploader.sheets_reporter.get_last_row_with_data.return_value = 5
         uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
@@ -225,9 +225,9 @@ class TestFailoverState(unittest.TestCase):
         ]
         uploader.sheets_reporter.worksheet.row_values.return_value = [
             "request_id",
-            "Дата",
-            "target_pvz",
-            "owner_pvz",
+            "work_date",
+            "target_object_name",
+            "owner_object_name",
             "status",
             "updated_at",
         ]
@@ -238,8 +238,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.upsert_failover_state_records(
             [
-                {"Дата": "2026-03-14", "target_pvz": "PVZ1", "owner_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS, "updated_at": "14.03.2026 21:30:00"},
-                {"Дата": "2026-03-15", "target_pvz": "PVZ2", "owner_pvz": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED, "updated_at": "15.03.2026 21:30:00"},
+                {"work_date": "2026-03-14", "target_object_name": "PVZ1", "owner_object_name": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS, "updated_at": "14.03.2026 21:30:00"},
+                {"work_date": "2026-03-15", "target_object_name": "PVZ2", "owner_object_name": "PVZ2", "status": failover_state.STATUS_OWNER_FAILED, "updated_at": "15.03.2026 21:30:00"},
             ],
             logger=Mock(),
         )
@@ -275,8 +275,8 @@ class TestFailoverState(unittest.TestCase):
         ):
             result = failover_state.try_claim_failover_via_apps_script(
                 execution_date="2026-03-14",
-                target_pvz="PVZ1",
-                owner_pvz="PVZ1",
+                target_object_name="PVZ1",
+                owner_object_name="PVZ1",
                 claimer_pvz="PVZ2",
                 source_run_id="run-1",
                 logger=Mock(),
@@ -289,10 +289,10 @@ class TestFailoverState(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_list_failover_state_rows_filters_by_status_and_target(self, mock_connection_factory):
         uploader = Mock()
-        uploader.table_config.column_names = ["request_id", "Дата", "target_pvz", "status"]
+        uploader.table_config.column_names = ["request_id", "work_date", "target_object_name", "status"]
         uploader.sheets_reporter.worksheet.get_all_records.return_value = [
-            {"request_id": "1", "Дата": "14.03.2026", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_FAILED},
-            {"request_id": "2", "Дата": "14.03.2026", "target_pvz": "PVZ2", "status": failover_state.STATUS_OWNER_SUCCESS},
+            {"request_id": "1", "work_date": "14.03.2026", "target_object_name": "PVZ1", "status": failover_state.STATUS_OWNER_FAILED},
+            {"request_id": "2", "work_date": "14.03.2026", "target_object_name": "PVZ2", "status": failover_state.STATUS_OWNER_SUCCESS},
         ]
         connection = mock_connection_factory.return_value
         connection.__enter__.return_value = uploader
@@ -300,20 +300,20 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.list_failover_state_rows(
             statuses=[failover_state.STATUS_OWNER_FAILED],
-            target_pvz="PVZ1",
+            target_object_name="PVZ1",
             logger=Mock(),
         )
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["target_pvz"], "PVZ1")
+        self.assertEqual(result[0]["target_object_name"], "PVZ1")
 
     @patch("scheduler_runner.tasks.reports.storage.google_sheets_store.failover_state_connection")
     def test_list_candidate_failover_rows_fast_uses_batch_get_and_filters_statuses(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {
-            "Дата": 2,
-            "target_pvz": 3,
-            "owner_pvz": 4,
+            "work_date": 2,
+            "target_object_name": 3,
+            "owner_object_name": 4,
             "status": 5,
             "claimed_by": 6,
             "claim_expires_at": 7,
@@ -323,9 +323,9 @@ class TestFailoverState(unittest.TestCase):
             "updated_at": 11,
         }.get(name)
         uploader.table_config.get_column_letter.side_effect = lambda name: {
-            "Дата": "B",
-            "target_pvz": "C",
-            "owner_pvz": "D",
+            "work_date": "B",
+            "target_object_name": "C",
+            "owner_object_name": "D",
             "status": "E",
             "claimed_by": "F",
             "claim_expires_at": "G",
@@ -359,17 +359,17 @@ class TestFailoverState(unittest.TestCase):
         uploader.sheets_reporter.worksheet.batch_get.assert_called_once()
         uploader.sheets_reporter.worksheet.get_all_records.assert_not_called()
         self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["target_pvz"], "PVZ1")
-        self.assertEqual(result[1]["target_pvz"], "PVZ3")
+        self.assertEqual(result[0]["target_object_name"], "PVZ1")
+        self.assertEqual(result[1]["target_object_name"], "PVZ3")
         self.assertEqual(result[1]["claimed_by"], "PVZ9")
 
     def test_list_candidate_failover_rows_fast_reuses_existing_uploader(self):
         uploader = Mock()
-        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2}.get(name)
+        uploader.table_config.get_column_index.side_effect = lambda name: {"work_date": 2}.get(name)
         uploader.table_config.get_column_letter.side_effect = lambda name: {
-            "Дата": "B",
-            "target_pvz": "C",
-            "owner_pvz": "D",
+            "work_date": "B",
+            "target_object_name": "C",
+            "owner_object_name": "D",
             "status": "E",
             "claimed_by": "F",
             "claim_expires_at": "G",
@@ -399,7 +399,7 @@ class TestFailoverState(unittest.TestCase):
         )
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["target_pvz"], "PVZ1")
+        self.assertEqual(result[0]["target_object_name"], "PVZ1")
 
     def test_get_failover_state_reuses_existing_uploader(self):
         uploader = Mock()
@@ -408,7 +408,7 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.get_failover_state(
             execution_date="2026-03-14",
-            target_pvz="PVZ1",
+            target_object_name="PVZ1",
             logger=Mock(),
             uploader=uploader,
         )
@@ -421,7 +421,7 @@ class TestFailoverState(unittest.TestCase):
         uploader._perform_upload.return_value = {"success": True}
 
         result = failover_state.upsert_failover_state(
-            {"Дата": "2026-03-14", "target_pvz": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
+            {"work_date": "2026-03-14", "target_object_name": "PVZ1", "status": failover_state.STATUS_OWNER_SUCCESS},
             logger=Mock(),
             uploader=uploader,
         )
@@ -433,9 +433,9 @@ class TestFailoverState(unittest.TestCase):
     def test_get_failover_state_rows_by_keys_uses_batch_get_and_returns_keyed_rows(self, mock_connection_factory):
         uploader = Mock()
         uploader.table_config.get_column_index.side_effect = lambda name: {
-            "Дата": 2,
-            "target_pvz": 3,
-            "owner_pvz": 4,
+            "work_date": 2,
+            "target_object_name": 3,
+            "owner_object_name": 4,
             "status": 5,
             "claimed_by": 6,
             "claim_expires_at": 7,
@@ -444,12 +444,14 @@ class TestFailoverState(unittest.TestCase):
             "last_error": 10,
             "updated_at": 11,
             "request_id": 1,
+            "id": 1,
+            "timestamp": 13,
         }.get(name)
         uploader.table_config.get_column_letter.side_effect = lambda name: {
-            "request_id": "A",
-            "Дата": "B",
-            "target_pvz": "C",
-            "owner_pvz": "D",
+            "id": "A",
+            "work_date": "B",
+            "target_object_name": "C",
+            "owner_object_name": "D",
             "status": "E",
             "claimed_by": "F",
             "claim_expires_at": "G",
@@ -457,6 +459,8 @@ class TestFailoverState(unittest.TestCase):
             "source_run_id": "I",
             "last_error": "J",
             "updated_at": "K",
+            "request_id": "L",
+            "timestamp": "M",
         }.get(name)
         uploader.sheets_reporter.get_last_row_with_data.return_value = 4
         uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
@@ -473,6 +477,8 @@ class TestFailoverState(unittest.TestCase):
             [["run-1"], ["run-2"], ["run-3"]],
             [["boom"], [""], ["retry"]],
             [["20.03.2026 21:30:00"], ["20.03.2026 21:31:00"], ["20.03.2026 21:32:00"]],
+            [[""], [""], [""]],
+            [[""], [""], [""]],
         ]
         connection = mock_connection_factory.return_value
         connection.__enter__.return_value = uploader
@@ -480,8 +486,8 @@ class TestFailoverState(unittest.TestCase):
 
         result = failover_state.get_failover_state_rows_by_keys(
             keys=[
-                {"Дата": "2026-03-14", "target_pvz": "PVZ1"},
-                {"Дата": "2026-03-16", "target_pvz": "PVZ3"},
+                {"work_date": "2026-03-14", "target_object_name": "PVZ1"},
+                {"work_date": "2026-03-16", "target_object_name": "PVZ3"},
             ],
             logger=Mock(),
         )
@@ -494,12 +500,12 @@ class TestFailoverState(unittest.TestCase):
 
     def test_get_failover_state_rows_by_keys_reuses_existing_uploader(self):
         uploader = Mock()
-        uploader.table_config.get_column_index.side_effect = lambda name: {"Дата": 2}.get(name)
+        uploader.table_config.get_column_index.side_effect = lambda name: {"work_date": 2, "id": 1, "timestamp": 13}.get(name)
         uploader.table_config.get_column_letter.side_effect = lambda name: {
-            "request_id": "A",
-            "Дата": "B",
-            "target_pvz": "C",
-            "owner_pvz": "D",
+            "id": "A",
+            "work_date": "B",
+            "target_object_name": "C",
+            "owner_object_name": "D",
             "status": "E",
             "claimed_by": "F",
             "claim_expires_at": "G",
@@ -507,6 +513,8 @@ class TestFailoverState(unittest.TestCase):
             "source_run_id": "I",
             "last_error": "J",
             "updated_at": "K",
+            "request_id": "L",
+            "timestamp": "M",
         }.get(name)
         uploader.sheets_reporter.get_last_row_with_data.return_value = 2
         uploader.sheets_reporter._prepare_value_for_search.side_effect = lambda value: value
@@ -526,7 +534,7 @@ class TestFailoverState(unittest.TestCase):
         ]
 
         result = failover_state.get_failover_state_rows_by_keys(
-            keys=[{"Дата": "2026-03-14", "target_pvz": "PVZ1"}],
+            keys=[{"work_date": "2026-03-14", "target_object_name": "PVZ1"}],
             logger=Mock(),
             uploader=uploader,
         )

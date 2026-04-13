@@ -9,7 +9,7 @@ import unittest
 
 class TestNoCircularImports(unittest.TestCase):
     def test_import_reports_summary(self):
-        from scheduler_runner.tasks.reports.reports_summary import (
+        from ..reports_summary import (
             PVZExecutionResult,
             OwnerRunSummary,
             FailoverRunSummary,
@@ -23,7 +23,7 @@ class TestNoCircularImports(unittest.TestCase):
         )
 
     def test_import_reports_notifications(self):
-        from scheduler_runner.tasks.reports.reports_notifications import (
+        from ..reports_notifications import (
             prepare_notification_data,
             format_notification_message,
             prepare_batch_notification_data,
@@ -35,10 +35,9 @@ class TestNoCircularImports(unittest.TestCase):
         )
 
     def test_import_reports_upload(self):
-        from scheduler_runner.tasks.reports.reports_upload import (
+        from ..reports_upload import (
             create_uploader_logger,
             prepare_connection_params,
-            normalize_pvz_id,
             prepare_coverage_filters,
             parse_sheet_date_to_iso,
             detect_missing_report_dates,
@@ -52,9 +51,12 @@ class TestNoCircularImports(unittest.TestCase):
             run_google_sheets_upload_with_retry,
         )
 
+    def test_import_reports_utils(self):
+        from ..reports_utils import normalize_pvz_id
+        self.assertTrue(callable(normalize_pvz_id))
+
     def test_import_reports_scope(self):
-        from scheduler_runner.tasks.reports.reports_scope import (
-            normalize_pvz_id,
+        from ..reports_scope import (
             resolve_pvz_ids,
             discover_available_pvz_scope,
             resolve_accessible_pvz_ids,
@@ -65,7 +67,7 @@ class TestNoCircularImports(unittest.TestCase):
         )
 
     def test_import_owner_state_sync(self):
-        from scheduler_runner.tasks.reports.owner_state_sync import (
+        from ..owner_state_sync import (
             mark_dates_with_owner_status,
             classify_owner_success_history,
             should_persist_owner_success_from_history,
@@ -74,7 +76,7 @@ class TestNoCircularImports(unittest.TestCase):
         )
 
     def test_import_failover_orchestration(self):
-        from scheduler_runner.tasks.reports.failover_orchestration import (
+        from ..failover_orchestration import (
             collect_claimable_failover_rows,
             normalize_claimable_failover_evaluation,
             should_scan_failover_candidates,
@@ -88,7 +90,7 @@ class TestNoCircularImports(unittest.TestCase):
 
     def test_import_reports_processor_orchestrator(self):
         """reports_processor.py — тонкий orchestrator после декомпозиции."""
-        from scheduler_runner.tasks.reports.reports_processor import main, build_processor_run_id
+        from ..reports_processor import main, build_processor_run_id
         self.assertTrue(callable(main))
         self.assertTrue(callable(build_processor_run_id))
 
@@ -96,15 +98,15 @@ class TestNoCircularImports(unittest.TestCase):
 class TestCrossModuleDependencies(unittest.TestCase):
     def test_notifications_depends_on_summary(self):
         """reports_notifications.py зависит от reports_summary.py — проверяем, что import работает."""
-        from scheduler_runner.tasks.reports.reports_notifications import format_reports_run_notification_message
-        from scheduler_runner.tasks.reports.reports_summary import ReportsRunSummary, OwnerRunSummary, FailoverRunSummary
+        from ..reports_notifications import format_reports_run_notification_message
+        from ..reports_summary import ReportsRunSummary, OwnerRunSummary, FailoverRunSummary
 
         # Если cyclic dependency exists, этот import упадёт
         self.assertTrue(callable(format_reports_run_notification_message))
 
     def test_upload_independent(self):
         """reports_upload.py не должен зависеть от summary/notifications."""
-        from scheduler_runner.tasks.reports.reports_upload import (
+        from ..reports_upload import (
             prepare_upload_data,
             detect_missing_report_dates,
             run_upload_batch_microservice,

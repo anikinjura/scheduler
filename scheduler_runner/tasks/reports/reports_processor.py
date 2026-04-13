@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from config.base_config import PVZ_ID
 
 # Извлечённые модули
-from scheduler_runner.tasks.reports.reports_scope import (
+from .reports_scope import (
     resolve_accessible_pvz_ids,
     should_run_automatic_failover_coordination,
     build_parser_definition,
@@ -24,20 +24,20 @@ from scheduler_runner.tasks.reports.reports_scope import (
     group_jobs_by_pvz,
     normalize_pvz_id,
 )
-from scheduler_runner.tasks.reports.reports_upload import (
+from .reports_upload import (
     detect_missing_report_dates,
     detect_missing_report_dates_by_pvz,
     run_upload_microservice,
     run_upload_batch_microservice,
     create_uploader_logger,
 )
-from scheduler_runner.tasks.reports.reports_summary import (
+from .reports_summary import (
     build_pvz_execution_result,
     build_owner_run_summary,
     build_failover_run_summary,
     build_reports_run_summary,
 )
-from scheduler_runner.tasks.reports.reports_notifications import (
+from .reports_notifications import (
     prepare_notification_data,
     format_notification_message,
     prepare_batch_notification_data,
@@ -46,10 +46,10 @@ from scheduler_runner.tasks.reports.reports_notifications import (
     create_notification_logger,
     build_aggregated_backfill_summary,
 )
-from scheduler_runner.tasks.reports.owner_state_sync import (
+from .owner_state_sync import (
     sync_owner_failover_state_from_batch_result,
 )
-from scheduler_runner.tasks.reports.failover_orchestration import (
+from .failover_orchestration import (
     run_failover_coordination_pass,
 )
 
@@ -73,10 +73,10 @@ from scheduler_runner.utils.parser import (
     invoke_parser_for_grouped_jobs,
     create_parser_logger,
 )
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from .storage.failover_state import (
     create_failover_state_logger,
 )
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from .config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.logging import configure_logger
 
 
@@ -287,7 +287,7 @@ def main():
                         owner_state_sync_result["attempted"] = True
                         try:
                             owner_state_sync_payload = sync_owner_failover_state_from_batch_result(
-                                owner_pvz=pvz_id,
+                                owner_object_name=pvz_id,
                                 missing_dates=missing_dates,
                                 batch_result=batch_result,
                                 upload_result=upload_result,

@@ -9,7 +9,7 @@ import unittest
 from argparse import Namespace
 from unittest.mock import patch, MagicMock, call, ANY
 
-from scheduler_runner.tasks.reports import reports_processor
+from .. import reports_processor
 
 
 class TestOrchestratorMainSingle(unittest.TestCase):
@@ -504,7 +504,7 @@ class TestOrchestratorUsesRefactoredModules(unittest.TestCase):
     """Verify that the orchestrator imports from refactored modules correctly."""
 
     def test_imports_reports_summary(self):
-        from scheduler_runner.tasks.reports.reports_summary import (
+        from ..reports_summary import (
             build_pvz_execution_result,
             build_owner_run_summary,
             build_failover_run_summary,
@@ -517,7 +517,7 @@ class TestOrchestratorUsesRefactoredModules(unittest.TestCase):
         self.assertTrue(callable(build_reports_run_summary))
 
     def test_imports_reports_upload(self):
-        from scheduler_runner.tasks.reports.reports_upload import (
+        from ..reports_upload import (
             detect_missing_report_dates,
             detect_missing_report_dates_by_pvz,
             run_upload_microservice,
@@ -529,7 +529,7 @@ class TestOrchestratorUsesRefactoredModules(unittest.TestCase):
         self.assertTrue(callable(run_upload_batch_microservice))
 
     def test_imports_reports_notifications(self):
-        from scheduler_runner.tasks.reports.reports_notifications import (
+        from ..reports_notifications import (
             prepare_notification_data,
             format_notification_message,
             prepare_batch_notification_data,
@@ -543,7 +543,7 @@ class TestOrchestratorUsesRefactoredModules(unittest.TestCase):
         self.assertTrue(callable(send_notification_microservice))
 
     def test_imports_reports_scope(self):
-        from scheduler_runner.tasks.reports.reports_scope import (
+        from ..reports_scope import (
             resolve_accessible_pvz_ids,
             should_run_automatic_failover_coordination,
             build_jobs_from_missing_dates_by_pvz,
@@ -555,11 +555,11 @@ class TestOrchestratorUsesRefactoredModules(unittest.TestCase):
         self.assertTrue(callable(group_jobs_by_pvz))
 
     def test_imports_owner_state_sync(self):
-        from scheduler_runner.tasks.reports.owner_state_sync import sync_owner_failover_state_from_batch_result
+        from ..owner_state_sync import sync_owner_failover_state_from_batch_result
         self.assertTrue(callable(sync_owner_failover_state_from_batch_result))
 
     def test_imports_failover_orchestration(self):
-        from scheduler_runner.tasks.reports.failover_orchestration import run_failover_coordination_pass
+        from ..failover_orchestration import run_failover_coordination_pass
         self.assertTrue(callable(run_failover_coordination_pass))
 
 

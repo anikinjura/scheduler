@@ -1,8 +1,10 @@
 ﻿#!/usr/bin/env python3
 """
-E2E smoke для проверки notification-уведомлений через refactored модули.
+E2E smoke для проверки Telegram notification-уведомлений.
 
-Импортирует из refactored_modules.reports_notifications вместо боевого reports_processor.py.
+⚠️  Telegram заблокирован в России — этот тест ожидается к провалу
+    на российских машинах без VPN/proxy.
+    Для production-провайдера (VK) используйте run_vk_notification_e2e_smoke.py.
 """
 
 from __future__ import annotations
@@ -19,8 +21,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from config.base_config import ENV_MODE, PVZ_ID
-from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
-from scheduler_runner.tasks.reports.reports_notifications import (
+from ..config.reports_paths import REPORTS_PATHS
+from ..reports_notifications import (
     create_notification_logger,
     send_notification_microservice,
 )

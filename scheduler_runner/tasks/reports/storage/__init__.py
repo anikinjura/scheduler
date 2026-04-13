@@ -11,14 +11,14 @@ Structure:
     google_sheets_failover_store.py — GoogleSheetsFailoverStore adapter class
 
 To use the protocol:
-    from scheduler_runner.tasks.reports.storage import FailoverStateStore
+    from . import FailoverStateStore
 
 To use the default Google Sheets store:
-    from scheduler_runner.tasks.reports.storage import get_default_store
+    from . import get_default_store
 """
 
 # ── Protocol + helpers (always available) ──
-from scheduler_runner.tasks.reports.storage.failover_state_protocol import (
+from .failover_state_protocol import (
     STATUS_CLAIM_EXPIRED,
     STATUS_FAILOVER_CLAIMED,
     STATUS_FAILOVER_FAILED,
@@ -35,7 +35,7 @@ from scheduler_runner.tasks.reports.storage.failover_state_protocol import (
 )
 
 # ── Backward-compatible re-export (Google Sheets) ──
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from .failover_state import (
     create_failover_state_logger,
     failover_state_connection,
     get_failover_state,
@@ -55,7 +55,7 @@ from scheduler_runner.tasks.reports.storage.failover_state import (
 # ── DI helpers ──
 def set_default_store(store: FailoverStateStore) -> None:
     """Установить default storage для всех модулей."""
-    from scheduler_runner.tasks.reports.owner_state_sync import set_default_store as _oss_set_default_store
+    from ..owner_state_sync import set_default_store as _oss_set_default_store
     _oss_set_default_store(store)
     _fs_set_default_store(store)
 

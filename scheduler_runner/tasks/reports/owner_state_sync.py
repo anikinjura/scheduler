@@ -12,9 +12,11 @@ Dependency Injection:
     Google Sheets store для обратной совместимости.
 """
 from datetime import datetime
+import random
+import time
 from typing import Optional
 
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from .storage.failover_state import (
     STATUS_CLAIM_EXPIRED,
     STATUS_FAILOVER_FAILED,
     STATUS_FAILOVER_SUCCESS,
@@ -23,10 +25,66 @@ from scheduler_runner.tasks.reports.storage.failover_state import (
     build_failover_state_record,
     create_failover_state_logger,
 )
-from scheduler_runner.tasks.reports.storage.failover_state_protocol import FailoverStateStore
+from .storage.failover_state_protocol import FailoverStateStore
 
 # Извлечённые helpers из reports_summary (Phase 1.1)
 from .reports_summary import extract_batch_failures
+from .config.scripts.reports_processor_config import BACKFILL_CONFIG
+
+# ── Retry helpers for KPI_FAILOVER_STATE reads ──
+
+_RETRYABLE_MARKERS = (
+    "[429]",
+    "quota exceeded",
+    "[503]",
+    "service is currently unavailable",
+    "temporarily unavailable",
+    "timeout",
+    "timed out",
+)
+
+
+def _is_retryable_failover_state_error(error_text: str) -> bool:
+    """Проверяет, является ли ошибка retryable для KPI_FAILOVER_STATE."""
+    normalized = str(error_text or "").lower()
+    return any(marker in normalized for marker in _RETRYABLE_MARKERS)
+
+
+def _get_rows_by_keys_with_retry(
+    *,
+    store: FailoverStateStore,
+    keys: list[dict[str, str]],
+    logger,
+    max_attempts: int = 3,
+    base_delay: float = 2.0,
+    max_delay: float = 8.0,
+    jitter: float = 1.0,
+) -> dict[tuple, dict[str, any]]:
+    """Batch-read из KPI_FAILOVER_STATE с retry + jitter.
+
+    Retry только для retryable ошибок (429, 503, timeout).
+    Non-retryable ошибки пробрасываются сразу.
+    """
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return store.get_rows_by_keys(keys=keys)
+        except Exception as exc:
+            last_error = exc
+            if not _is_retryable_failover_state_error(str(exc)):
+                raise
+            if attempt >= max_attempts:
+                break
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(-jitter, jitter)
+            delay = max(delay, 0.5)
+            logger.warning(
+                f"Retryable error при owner state prefetch: {exc}; "
+                f"attempt={attempt}/{max_attempts}, retry в {delay:.1f}s"
+            )
+            time.sleep(delay)
+    raise RuntimeError(
+        f"Не удалось прочитать KPI_FAILOVER_STATE после {max_attempts} попыток: {last_error}"
+    ) from last_error
 
 # ── Dependency Injection helpers ──
 
@@ -43,7 +101,7 @@ def get_default_store() -> FailoverStateStore:
     """Получить текущий default storage."""
     global _default_store_instance
     if _default_store_instance is None:
-        from scheduler_runner.tasks.reports.storage.failover_state import get_default_store as _get_gs_store
+        from .storage.failover_state import get_default_store as _get_gs_store
         _default_store_instance = _get_gs_store()
     return _default_store_instance
 
@@ -53,7 +111,7 @@ def _resolve_store(store: Optional[FailoverStateStore]) -> FailoverStateStore:
     return store if store is not None else get_default_store()
 
 
-def mark_dates_with_owner_status(execution_dates, owner_pvz, status, logger=None, source_run_id="", store: Optional[FailoverStateStore] = None):
+def mark_dates_with_owner_status(execution_dates, owner_object_name, status, logger=None, source_run_id="", store: Optional[FailoverStateStore] = None):
     """Помечает даты в KPI_FAILOVER_STATE статусом owner."""
     resolved_store = _resolve_store(store)
     logger = logger or create_failover_state_logger()
@@ -62,8 +120,8 @@ def mark_dates_with_owner_status(execution_dates, owner_pvz, status, logger=None
         results.append(
             resolved_store.mark_state(
                 execution_date=execution_date,
-                target_pvz=owner_pvz,
-                owner_pvz=owner_pvz,
+                target_object_name=owner_object_name,
+                owner_object_name=owner_object_name,
                 status=status,
                 source_run_id=source_run_id,
             )
@@ -155,7 +213,7 @@ def should_persist_owner_success_from_history(existing_state_row):
 
 def build_owner_final_failover_state_records(
     *,
-    owner_pvz,
+    owner_object_name,
     missing_dates,
     batch_result,
     upload_result=None,
@@ -190,8 +248,8 @@ def build_owner_final_failover_state_records(
             records.append(
                 build_failover_state_record(
                     execution_date=execution_date,
-                    target_pvz=owner_pvz,
-                    owner_pvz=owner_pvz,
+                    target_object_name=owner_object_name,
+                    owner_object_name=owner_object_name,
                     status=STATUS_OWNER_FAILED,
                     source_run_id=source_run_id,
                     last_error=failed_by_date[execution_date],
@@ -210,8 +268,8 @@ def build_owner_final_failover_state_records(
             records.append(
                 build_failover_state_record(
                     execution_date=execution_date,
-                    target_pvz=owner_pvz,
-                    owner_pvz=owner_pvz,
+                    target_object_name=owner_object_name,
+                    owner_object_name=owner_object_name,
                     status=STATUS_OWNER_FAILED,
                     source_run_id=source_run_id,
                     last_error=upload_error,
@@ -232,8 +290,8 @@ def build_owner_final_failover_state_records(
             records.append(
                 build_failover_state_record(
                     execution_date=execution_date,
-                    target_pvz=owner_pvz,
-                    owner_pvz=owner_pvz,
+                    target_object_name=owner_object_name,
+                    owner_object_name=owner_object_name,
                     status=STATUS_OWNER_SUCCESS,
                     source_run_id=source_run_id,
                 )
@@ -252,7 +310,7 @@ def build_owner_final_failover_state_records(
 
 def sync_owner_failover_state_from_batch_result(
     *,
-    owner_pvz,
+    owner_object_name,
     missing_dates,
     batch_result,
     upload_result=None,
@@ -273,15 +331,22 @@ def sync_owner_failover_state_from_batch_result(
     """
     resolved_store = _resolve_store(store)
     logger = logger or create_failover_state_logger()
-    existing_rows = resolved_store.get_rows_by_keys(
-        keys=[
-            {"Дата": execution_date, "target_pvz": owner_pvz}
-            for execution_date in (missing_dates or [])
-        ],
+    keys_to_read = [
+        {"work_date": execution_date, "target_object_name": owner_object_name}
+        for execution_date in (missing_dates or [])
+    ]
+    existing_rows = _get_rows_by_keys_with_retry(
+        store=resolved_store,
+        keys=keys_to_read,
+        logger=logger,
+        max_attempts=int(BACKFILL_CONFIG.get("owner_state_sync_max_attempts", 3) or 3),
+        base_delay=float(BACKFILL_CONFIG.get("owner_state_sync_base_delay_seconds", 2.0) or 2.0),
+        max_delay=float(BACKFILL_CONFIG.get("owner_state_sync_max_delay_seconds", 8.0) or 8.0),
+        jitter=float(BACKFILL_CONFIG.get("owner_state_sync_jitter_seconds", 1.0) or 1.0),
     )
     existing_state_rows_by_date = {}
     for (normalized_date, _normalized_target), row in existing_rows.items():
-        raw_date = str(row.get("Дата", "") or "").strip()
+        raw_date = str(row.get("work_date", "") or "").strip()
         if raw_date:
             try:
                 normalized_runtime_date = datetime.strptime(raw_date, "%d.%m.%Y").strftime("%Y-%m-%d")
@@ -290,7 +355,7 @@ def sync_owner_failover_state_from_batch_result(
             existing_state_rows_by_date[normalized_runtime_date] = row
 
     built_result = build_owner_final_failover_state_records(
-        owner_pvz=owner_pvz,
+        owner_object_name=owner_object_name,
         missing_dates=missing_dates,
         batch_result=batch_result,
         upload_result=upload_result,
