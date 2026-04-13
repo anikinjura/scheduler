@@ -11,10 +11,10 @@ from copy import deepcopy
 from datetime import datetime
 
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from .config.scripts.kpi_google_sheets_config import KPI_GOOGLE_SHEETS_CONFIG
+from .config.scripts.reports_processor_config import BACKFILL_CONFIG
+from .reports_utils import normalize_pvz_id
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
-from scheduler_runner.utils.system import SystemUtils
 from scheduler_runner.utils.uploader import (
     check_missing_items,
     test_connection as test_upload_connection,
@@ -40,7 +40,7 @@ def create_uploader_logger():
 # ──────────────────────────────────────────────
 
 def prepare_connection_params():
-    from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
+    from .config.reports_paths import REPORTS_PATHS
 
     return {
         "CREDENTIALS_PATH": str(REPORTS_PATHS["GOOGLE_SHEETS_CREDENTIALS"]),
@@ -49,11 +49,6 @@ def prepare_connection_params():
         "TABLE_CONFIG": deepcopy(KPI_GOOGLE_SHEETS_CONFIG["TABLE_CONFIG"]),
         "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"],
     }
-
-
-def normalize_pvz_id(pvz_id):
-    transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
-    return transliterated.strip().lower()
 
 
 def is_retryable_google_sheets_upload_error(error_text):
@@ -105,9 +100,9 @@ def run_google_sheets_upload_with_retry(*, upload_callable, logger=None):
 
 def prepare_coverage_filters(date_from, date_to, pvz_id):
     return {
-        "Дата_from": date_from,
-        "Дата_to": date_to,
-        "ПВЗ": [normalize_pvz_id(pvz_id)],
+        "work_date_from": date_from,
+        "work_date_to": date_to,
+        "object_name": [normalize_pvz_id(pvz_id)],
     }
 
 
@@ -143,7 +138,7 @@ def detect_missing_report_dates(date_from, date_to, logger=None, max_missing_dat
 
     missing_dates = []
     for item in result.get("data", {}).get("missing_items", []):
-        sheet_date = item.get("Дата")
+        sheet_date = item.get("work_date")
         if sheet_date:
             missing_dates.append(parse_sheet_date_to_iso(sheet_date))
 
@@ -224,11 +219,11 @@ def transform_record_for_upload(record):
 
     upload_record = {}
     field_mapping = {
-        "date": "Дата",
-        "pvz": "ПВЗ",
-        "issued_packages": "Количество выдач",
-        "direct_flow": "Прямой поток",
-        "return_flow": "Возвратный поток",
+        "date": "work_date",
+        "pvz": "object_name",
+        "issued_packages": "issued_packages",
+        "direct_flow": "direct_flow",
+        "return_flow": "return_flow",
     }
 
     for source_field, target_field in field_mapping.items():
@@ -239,10 +234,10 @@ def transform_record_for_upload(record):
         if key not in field_mapping and key not in ["summary", "details", "timestamp"]:
             upload_record[key.replace("_", " ").title()] = value
 
-    if "Дата" not in upload_record:
-        upload_record["Дата"] = datetime.now().strftime("%Y-%m-%d")
-    if "ПВЗ" not in upload_record:
-        upload_record["ПВЗ"] = "DEFAULT_PVZ"
+    if "work_date" not in upload_record:
+        upload_record["work_date"] = datetime.now().strftime("%Y-%m-%d")
+    if "object_name" not in upload_record:
+        upload_record["object_name"] = "DEFAULT_PVZ"
 
     return upload_record
 
@@ -257,26 +252,26 @@ def prepare_upload_data(parsing_result=None):
             original_date = parsing_result["execution_date"]
             try:
                 parsed_date = datetime.strptime(original_date, "%Y-%m-%d")
-                formatted_record["Дата"] = parsed_date.strftime("%d.%m.%Y")
+                formatted_record["work_date"] = parsed_date.strftime("%d.%m.%Y")
             except ValueError:
-                formatted_record["Дата"] = original_date
+                formatted_record["work_date"] = original_date
 
         if "location_info" in parsing_result:
-            formatted_record["ПВЗ"] = parsing_result["location_info"]
+            formatted_record["object_name"] = parsing_result["location_info"]
 
         if "summary" in parsing_result and isinstance(parsing_result["summary"], dict):
             summary = parsing_result["summary"]
 
             if "giveout" in summary and isinstance(summary["giveout"], dict) and "value" in summary["giveout"]:
-                formatted_record["Количество выдач"] = summary["giveout"]["value"]
+                formatted_record["issued_packages"] = summary["giveout"]["value"]
 
             if "direct_flow_total" in summary and isinstance(summary["direct_flow_total"], dict):
                 if "total_carriages" in summary["direct_flow_total"]:
-                    formatted_record["Прямой поток"] = summary["direct_flow_total"]["total_carriages"]
+                    formatted_record["direct_flow"] = summary["direct_flow_total"]["total_carriages"]
 
             if "return_flow_total" in summary and isinstance(summary["return_flow_total"], dict):
                 if "total_carriages" in summary["return_flow_total"]:
-                    formatted_record["Возвратный поток"] = summary["return_flow_total"]["total_carriages"]
+                    formatted_record["return_flow"] = summary["return_flow_total"]["total_carriages"]
 
         for key, value in parsing_result.items():
             if key not in ["summary", "location_info", "execution_date", "extraction_timestamp", "source_url"]:
@@ -284,7 +279,7 @@ def prepare_upload_data(parsing_result=None):
 
         formatted_record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if "Дата" in formatted_record and "ПВЗ" in formatted_record:
+        if "work_date" in formatted_record and "object_name" in formatted_record:
             upload_data_list.append(formatted_record)
         else:
             upload_record = transform_record_for_upload(parsing_result)

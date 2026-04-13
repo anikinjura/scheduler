@@ -5,7 +5,7 @@
 ## 1. Что это за задача
 
 `scheduler_runner/tasks/reports` — это централизованная scheduler-задача, которая запускается по расписанию из:
-- [`scheduler_runner/runner.py`](C:/tools/scheduler/scheduler_runner/runner.py)
+- [`scheduler_runner/runner.py`](../../../runner.py)
 
 Она отвечает за:
 - проверку покрытия данных в Google Sheets;
@@ -40,21 +40,18 @@
 
 ## 3. Основные runtime-файлы
 
-На текущий момент центральные runtime-файлы такие:
+На текущий момент центральные runtime-файлы распределены по модулям (декомпозиция завершена `2026-04-11`):
 
-- [`reports_processor.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/reports_processor.py)
-  - основной orchestration layer
-- [`failover_state.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_state.py)
-  - state storage, row lookup, claim/update helpers
-- [`failover_policy.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/failover_policy.py)
-  - policy/arbitration logic
-- [`config/scripts/reports_processor_config.py`](C:/tools/scheduler/scheduler_runner/tasks/reports/config/scripts/reports_processor_config.py)
-  - scheduler/failover/policy config
-
-На `2026-04-08` фактура такая:
-- `reports_processor.py` — около `2172` строк;
-- `failover_state.py` — около `783` строк;
-- `failover_policy.py` — около `340` строк.
+- [`reports_processor.py`](../reports_processor.py) — тонкий orchestrator, **346 строк** (было ~2,172 до декомпозиции)
+- [`reports_summary.py`](../reports_summary.py) — dataclasses + status resolution, **340 строк**
+- [`reports_upload.py`](../reports_upload.py) — coverage-check + upload, **290 строк**
+- [`reports_notifications.py`](../reports_notifications.py) — notification formatting, **287 строк**
+- [`reports_scope.py`](../reports_scope.py) — PVZ discovery + job building, **160 строк**
+- [`reports_utils.py`](../reports_utils.py) — общие утилиты, **9 строк**
+- [`failover_orchestration.py`](../failover_orchestration.py) — full failover flow, **492 строки**
+- [`owner_state_sync.py`](../owner_state_sync.py) — owner state + suppression, **335 строк**
+- [`failover_policy.py`](../failover_policy.py) — policy rules + arbitration, **275 строк**
+- `storage/` — storage abstraction layer с `FailoverStateStore(ABC)`, **~1,072 строк**
 
 ## 4. Что было сделано в рамках этой задачи
 
@@ -287,25 +284,22 @@ Dry-run coverage:
 
 ## 10. Что делать дальше
 
-На текущий момент правильная стратегия такая:
+~~На текущий момент правильная стратегия такая:~~
 
-1. продолжать наблюдать боевые логи еще несколько циклов;
-2. смотреть:
-   - `Owner state sync metrics`
-   - наличие/отсутствие `429`
-   - `available_pvz`
-   - dry-run arbitration signals
-3. не переключать production `selection_mode` на `capability_ranked`, пока нет реального divergence-case с operational value;
-4. не делать немедленный большой refactor, пока мы еще валидируем behavioral changes;
-5. после накопления еще нескольких циклов вернуться к planned structural decomposition;
-6. **организовать обсуждение прав доступа сотрудников** — см. раздел 6.1;
-   - решить: выделить один объект как failover-helper или перераспределить доступы;
-   - код уже готов к failover, нужна только runtime reachability.
+1. ~~продолжать наблюдать боевые логи еще несколько циклов~~ — ✅ наблюдения завершены;
+2. ~~не делать немедленный большой refactor~~ — ✅ декомпозиция уже завершена `2026-04-11`;
+3. ~~организовать обсуждение прав доступа сотрудников~~ — см. раздел 6.1;
+
+### Дальнейшие шаги
+
+- Наблюдать production-логи на предмет появления реальной межобъектной помощи;
+- При переходе на self-hosted — заменить storage backend через `FailoverStateStore(ABC)`;
+- Обновлять `.ai/` контекст при значимых production-изменениях.
 
 ## 11. Где смотреть подробный план декомпозиции
 
 Подробное приложение находится здесь:
-- [REFACTORING_PLAN_APPENDIX.md](C:/tools/scheduler/scheduler_runner/tasks/reports/docs/REFACTORING_PLAN_APPENDIX.md)
+- [REFACTORING_PLAN_APPENDIX.md](REFACTORING_PLAN_APPENDIX.md)
 
 Это приложение описывает:
 - целевую структуру модулей;

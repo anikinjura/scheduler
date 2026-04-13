@@ -10,14 +10,14 @@ Unit tests for reports_notifications (Phase 1.2).
 """
 import unittest
 
-from scheduler_runner.tasks.reports.reports_summary import (
+from ..reports_summary import (
     OwnerRunSummary,
     FailoverRunSummary,
     ReportsRunSummary,
     ReportsBackfillExecutionResult,
     PVZExecutionResult,
 )
-from scheduler_runner.tasks.reports.reports_notifications import (
+from ..reports_notifications import (
     prepare_notification_data,
     format_notification_message,
     prepare_batch_notification_data,

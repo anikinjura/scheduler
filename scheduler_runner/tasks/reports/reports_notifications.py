@@ -289,9 +289,9 @@ def format_reports_run_notification_message(summary):
             )
         lines.extend(failover_lines)
         failover_details = []
-        for target_pvz, target_result in summary.failover.results_by_pvz.items():
+        for target_object_name, target_result in summary.failover.results_by_pvz.items():
             failover_details.append(
-                f"  - {target_pvz}: recovered={len(target_result.get('recoverable_dates', []))}, "
+                f"  - {target_object_name}: recovered={len(target_result.get('recoverable_dates', []))}, "
                 f"failed={len(extract_batch_failures(target_result.get('batch_result', {})))}, "
                 f"uploaded={target_result.get('upload_result', {}).get('uploaded_records', 0)}"
             )
@@ -310,7 +310,7 @@ def send_notification_microservice(notification_message, logger=None):
     logger.info("Подготовка к отправке уведомления через микросервис notifications...")
 
     try:
-        from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
+        from .config.reports_paths import REPORTS_PATHS
 
         connection_params = REPORTS_PATHS.get("NOTIFICATION_CONNECTION_PARAMS", {})
         provider = connection_params.get("NOTIFICATION_PROVIDER", "telegram")

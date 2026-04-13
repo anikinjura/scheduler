@@ -9,14 +9,15 @@ Parser runtime остается в отдельном dependency layer: `utils/p
 
 ```
 scheduler_runner/tasks/reports/
-│── reports_processor.py              ← тонкий orchestrator (~300 строк)
-│── reports_summary.py                ← dataclasses + status resolution (~400 строк)
-│── reports_notifications.py          ← notification formatting (~330 строк)
-│── reports_upload.py                 ← coverage-check + upload orchestration (~370 строк)
-│── reports_scope.py                  ← PVZ discovery + job grouping (~200 строк)
-│── failover_orchestration.py         ← failover coordination flow (~540 строк)
-│── owner_state_sync.py               ← owner state model + suppression (~315 строк)
-│── failover_policy.py                ← policy rules + arbitration (~340 строк)
+│── reports_processor.py              ← тонкий orchestrator (~350 строк)
+│── reports_summary.py                ← dataclasses + status resolution (~340 строк)
+│── reports_notifications.py          ← notification formatting (~290 строк)
+│── reports_upload.py                 ← coverage-check + upload orchestration (~290 строк)
+│── reports_scope.py                  ← PVZ discovery + job grouping (~160 строк)
+│── reports_utils.py                  ← общие утилиты (normalize_pvz_id) (~10 строк)
+│── failover_orchestration.py         ← failover coordination flow (~490 строк)
+│── owner_state_sync.py               ← owner state model + suppression (~335 строк)
+│── failover_policy.py                ← policy rules + arbitration (~275 строк)
 │
 └── storage/                          ← Storage abstraction layer
     ├── __init__.py                   ← re-exports + DI helpers
@@ -35,6 +36,7 @@ scheduler_runner/tasks/reports/
 | `reports_notifications.py` | Notification formatting + send via VK/Telegram | `reports_summary.py`, `utils/notifications` |
 | `reports_upload.py` | Coverage-check + KPI upload + retry logic | `utils/uploader` |
 | `reports_scope.py` | PVZ discovery + accessibility check + job building | `utils/parser` |
+| `reports_utils.py` | Общие утилиты: `normalize_pvz_id` | `utils/system` |
 | `failover_orchestration.py` | Full failover coordination: scan → claim → recovery | `storage/`, `failover_policy.py`, `utils/parser` |
 | `owner_state_sync.py` | Owner state persistence + success suppression policy | `storage/`, `reports_summary.py` |
 | `failover_policy.py` | Policy rules: priority_map, capability_ranked, arbitration | Только config |
@@ -59,6 +61,7 @@ scheduler_runner/tasks/reports/
 ```
 
 **Направление зависимостей:** Orchestrator → модули → storage. Нет обратных вызовов.
+`reports_utils.py` — leaf-модуль без зависимостей на другие reports-модули.
 
 ## Режимы Запуска
 
@@ -125,18 +128,18 @@ scheduler_runner/runner.py → reports_processor.main()
 ### Protocol
 
 ```python
-from refactored_modules.storage import FailoverStateStore
+from scheduler_runner.tasks.reports.storage import FailoverStateStore
 
 class FailoverStateStore(ABC):
-    def get_row(self, execution_date, target_pvz): ...
+    def get_row(self, execution_date, target_object_name): ...
     def get_rows_by_keys(self, keys): ...
-    def list_rows(self, statuses=None, target_pvz=None): ...
+    def list_rows(self, statuses=None, target_object_name=None): ...
     def list_candidate_rows(self, statuses=None): ...
     def upsert_record(self, record): ...
     def upsert_records(self, records): ...
-    def mark_state(self, execution_date, target_pvz, owner_pvz, status, ...): ...
+    def mark_state(self, execution_date, target_object_name, owner_object_name, status, ...): ...
     def is_claim_active(self, state_row, now=None): ...
-    def try_claim(self, execution_date, target_pvz, owner_pvz, claimer_pvz, ttl_minutes, ...): ...
+    def try_claim(self, execution_date, target_object_name, owner_object_name, claimer_pvz, ttl_minutes, ...): ...
     def get_store_type(self) -> str: ...
 ```
 
@@ -145,8 +148,8 @@ class FailoverStateStore(ABC):
 Для замены storage backend:
 
 ```python
-from refactored_modules.storage import set_default_store
-from refactored_modules.storage import FailoverStateStore
+from scheduler_runner.tasks.reports.storage import set_default_store
+from scheduler_runner.tasks.reports.storage import FailoverStateStore
 
 # Custom implementation
 class MyPostgreSQLStore(FailoverStateStore):
@@ -160,28 +163,43 @@ set_default_store(MyPostgreSQLStore())
 
 ## Логи
 
-Logger'ы разделены по ролям:
-- `Processor` — orchestration flow
-- `Parser` — parser runtime
-- `Uploader` — upload operations
-- `Notification` — notification delivery
-- `FailoverState` — storage operations
+### Централизованная Система Логирования
 
-Полезные сигналы в `Processor` логах:
+Все модули используют `scheduler_runner.utils.logging.configure_logger()`:
+
+- **Ротация**: `RotatingFileHandler`, 10MB, 5 backup-файлов
+- **Автоочистка**: файлы старше 5 дней удаляются
+- **Кеширование**: предотвращает дублирование хендлеров
+
+| Logger | task_name | log_levels | Файл |
+|---|---|---|---|
+| Processor | `Processor` | TRACE или DEBUG | `logs/reports_domain/Processor/{date}.log` |
+| Parser | `Parser` | TRACE, DEBUG, INFO | `logs/reports_domain/Parser/{date}.log` (+ `_detailed.log`, `_trace.log`) |
+| Uploader | `Uploader` | TRACE, DEBUG, INFO | `logs/reports_domain/Uploader/{date}.log` (+ `_debug.log`, `_trace.log`) |
+| Notification | `Notification` | TRACE, DEBUG, INFO | `logs/reports_domain/Notification/{date}.log` (+ `_debug.log`, `_trace.log`) |
+| FailoverState | `FailoverState` | TRACE | `logs/reports_domain/FailoverState/{date}.log` (+ `_trace.log`) |
+
+### Полезные Сигналы в `Processor` Логах
+
+- `Запуск reports_processor в режиме: backfill`
+- `Owner state sync metrics: prefetch_keys=N, prefetch_rows_found=N, persisted_rows=N, suppressed_success=N, upsert_updated=N, upsert_appended=N, upsert_prefetch_matches=N`
+- `Retryable error при owner state prefetch: ...; attempt=1/3, retry в N.Ns` — retry после 429
 - `Failover coordination dry-run: capability_ranked decision=...`
 - `Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...`
-- `Owner state sync metrics: prefetch_keys=..., prefetch_rows_found=..., persisted_rows=..., suppressed_success=..., upsert_updated=..., upsert_appended=..., upsert_prefetch_matches=...`
+- `Продуктовый процессор домена reports завершен успешно`
+
+### Инцидент: Каскадный 429 (10.04.2026)
+
+4 объекта стартовали одновременно (~21:30) → 2 получили 429 на `KPI_FAILOVER_STATE`.
+Добавлен retry с jitter в `owner_state_sync.py` (конфигурируемый через `BACKFILL_CONFIG`).
 
 ## Тесты
 
 ### Unit Tests
 
 ```powershell
-# Refactored modules tests
-.venv\Scripts\python.exe -m pytest .tmp\refactored_modules\tests\ -q
-
-# Battle tests (unchanged)
-.venv\Scripts\python.exe -m pytest scheduler_runner\tasks\reports\tests\test_reports_processor.py scheduler_runner\tasks\reports\tests\test_failover_state.py scheduler_runner\tasks\reports\tests\test_failover_policy.py -q
+# All refactored modules tests
+.venv\Scripts\python.exe -m pytest scheduler_runner/tasks/reports/tests/ -q
 ```
 
 ### Smoke Tests
@@ -198,6 +216,12 @@ Logger'ы разделены по ролям:
 
 # Failover claim (requires Apps Script URL)
 .venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_failover_claim_smoke --claim_backend apps_script --pretty
+
+# Telegram notification (⚠️ Telegram заблокирован в РФ — тест не работает без VPN/proxy)
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_telegram_notification_e2e_smoke --pretty
+
+# VK notification (production provider)
+.venv\Scripts\python.exe -m scheduler_runner.tasks.reports.tests.run_vk_notification_e2e_smoke --pretty
 ```
 
 ## Ограничения
@@ -216,5 +240,6 @@ Logger'ы разделены по ролям:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектурная диаграмма модулей
 - [docs/FAILOVER_COORDINATION.md](docs/FAILOVER_COORDINATION.md) — детальное описание failover flow
+- [storage/INFRASTRUCTURE_GOOGLE_SHEETS.md](storage/INFRASTRUCTURE_GOOGLE_SHEETS.md) — подготовка Google Sheets + Apps Script
 - [storage/README.md](storage/README.md) — storage protocol и implementations
-- [utils/parser/README.md](C:/tools/scheduler/scheduler_runner/utils/parser/docs/README.md) — parser runtime docs
+- [utils/parser/README.md](../../../utils/parser/docs/README.md) — parser runtime docs

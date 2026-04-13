@@ -2,7 +2,7 @@
 from datetime import datetime
 from unittest.mock import patch
 
-from scheduler_runner.tasks.reports import failover_policy
+from .. import failover_policy
 
 
 class TestFailoverPolicy(unittest.TestCase):
@@ -15,8 +15,8 @@ class TestFailoverPolicy(unittest.TestCase):
     def test_pilot_map_allows_cheboksary_144_to_claim_cheboksary_143(self):
         result = failover_policy.can_attempt_failover_claim(
             state_row={
-                "Дата": "2026-03-14",
-                "target_pvz": "ЧЕБОКСАРЫ_143",
+                "work_date": "2026-03-14",
+                "target_object_name": "ЧЕБОКСАРЫ_143",
                 "status": "owner_failed",
                 "attempt_no": 0,
                 "updated_at": "14.03.2026 10:00:00",
@@ -32,8 +32,8 @@ class TestFailoverPolicy(unittest.TestCase):
     def test_pilot_map_keeps_cheboksary_340_isolated(self):
         result = failover_policy.can_attempt_failover_claim(
             state_row={
-                "Дата": "2026-03-14",
-                "target_pvz": "ЧЕБОКСАРЫ_340",
+                "work_date": "2026-03-14",
+                "target_object_name": "ЧЕБОКСАРЫ_340",
                 "status": "owner_failed",
                 "attempt_no": 0,
                 "updated_at": "14.03.2026 10:00:00",
@@ -49,8 +49,8 @@ class TestFailoverPolicy(unittest.TestCase):
     def test_pilot_map_enforces_rank_order_for_cheboksary_144_recovery(self):
         early_result = failover_policy.can_attempt_failover_claim(
             state_row={
-                "Дата": "2026-03-14",
-                "target_pvz": "ЧЕБОКСАРЫ_144",
+                "work_date": "2026-03-14",
+                "target_object_name": "ЧЕБОКСАРЫ_144",
                 "status": "owner_failed",
                 "attempt_no": 0,
                 "updated_at": "14.03.2026 10:00:00",
@@ -61,8 +61,8 @@ class TestFailoverPolicy(unittest.TestCase):
         )
         late_result = failover_policy.can_attempt_failover_claim(
             state_row={
-                "Дата": "2026-03-14",
-                "target_pvz": "ЧЕБОКСАРЫ_144",
+                "work_date": "2026-03-14",
+                "target_object_name": "ЧЕБОКСАРЫ_144",
                 "status": "owner_failed",
                 "attempt_no": 0,
                 "updated_at": "14.03.2026 10:00:00",
@@ -85,8 +85,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ1",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ1",
                     "status": "owner_failed",
                     "attempt_no": 0,
                 },
@@ -95,7 +95,7 @@ class TestFailoverPolicy(unittest.TestCase):
             )
 
         self.assertFalse(result["eligible"])
-        self.assertEqual(result["reason"], "own_target_pvz")
+        self.assertEqual(result["reason"], "own_target_object_name")
 
     def test_can_attempt_failover_claim_rejects_not_in_priority(self):
         with patch.dict(
@@ -108,8 +108,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ2",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ2",
                     "status": "owner_failed",
                     "attempt_no": 0,
                     "updated_at": "14.03.2026 10:00:00",
@@ -133,8 +133,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ2",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ2",
                     "status": "owner_failed",
                     "attempt_no": 0,
                     "updated_at": "14.03.2026 10:00:00",
@@ -158,8 +158,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ2",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ2",
                     "status": "owner_failed",
                     "attempt_no": 0,
                     "updated_at": "14.03.2026 10:00:00",
@@ -183,8 +183,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ2",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ2",
                     "status": "owner_failed",
                     "attempt_no": 3,
                     "updated_at": "14.03.2026 10:00:00",
@@ -208,8 +208,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             rows = failover_policy.filter_claimable_rows_by_policy(
                 rows=[
-                    {"Дата": "2026-03-14", "target_pvz": "PVZ2", "status": "owner_failed", "attempt_no": 0, "updated_at": "14.03.2026 10:00:00"},
-                    {"Дата": "2026-03-14", "target_pvz": "PVZ3", "status": "owner_failed", "attempt_no": 0, "updated_at": "14.03.2026 10:00:00"},
+                    {"work_date": "2026-03-14", "target_object_name": "PVZ2", "status": "owner_failed", "attempt_no": 0, "updated_at": "14.03.2026 10:00:00"},
+                    {"work_date": "2026-03-14", "target_object_name": "PVZ3", "status": "owner_failed", "attempt_no": 0, "updated_at": "14.03.2026 10:00:00"},
                 ],
                 configured_pvz_id="PVZ3",
                 available_pvz=["PVZ2", "PVZ3"],
@@ -217,7 +217,7 @@ class TestFailoverPolicy(unittest.TestCase):
             )
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["target_pvz"], "PVZ2")
+        self.assertEqual(rows[0]["target_object_name"], "PVZ2")
 
     def test_get_selection_mode_defaults_to_legacy(self):
         with patch.dict(failover_policy.FAILOVER_POLICY_CONFIG, {}, clear=True):
@@ -298,8 +298,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ_TARGET_1",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ_TARGET_1",
                     "status": "owner_failed",
                     "attempt_no": 0,
                 },
@@ -326,8 +326,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ_TARGET_1",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ_TARGET_1",
                     "status": "owner_failed",
                     "attempt_no": 0,
                 },
@@ -350,8 +350,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ_TARGET_1",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ_TARGET_1",
                     "status": "owner_failed",
                     "attempt_no": 0,
                 },
@@ -374,8 +374,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             result = failover_policy.can_attempt_failover_claim(
                 state_row={
-                    "Дата": "2026-03-14",
-                    "target_pvz": "PVZ_TARGET_1",
+                    "work_date": "2026-03-14",
+                    "target_object_name": "PVZ_TARGET_1",
                     "status": "owner_failed",
                     "attempt_no": 3,
                 },
@@ -402,8 +402,8 @@ class TestFailoverPolicy(unittest.TestCase):
         ):
             evaluation = failover_policy.evaluate_claimable_rows_by_policy(
                 rows=[
-                    {"Дата": "2026-03-14", "target_pvz": "PVZ_TARGET_1", "status": "owner_failed", "attempt_no": 0},
-                    {"Дата": "2026-03-14", "target_pvz": "PVZ_TARGET_2", "status": "owner_failed", "attempt_no": 3},
+                    {"work_date": "2026-03-14", "target_object_name": "PVZ_TARGET_1", "status": "owner_failed", "attempt_no": 0},
+                    {"work_date": "2026-03-14", "target_object_name": "PVZ_TARGET_2", "status": "owner_failed", "attempt_no": 3},
                 ],
                 configured_pvz_id="PVZ_HELPER_A",
                 available_pvz=["PVZ_TARGET_1", "PVZ_TARGET_2", "PVZ_HELPER_A"],
@@ -416,7 +416,7 @@ class TestFailoverPolicy(unittest.TestCase):
         self.assertEqual(evaluation["rejected_count"], 1)
         self.assertEqual(evaluation["rejected_reasons"]["max_attempts_reached"], 1)
         self.assertEqual(len(evaluation["selected_rows"]), 1)
-        self.assertEqual(evaluation["selected_rows"][0]["target_pvz"], "PVZ_TARGET_1")
+        self.assertEqual(evaluation["selected_rows"][0]["target_object_name"], "PVZ_TARGET_1")
         selected_decisions = [item for item in evaluation["decisions"] if item["selected_for_claim"]]
         self.assertEqual(len(selected_decisions), 1)
         self.assertEqual(selected_decisions[0]["preferred_helper"], "pvz_helper_a")

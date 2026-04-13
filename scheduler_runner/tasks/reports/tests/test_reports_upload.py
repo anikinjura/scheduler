@@ -2,18 +2,18 @@
 Unit tests for reports_upload (Phase 1.3).
 
 Проверяют:
-- normalize_pvz_id
 - prepare_coverage_filters
 - parse_sheet_date_to_iso
 - is_retryable_google_sheets_upload_error
 - transform_record_for_upload
 - prepare_upload_data
 - prepare_upload_data_batch
+
+normalize_pvz_id тестируется отдельно (reports_utils).
 """
 import unittest
 
-from scheduler_runner.tasks.reports.reports_upload import (
-    normalize_pvz_id,
+from ..reports_upload import (
     prepare_coverage_filters,
     parse_sheet_date_to_iso,
     is_retryable_google_sheets_upload_error,
@@ -21,6 +21,7 @@ from scheduler_runner.tasks.reports.reports_upload import (
     prepare_upload_data,
     prepare_upload_data_batch,
 )
+from ..reports_utils import normalize_pvz_id
 
 
 class TestNormalizePvzId(unittest.TestCase):
@@ -41,9 +42,9 @@ class TestNormalizePvzId(unittest.TestCase):
 class TestPrepareCoverageFilters(unittest.TestCase):
     def test_basic_filter(self):
         filters = prepare_coverage_filters("2026-04-01", "2026-04-07", "ЧЕБОКСАРЫ_144")
-        self.assertEqual(filters["Дата_from"], "2026-04-01")
-        self.assertEqual(filters["Дата_to"], "2026-04-07")
-        self.assertIn("cheboksary_144", filters["ПВЗ"])
+        self.assertEqual(filters["work_date_from"], "2026-04-01")
+        self.assertEqual(filters["work_date_to"], "2026-04-07")
+        self.assertIn("cheboksary_144", filters["object_name"])
 
 
 class TestParseSheetDateToIso(unittest.TestCase):
@@ -77,16 +78,16 @@ class TestTransformRecordForUpload(unittest.TestCase):
             "return_flow": 3,
         }
         result = transform_record_for_upload(record)
-        self.assertEqual(result["Дата"], "2026-04-01")
-        self.assertEqual(result["ПВЗ"], "ЧЕБОКСАРЫ_144")
-        self.assertEqual(result["Количество выдач"], 150)
-        self.assertEqual(result["Прямой поток"], 10)
-        self.assertEqual(result["Возвратный поток"], 3)
+        self.assertEqual(result["work_date"], "2026-04-01")
+        self.assertEqual(result["object_name"], "ЧЕБОКСАРЫ_144")
+        self.assertEqual(result["issued_packages"], 150)
+        self.assertEqual(result["direct_flow"], 10)
+        self.assertEqual(result["return_flow"], 3)
 
     def test_empty_record(self):
         result = transform_record_for_upload({})
-        self.assertIn("Дата", result)
-        self.assertIn("ПВЗ", result)
+        self.assertIn("work_date", result)
+        self.assertIn("object_name", result)
 
     def test_non_dict(self):
         result = transform_record_for_upload("not_a_dict")
@@ -105,9 +106,9 @@ class TestPrepareUploadData(unittest.TestCase):
             },
         })
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["Дата"], "01.04.2026")
-        self.assertEqual(result[0]["ПВЗ"], "ЧЕБОКСАРЫ_144")
-        self.assertEqual(result[0]["Количество выдач"], 150)
+        self.assertEqual(result[0]["work_date"], "01.04.2026")
+        self.assertEqual(result[0]["object_name"], "ЧЕБОКСАРЫ_144")
+        self.assertEqual(result[0]["issued_packages"], 150)
 
     def test_empty_input(self):
         result = prepare_upload_data(None)

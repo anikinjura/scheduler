@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scheduler_runner.tasks.reports.storage.failover_state import (  # noqa: E402
+from ..storage.failover_state import (  # noqa: E402
     STATUS_OWNER_FAILED,
     STATUS_OWNER_SUCCESS,
     build_failover_state_record,
@@ -25,7 +25,7 @@ from scheduler_runner.tasks.reports.storage.failover_state import (  # noqa: E40
     get_failover_state,
     upsert_failover_state_records,
 )
-from scheduler_runner.tasks.reports.owner_state_sync import sync_owner_failover_state_from_batch_result  # noqa: E402
+from ..owner_state_sync import sync_owner_failover_state_from_batch_result  # noqa: E402
 
 
 def build_arg_parser():
@@ -43,8 +43,8 @@ def make_batch_success(execution_date: str):
     }
 
 
-def get_state(execution_date: str, target_pvz: str, logger):
-    return get_failover_state(execution_date=execution_date, target_pvz=target_pvz, logger=logger)
+def get_state(execution_date: str, target_object_name: str, logger):
+    return get_failover_state(execution_date=execution_date, target_object_name=target_object_name, logger=logger)
 
 
 def main():
@@ -63,8 +63,8 @@ def main():
     seed_records = [
         build_failover_state_record(
             execution_date=incident_date,
-            target_pvz=incident_owner,
-            owner_pvz=incident_owner,
+            target_object_name=incident_owner,
+            owner_object_name=incident_owner,
             status=STATUS_OWNER_FAILED,
             source_run_id="smoke-owner-policy-seed-failed",
             last_error="synthetic_owner_failed",
@@ -72,8 +72,8 @@ def main():
         ),
         build_failover_state_record(
             execution_date=duplicate_success_date,
-            target_pvz=duplicate_success_owner,
-            owner_pvz=duplicate_success_owner,
+            target_object_name=duplicate_success_owner,
+            owner_object_name=duplicate_success_owner,
             status=STATUS_OWNER_SUCCESS,
             source_run_id="smoke-owner-policy-seed-success",
             last_error="",
@@ -84,7 +84,7 @@ def main():
     seed_result = upsert_failover_state_records(seed_records, logger=logger)
 
     healthy_result = sync_owner_failover_state_from_batch_result(
-        owner_pvz=healthy_owner,
+        owner_object_name=healthy_owner,
         missing_dates=[healthy_date],
         batch_result=make_batch_success(healthy_date),
         upload_result={"success": True, "uploaded_records": 1},
@@ -92,7 +92,7 @@ def main():
         source_run_id="smoke-owner-policy-healthy",
     )
     incident_result = sync_owner_failover_state_from_batch_result(
-        owner_pvz=incident_owner,
+        owner_object_name=incident_owner,
         missing_dates=[incident_date],
         batch_result=make_batch_success(incident_date),
         upload_result={"success": True, "uploaded_records": 1},
@@ -100,7 +100,7 @@ def main():
         source_run_id="smoke-owner-policy-incident",
     )
     duplicate_success_result = sync_owner_failover_state_from_batch_result(
-        owner_pvz=duplicate_success_owner,
+        owner_object_name=duplicate_success_owner,
         missing_dates=[duplicate_success_date],
         batch_result=make_batch_success(duplicate_success_date),
         upload_result={"success": True, "uploaded_records": 1},
@@ -130,19 +130,19 @@ def main():
         "success": success,
         "seed_result": seed_result,
         "healthy_new_success": {
-            "owner_pvz": healthy_owner,
+            "owner_object_name": healthy_owner,
             "execution_date": healthy_date,
             "sync_result": healthy_result,
             "state_after": healthy_state,
         },
         "incident_related_success": {
-            "owner_pvz": incident_owner,
+            "owner_object_name": incident_owner,
             "execution_date": incident_date,
             "sync_result": incident_result,
             "state_after": incident_state,
         },
         "duplicate_success": {
-            "owner_pvz": duplicate_success_owner,
+            "owner_object_name": duplicate_success_owner,
             "execution_date": duplicate_success_date,
             "sync_result": duplicate_success_result,
             "state_after": duplicate_success_state,

@@ -6,15 +6,10 @@ Scope-resolution, live accessibility, degrade multi -> single, pre-check дос�
 Извлечено из reports_processor.py (Phase 2.1 — medium-risk extraction).
 """
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from .config.scripts.reports_processor_config import BACKFILL_CONFIG
+from .reports_utils import normalize_pvz_id
 from scheduler_runner.utils.logging import configure_logger
 from scheduler_runner.utils.parser import invoke_available_pvz_discovery
-from scheduler_runner.utils.system import SystemUtils
-
-
-def normalize_pvz_id(pvz_id):
-    transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
-    return transliterated.strip().lower()
 
 
 def resolve_pvz_ids(raw_pvz_ids=None):

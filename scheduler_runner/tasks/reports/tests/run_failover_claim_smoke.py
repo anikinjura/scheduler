@@ -6,8 +6,8 @@ import json
 import sys
 
 from config.base_config import PVZ_ID
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from ..config.scripts.reports_processor_config import BACKFILL_CONFIG
+from ..storage.failover_state import (
     STATUS_OWNER_FAILED,
     create_failover_state_logger,
     get_failover_state,
@@ -19,8 +19,8 @@ from scheduler_runner.tasks.reports.storage.failover_state import (
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Manual smoke for failover claim via KPI_FAILOVER_STATE")
     parser.add_argument("--execution_date", default="2099-12-31", help="Synthetic date for safe smoke row")
-    parser.add_argument("--target_pvz", default="SMOKE_FAILOVER_TARGET", help="Synthetic target PVZ")
-    parser.add_argument("--owner_pvz", default="SMOKE_FAILOVER_TARGET", help="Owner PVZ for synthetic row")
+    parser.add_argument("--target_object_name", default="SMOKE_FAILOVER_TARGET", help="Synthetic target_object_name")
+    parser.add_argument("--owner_object_name", default="SMOKE_FAILOVER_TARGET", help="Owner object_name for synthetic row")
     parser.add_argument("--claimer_pvz", default=PVZ_ID, help="Claimer PVZ")
     parser.add_argument("--claim_backend", choices=["apps_script", "sheets"], default=None, help="Override claim backend")
     parser.add_argument("--ttl_minutes", type=int, default=15, help="Claim TTL in minutes")
@@ -39,8 +39,8 @@ def main():
 
     seed_result = mark_failover_state(
         execution_date=args.execution_date,
-        target_pvz=args.target_pvz,
-        owner_pvz=args.owner_pvz,
+        target_object_name=args.target_object_name,
+        owner_object_name=args.owner_object_name,
         status=STATUS_OWNER_FAILED,
         source_run_id="smoke-seed",
         last_error="smoke_seed_owner_failed",
@@ -48,13 +48,13 @@ def main():
     )
     state_before = get_failover_state(
         execution_date=args.execution_date,
-        target_pvz=args.target_pvz,
+        target_object_name=args.target_object_name,
         logger=logger,
     )
     claim_result = try_claim_failover(
         execution_date=args.execution_date,
-        target_pvz=args.target_pvz,
-        owner_pvz=args.owner_pvz,
+        target_object_name=args.target_object_name,
+        owner_object_name=args.owner_object_name,
         claimer_pvz=args.claimer_pvz,
         ttl_minutes=args.ttl_minutes,
         source_run_id=args.source_run_id,
@@ -62,7 +62,7 @@ def main():
     )
     state_after = get_failover_state(
         execution_date=args.execution_date,
-        target_pvz=args.target_pvz,
+        target_object_name=args.target_object_name,
         logger=logger,
     )
 
@@ -70,8 +70,8 @@ def main():
         "success": bool(claim_result.get("success", False)),
         "claim_backend": BACKFILL_CONFIG.get("failover_claim_backend"),
         "execution_date": args.execution_date,
-        "target_pvz": args.target_pvz,
-        "owner_pvz": args.owner_pvz,
+        "target_object_name": args.target_object_name,
+        "owner_object_name": args.owner_object_name,
         "claimer_pvz": args.claimer_pvz,
         "seed_result": seed_result,
         "state_before": state_before,

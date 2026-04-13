@@ -7,6 +7,7 @@ kpi_google_sheets_config.py
 Author: anikinjura
 """
 
+from config.base_config import ENV_MODE
 from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import TableConfig, ColumnDefinition, ColumnType
 
 # Конфигурация структуры таблицы для KPI отчетов
@@ -16,7 +17,7 @@ TABLE_CONFIG = TableConfig(
     columns=[
         ColumnDefinition(name="id", column_type=ColumnType.FORMULA, formula_template="=B{row}&C{row}"),
         ColumnDefinition(
-            name="Дата",
+            name="work_date",
             column_type=ColumnType.DATA,
             required=True,
             unique_key=True,
@@ -26,7 +27,7 @@ TABLE_CONFIG = TableConfig(
             date_output_format="DD.MM.YYYY"
         ),
         ColumnDefinition(
-            name="ПВЗ",
+            name="object_name",
             column_type=ColumnType.DATA,
             required=True,
             unique_key=True,
@@ -34,36 +35,39 @@ TABLE_CONFIG = TableConfig(
             coverage_filter_type="list",
             normalization="strip_lower_str"
         ),
-        ColumnDefinition(name="Количество выдач", column_type=ColumnType.DATA),
-        ColumnDefinition(name="Прямой поток", column_type=ColumnType.DATA),
-        ColumnDefinition(name="Возвратный поток", column_type=ColumnType.DATA),
+        ColumnDefinition(name="issued_packages", column_type=ColumnType.DATA),
+        ColumnDefinition(name="direct_flow", column_type=ColumnType.DATA),
+        ColumnDefinition(name="return_flow", column_type=ColumnType.DATA),
         ColumnDefinition(
-            name="Сумма за Количество выдач",
+            name="reward_issued_packages",
             column_type=ColumnType.FORMULA,
-            formula_template='=GET_REWARD("Количество выдач";D{row};$B{row};KPI_REWARD_RULES_RANGE)'
+            formula_template='=GET_REWARD("issued_packages";D{row};$B{row};KPI_REWARD_RULES_RANGE)'
         ),
         ColumnDefinition(
-            name="Сумма за Прямой поток",
+            name="reward_direct_flow",
             column_type=ColumnType.FORMULA,
-            formula_template='=GET_REWARD("Прямой поток";E{row};$B{row};KPI_REWARD_RULES_RANGE)'
+            formula_template='=GET_REWARD("direct_flow";E{row};$B{row};KPI_REWARD_RULES_RANGE)'
         ),
         ColumnDefinition(
-            name="Сумма за Возвратный поток",
+            name="reward_return_flow",
             column_type=ColumnType.FORMULA,
-            formula_template='=GET_REWARD("Возвратный поток";F{row};$B{row};KPI_REWARD_RULES_RANGE)'
+            formula_template='=GET_REWARD("return_flow";F{row};$B{row};KPI_REWARD_RULES_RANGE)'
         ),
         ColumnDefinition(
-            name="Итого вознаграждение",
+            name="total_reward",
             column_type=ColumnType.FORMULA,
             formula_template="=SUM(G{row}:I{row})"
         ),
         ColumnDefinition(name="timestamp", column_type=ColumnType.DATA),
     ],
-    unique_key_columns=["Дата", "ПВЗ"]
+    unique_key_columns=["work_date", "object_name"]
 )
 
-# ID Google-таблицы (из URL: https://docs.google.com/spreadsheets/d/[ID]/edit)
-SPREADSHEET_ID = "1uuaxb0omdb28sFDysiMSTUUMwzPfte4hDDBZ0W9zzH8"
+# ID Google-таблицы (разделение по ENV_MODE)
+SPREADSHEET_ID_PROD = "1uuaxb0omdb28sFDysiMSTUUMwzPfte4hDDBZ0W9zzH8"
+SPREADSHEET_ID_TEST = "1n6Tsa4LmSoVDcRRFj6QKvnU4NfIpq1h9_MRwnyuiKW4"
+
+SPREADSHEET_ID = SPREADSHEET_ID_TEST if ENV_MODE == "test" else SPREADSHEET_ID_PROD
 
 # Имя листа в таблице
 WORKSHEET_NAME = "KPI"

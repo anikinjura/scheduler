@@ -10,10 +10,11 @@ Unit tests for owner_state_sync (Phase 2.2).
 import unittest
 from unittest.mock import patch, MagicMock
 
-from scheduler_runner.tasks.reports.owner_state_sync import (
+from ..owner_state_sync import (
     classify_owner_success_history,
     should_persist_owner_success_from_history,
     build_owner_final_failover_state_records,
+    sync_owner_failover_state_from_batch_result,
 )
 
 
@@ -82,7 +83,7 @@ class TestShouldPersistOwnerSuccessFromHistory(unittest.TestCase):
 class TestBuildOwnerFinalFailoverStateRecords(unittest.TestCase):
     def test_failed_parse_dates(self):
         result = build_owner_final_failover_state_records(
-            owner_pvz="PVZ1",
+            owner_object_name="PVZ1",
             missing_dates=["2026-04-01", "2026-04-02"],
             batch_result={
                 "results_by_date": {
@@ -101,7 +102,7 @@ class TestBuildOwnerFinalFailoverStateRecords(unittest.TestCase):
 
     def test_upload_failure(self):
         result = build_owner_final_failover_state_records(
-            owner_pvz="PVZ1",
+            owner_object_name="PVZ1",
             missing_dates=["2026-04-01"],
             batch_result={
                 "results_by_date": {
@@ -117,7 +118,7 @@ class TestBuildOwnerFinalFailoverStateRecords(unittest.TestCase):
 
     def test_success_with_suppression(self):
         result = build_owner_final_failover_state_records(
-            owner_pvz="PVZ1",
+            owner_object_name="PVZ1",
             missing_dates=["2026-04-01"],
             batch_result={
                 "results_by_date": {
@@ -133,7 +134,7 @@ class TestBuildOwnerFinalFailoverStateRecords(unittest.TestCase):
 
     def test_success_with_persist(self):
         result = build_owner_final_failover_state_records(
-            owner_pvz="PVZ1",
+            owner_object_name="PVZ1",
             missing_dates=["2026-04-01"],
             batch_result={
                 "results_by_date": {
@@ -162,7 +163,7 @@ class TestSyncOwnerFailoverStateFromBatchResult(unittest.TestCase):
         mock_get_store.return_value = mock_store
 
         result = build_owner_final_failover_state_records(
-            owner_pvz="PVZ1",
+            owner_object_name="PVZ1",
             missing_dates=["2026-04-01"],
             batch_result={
                 "results_by_date": {
@@ -181,14 +182,14 @@ class TestSyncOwnerFailoverStateFromBatchResult(unittest.TestCase):
         mock_store.upsert_records.return_value = {"success": False, "error": "upsert_failed"}
         mock_get_store.return_value = mock_store
 
-        from scheduler_runner.tasks.reports.owner_state_sync import sync_owner_failover_state_from_batch_result
+        from ..owner_state_sync import sync_owner_failover_state_from_batch_result
 
         # build_owner_final_failover_state_records with upload failure → records with owner_failed
         # Then upsert fails → RuntimeError
         # We need records to be generated, so trigger upload failure path:
         with self.assertRaises(RuntimeError) as ctx:
             sync_owner_failover_state_from_batch_result(
-                owner_pvz="PVZ1",
+                owner_object_name="PVZ1",
                 missing_dates=["2026-04-01"],
                 batch_result={
                     "results_by_date": {
@@ -201,6 +202,95 @@ class TestSyncOwnerFailoverStateFromBatchResult(unittest.TestCase):
         self.assertIn("KPI_FAILOVER_STATE", str(ctx.exception))
 
 
-if __name__ == "__main__":
-    unittest.main()
+@patch("scheduler_runner.tasks.reports.owner_state_sync.time.sleep", return_value=None)
+class TestOwnerStateSyncRetry(unittest.TestCase):
+    """Retry с jitter для get_rows_by_keys в owner state sync."""
+
+    def test_retries_on_429_then_succeeds(self, mock_sleep):
+        """429 на первой попытке → retry → success."""
+        mock_store = MagicMock()
+        mock_store.get_rows_by_keys.side_effect = [
+            RuntimeError("APIError: [429]: Quota exceeded"),
+            {},
+        ]
+        mock_store.upsert_records.return_value = {"success": True, "results": [], "diagnostics": {}}
+
+        result = sync_owner_failover_state_from_batch_result(
+            owner_object_name="PVZ1",
+            missing_dates=["2026-04-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-04-01": {"success": True, "data": {}},
+                }
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+            store=mock_store,
+        )
+        self.assertEqual(mock_store.get_rows_by_keys.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+        self.assertEqual(result["successful_dates"], ["2026-04-01"])
+
+    def test_retries_on_503_then_succeeds(self, mock_sleep):
+        """503 на первой попытке → retry → success."""
+        mock_store = MagicMock()
+        mock_store.get_rows_by_keys.side_effect = [
+            RuntimeError("APIError: [503]: Service unavailable"),
+            {},
+        ]
+        mock_store.upsert_records.return_value = {"success": True, "results": [], "diagnostics": {}}
+
+        result = sync_owner_failover_state_from_batch_result(
+            owner_object_name="PVZ1",
+            missing_dates=["2026-04-01"],
+            batch_result={
+                "results_by_date": {
+                    "2026-04-01": {"success": True, "data": {}},
+                }
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+            store=mock_store,
+        )
+        self.assertEqual(mock_store.get_rows_by_keys.call_count, 2)
+        self.assertEqual(result["successful_dates"], ["2026-04-01"])
+
+    def test_raises_after_max_attempts(self, mock_sleep):
+        """3× 429 → RuntimeError после max_attempts."""
+        mock_store = MagicMock()
+        mock_store.get_rows_by_keys.side_effect = RuntimeError("APIError: [429]: Quota exceeded")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            sync_owner_failover_state_from_batch_result(
+                owner_object_name="PVZ1",
+                missing_dates=["2026-04-01"],
+                batch_result={
+                    "results_by_date": {
+                        "2026-04-01": {"success": True, "data": {}},
+                    }
+                },
+                upload_result={"success": True, "uploaded_records": 1},
+                store=mock_store,
+            )
+        self.assertIn("3 попыток", str(ctx.exception))
+        self.assertEqual(mock_store.get_rows_by_keys.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_non_retryable_error_raises_immediately(self, mock_sleep):
+        """Non-retryable ошибка → immediate raise, без retry."""
+        mock_store = MagicMock()
+        mock_store.get_rows_by_keys.side_effect = RuntimeError("Authentication error: invalid credentials")
+
+        with self.assertRaises(RuntimeError):
+            sync_owner_failover_state_from_batch_result(
+                owner_object_name="PVZ1",
+                missing_dates=["2026-04-01"],
+                batch_result={
+                    "results_by_date": {
+                        "2026-04-01": {"success": True, "data": {}},
+                    }
+                },
+                upload_result={"success": True, "uploaded_records": 1},
+                store=mock_store,
+            )
+        self.assertEqual(mock_store.get_rows_by_keys.call_count, 1)
+        mock_sleep.assert_not_called()
 

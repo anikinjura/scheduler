@@ -21,6 +21,10 @@ BACKFILL_CONFIG = {
     "failover_max_claims_per_run": 3,
     "failover_claim_backend": "apps_script",
     "failover_apps_script_timeout_seconds": 15,
+    "owner_state_sync_max_attempts": 3,
+    "owner_state_sync_base_delay_seconds": 2.0,
+    "owner_state_sync_max_delay_seconds": 8.0,
+    "owner_state_sync_jitter_seconds": 1.0,
 }
 
 FAILOVER_POLICY_CONFIG = {

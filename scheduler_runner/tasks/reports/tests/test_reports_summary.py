@@ -9,7 +9,7 @@ Unit tests for reports_summary (Phase 1.1).
 """
 import unittest
 
-from scheduler_runner.tasks.reports.reports_summary import (
+from ..reports_summary import (
     PVZExecutionResult,
     ReportsBackfillExecutionResult,
     OwnerRunSummary,

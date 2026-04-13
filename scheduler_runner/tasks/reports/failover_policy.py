@@ -3,23 +3,18 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Tuple
 
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import FAILOVER_POLICY_CONFIG
-from scheduler_runner.tasks.reports.storage.failover_state import (
+from .config.scripts.reports_processor_config import FAILOVER_POLICY_CONFIG
+from .reports_utils import normalize_pvz_id
+from .storage.failover_state import (
     STATUS_FAILOVER_SUCCESS,
     STATUS_OWNER_SUCCESS,
     parse_sheet_timestamp,
 )
-from scheduler_runner.utils.system import SystemUtils
 
 
 TERMINAL_STATUSES = {STATUS_OWNER_SUCCESS, STATUS_FAILOVER_SUCCESS}
 SELECTION_MODE_PRIORITY_MAP_LEGACY = "priority_map_legacy"
 SELECTION_MODE_CAPABILITY_RANKED = "capability_ranked"
-
-
-def normalize_pvz_id(pvz_id: str | None) -> str:
-    transliterated = SystemUtils.cyrillic_to_translit(str(pvz_id or ""))
-    return transliterated.strip().lower()
 
 
 def get_selection_mode() -> str:
@@ -33,8 +28,8 @@ def get_selection_mode() -> str:
 def get_priority_map() -> Dict[str, List[str]]:
     raw_map = FAILOVER_POLICY_CONFIG.get("priority_map", {}) or {}
     normalized_map: Dict[str, List[str]] = {}
-    for target_pvz, priority_list in raw_map.items():
-        normalized_map[normalize_pvz_id(target_pvz)] = [str(item).strip() for item in (priority_list or []) if str(item).strip()]
+    for target_object_name, priority_list in raw_map.items():
+        normalized_map[normalize_pvz_id(target_object_name)] = [str(item).strip() for item in (priority_list or []) if str(item).strip()]
     return normalized_map
 
 
@@ -54,12 +49,12 @@ def get_helper_bias_map() -> Dict[str, int]:
     return normalized_map
 
 
-def get_priority_list(target_pvz: str) -> List[str]:
-    return get_priority_map().get(normalize_pvz_id(target_pvz), [])
+def get_priority_list(target_object_name: str) -> List[str]:
+    return get_priority_map().get(normalize_pvz_id(target_object_name), [])
 
 
-def has_explicit_priority_rule(target_pvz: str) -> bool:
-    return normalize_pvz_id(target_pvz) in get_priority_map()
+def has_explicit_priority_rule(target_object_name: str) -> bool:
+    return normalize_pvz_id(target_object_name) in get_priority_map()
 
 
 def helper_has_any_capabilities(helper_pvz: str) -> bool:
@@ -70,22 +65,22 @@ def get_capability_targets_for_helper(helper_pvz: str) -> List[str]:
     return get_capability_map().get(normalize_pvz_id(helper_pvz), [])
 
 
-def get_helper_candidates_for_target(target_pvz: str) -> List[str]:
-    normalized_target_pvz = normalize_pvz_id(target_pvz)
+def get_helper_candidates_for_target(target_object_name: str) -> List[str]:
+    normalized_target_object_name = normalize_pvz_id(target_object_name)
     candidates: List[str] = []
     for helper_pvz, target_list in get_capability_map().items():
         normalized_targets = {normalize_pvz_id(item) for item in target_list}
-        if normalized_target_pvz in normalized_targets:
+        if normalized_target_object_name in normalized_targets:
             candidates.append(helper_pvz)
     return sorted(candidates)
 
 
-def get_live_accessible_helper_candidates(target_pvz: str, available_pvz: Iterable[str]) -> List[str]:
-    normalized_target_pvz = normalize_pvz_id(target_pvz)
+def get_live_accessible_helper_candidates(target_object_name: str, available_pvz: Iterable[str]) -> List[str]:
+    normalized_target_object_name = normalize_pvz_id(target_object_name)
     normalized_available_pvz = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz or [])}
-    if normalized_target_pvz not in normalized_available_pvz:
+    if normalized_target_object_name not in normalized_available_pvz:
         return []
-    return get_helper_candidates_for_target(target_pvz)
+    return get_helper_candidates_for_target(target_object_name)
 
 
 def build_helper_rank_tuple(helper_pvz: str) -> Tuple[int, str]:
@@ -94,15 +89,15 @@ def build_helper_rank_tuple(helper_pvz: str) -> Tuple[int, str]:
     return (int(helper_bias.get(normalized_helper_pvz, 0)), normalized_helper_pvz)
 
 
-def select_preferred_helper_for_target(target_pvz: str, available_pvz: Iterable[str]) -> str | None:
-    candidates = get_live_accessible_helper_candidates(target_pvz, available_pvz)
+def select_preferred_helper_for_target(target_object_name: str, available_pvz: Iterable[str]) -> str | None:
+    candidates = get_live_accessible_helper_candidates(target_object_name, available_pvz)
     if not candidates:
         return None
     return min(candidates, key=build_helper_rank_tuple)
 
 
-def get_current_rank(target_pvz: str, claimer_pvz: str) -> int | None:
-    priority_list = get_priority_list(target_pvz)
+def get_current_rank(target_object_name: str, claimer_pvz: str) -> int | None:
+    priority_list = get_priority_list(target_object_name)
     normalized_claimer_pvz = normalize_pvz_id(claimer_pvz)
     for index, pvz_id in enumerate(priority_list, start=1):
         if normalize_pvz_id(pvz_id) == normalized_claimer_pvz:
@@ -132,19 +127,19 @@ def can_attempt_failover_claim_legacy(
     now: datetime | None = None,
 ) -> Dict[str, Any]:
     current_time = now or datetime.now()
-    target_pvz = state_row.get("target_pvz", "")
-    normalized_target_pvz = normalize_pvz_id(target_pvz)
+    target_object_name = state_row.get("target_object_name", "")
+    normalized_target_object_name = normalize_pvz_id(target_object_name)
     normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
     normalized_available_pvz = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz or [])}
     status = state_row.get("status")
 
-    if not target_pvz:
-        return {"eligible": False, "reason": "missing_target_pvz"}
+    if not target_object_name:
+        return {"eligible": False, "reason": "missing_target_object_name"}
     if status in TERMINAL_STATUSES:
         return {"eligible": False, "reason": "terminal_status"}
-    if normalized_target_pvz == normalized_configured_pvz_id:
-        return {"eligible": False, "reason": "own_target_pvz"}
-    if normalized_target_pvz not in normalized_available_pvz:
+    if normalized_target_object_name == normalized_configured_pvz_id:
+        return {"eligible": False, "reason": "own_target_object_name"}
+    if normalized_target_object_name not in normalized_available_pvz:
         return {"eligible": False, "reason": "not_accessible"}
 
     attempt_no = int(state_row.get("attempt_no") or 0)
@@ -152,9 +147,9 @@ def can_attempt_failover_claim_legacy(
     if max_attempts > 0 and attempt_no >= max_attempts:
         return {"eligible": False, "reason": "max_attempts_reached"}
 
-    priority_list = get_priority_list(target_pvz)
-    has_explicit_rule = has_explicit_priority_rule(target_pvz)
-    rank = get_current_rank(target_pvz, configured_pvz_id)
+    priority_list = get_priority_list(target_object_name)
+    has_explicit_rule = has_explicit_priority_rule(target_object_name)
+    rank = get_current_rank(target_object_name, configured_pvz_id)
     allow_unlisted_fallback = bool(FAILOVER_POLICY_CONFIG.get("allow_unlisted_fallback", False))
 
     if has_explicit_rule and rank is None and not allow_unlisted_fallback:
@@ -185,19 +180,19 @@ def can_attempt_failover_claim_capability_ranked(
     available_pvz: Iterable[str],
     now: datetime | None = None,
 ) -> Dict[str, Any]:
-    target_pvz = state_row.get("target_pvz", "")
-    normalized_target_pvz = normalize_pvz_id(target_pvz)
+    target_object_name = state_row.get("target_object_name", "")
+    normalized_target_object_name = normalize_pvz_id(target_object_name)
     normalized_configured_pvz_id = normalize_pvz_id(configured_pvz_id)
     normalized_available_pvz = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz or [])}
     status = state_row.get("status")
 
-    if not target_pvz:
-        return {"eligible": False, "reason": "missing_target_pvz"}
+    if not target_object_name:
+        return {"eligible": False, "reason": "missing_target_object_name"}
     if status in TERMINAL_STATUSES:
         return {"eligible": False, "reason": "terminal_status"}
-    if normalized_target_pvz == normalized_configured_pvz_id:
-        return {"eligible": False, "reason": "own_target_pvz"}
-    if normalized_target_pvz not in normalized_available_pvz:
+    if normalized_target_object_name == normalized_configured_pvz_id:
+        return {"eligible": False, "reason": "own_target_object_name"}
+    if normalized_target_object_name not in normalized_available_pvz:
         return {"eligible": False, "reason": "not_accessible"}
 
     attempt_no = int(state_row.get("attempt_no") or 0)
@@ -205,11 +200,11 @@ def can_attempt_failover_claim_capability_ranked(
     if max_attempts > 0 and attempt_no >= max_attempts:
         return {"eligible": False, "reason": "max_attempts_reached"}
 
-    helper_candidates = get_helper_candidates_for_target(target_pvz)
+    helper_candidates = get_helper_candidates_for_target(target_object_name)
     if not helper_candidates:
         return {"eligible": False, "reason": "no_eligible_helpers"}
 
-    preferred_helper = select_preferred_helper_for_target(target_pvz, available_pvz)
+    preferred_helper = select_preferred_helper_for_target(target_object_name, available_pvz)
     if not preferred_helper:
         return {
             "eligible": False,
@@ -274,8 +269,8 @@ def evaluate_claimable_rows_by_policy(
             now=now,
         )
         decision_item = {
-            "execution_date": row.get("Дата", ""),
-            "target_pvz": row.get("target_pvz", ""),
+            "execution_date": row.get("work_date", ""),
+            "target_object_name": row.get("target_object_name", ""),
             "status": row.get("status"),
             "eligible": bool(decision.get("eligible", False)),
             "reason": decision.get("reason", ""),
@@ -294,13 +289,13 @@ def evaluate_claimable_rows_by_policy(
         if decision_item["eligible"]:
             eligible_rows.append(row)
 
-    eligible_rows.sort(key=lambda row: (row.get("Дата", ""), row.get("target_pvz", "")))
+    eligible_rows.sort(key=lambda row: (row.get("work_date", ""), row.get("target_object_name", "")))
     selected_rows = eligible_rows[:max_claims] if max_claims else eligible_rows
-    selected_keys = {(row.get("Дата", ""), row.get("target_pvz", "")) for row in selected_rows}
+    selected_keys = {(row.get("work_date", ""), row.get("target_object_name", "")) for row in selected_rows}
     for decision_item in decisions:
         decision_item["selected_for_claim"] = (
             decision_item["eligible"]
-            and (decision_item["execution_date"], decision_item["target_pvz"]) in selected_keys
+            and (decision_item["execution_date"], decision_item["target_object_name"]) in selected_keys
         )
 
     rejected_reasons = {}

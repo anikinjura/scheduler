@@ -7,11 +7,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Optional
 
-from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
-from scheduler_runner.tasks.reports.config.scripts.kpi_failover_state_google_sheets_config import (
+from ..config.reports_paths import REPORTS_PATHS
+from ..config.scripts.kpi_failover_state_google_sheets_config import (
     KPI_FAILOVER_STATE_GOOGLE_SHEETS_CONFIG,
 )
-from scheduler_runner.tasks.reports.config.scripts.reports_processor_config import BACKFILL_CONFIG
+from ..config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
 from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_core import retry_on_api_error
 from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import (
@@ -31,9 +31,9 @@ STATUS_CLAIM_EXPIRED = "claim_expired"
 
 TERMINAL_STATUSES = {STATUS_OWNER_SUCCESS, STATUS_FAILOVER_SUCCESS}
 CANDIDATE_SCAN_COLUMN_NAMES = [
-    "Дата",
-    "target_pvz",
-    "owner_pvz",
+    "work_date",
+    "target_object_name",
+    "owner_object_name",
     "status",
     "claimed_by",
     "claim_expires_at",
@@ -42,12 +42,12 @@ CANDIDATE_SCAN_COLUMN_NAMES = [
     "last_error",
     "updated_at",
 ]
-FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["Дата", "target_pvz"]
+FAILOVER_STATE_UPSERT_KEY_COLUMNS = ["work_date", "target_object_name"]
 FAILOVER_STATE_ALL_COLUMN_NAMES = [
     "request_id",
-    "Дата",
-    "target_pvz",
-    "owner_pvz",
+    "work_date",
+    "target_object_name",
+    "owner_object_name",
     "status",
     "claimed_by",
     "claim_expires_at",
@@ -55,6 +55,7 @@ FAILOVER_STATE_ALL_COLUMN_NAMES = [
     "source_run_id",
     "last_error",
     "updated_at",
+    "timestamp",
 ]
 
 
@@ -100,8 +101,8 @@ def parse_sheet_timestamp(value: str | None) -> Optional[datetime]:
     return None
 
 
-def build_failover_request_id(execution_date: str, target_pvz: str) -> str:
-    return f"{execution_date}|{target_pvz}"
+def build_failover_request_id(execution_date: str, target_object_name: str) -> str:
+    return f"{execution_date}|{target_object_name}"
 
 
 def get_failover_claim_backend() -> str:
@@ -119,8 +120,8 @@ def get_failover_apps_script_config() -> Dict[str, Any]:
 def build_failover_state_record(
     *,
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     status: str,
     claimed_by: str = "",
     claim_expires_at: str = "",
@@ -131,10 +132,10 @@ def build_failover_state_record(
 ) -> Dict[str, Any]:
     now = updated_at or _now()
     return {
-        "request_id": build_failover_request_id(execution_date, target_pvz),
-        "Дата": execution_date,
-        "target_pvz": target_pvz,
-        "owner_pvz": owner_pvz,
+        "request_id": build_failover_request_id(execution_date, target_object_name),
+        "work_date": execution_date,
+        "target_object_name": target_object_name,
+        "owner_object_name": owner_object_name,
         "status": status,
         "claimed_by": claimed_by,
         "claim_expires_at": claim_expires_at,
@@ -204,8 +205,8 @@ def get_failover_state_rows_by_keys(
 
         target_keys = {
             (
-                _normalize_failover_lookup_value(reporter, key.get("Дата", "")),
-                _normalize_failover_lookup_value(reporter, key.get("target_pvz", "")),
+                _normalize_failover_lookup_value(reporter, key.get("work_date", "")),
+                _normalize_failover_lookup_value(reporter, key.get("target_object_name", "")),
             )
             for key in normalized_keys_input
         }
@@ -253,8 +254,8 @@ def get_failover_state_rows_by_keys(
             continue
 
         row_key = (
-            _normalize_failover_lookup_value(reporter, row.get("Дата", "")),
-            _normalize_failover_lookup_value(reporter, row.get("target_pvz", "")),
+            _normalize_failover_lookup_value(reporter, row.get("work_date", "")),
+            _normalize_failover_lookup_value(reporter, row.get("target_object_name", "")),
         )
         if row_key not in target_keys or row_key in matched_rows:
             continue
@@ -268,7 +269,7 @@ def get_failover_state_rows_by_keys(
 def _build_existing_failover_row_lookup(records: list[Dict[str, Any]], uploader) -> tuple[Dict[tuple[str, str], int], int]:
     reporter = uploader.sheets_reporter
     table_config = uploader.table_config
-    date_column_index = table_config.get_column_index("Дата") or 2
+    date_column_index = table_config.get_column_index("work_date") or 2
     last_data_row = reporter.get_last_row_with_data(column_index=date_column_index)
     if last_data_row < 2:
         return {}, last_data_row
@@ -412,7 +413,7 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
         "requested_records_count": len(normalized_records),
         "prefetch_last_data_row": last_data_row,
         "prefetch_keys_count": len({
-            (record.get("Дата", ""), record.get("target_pvz", ""))
+            (record.get("work_date", ""), record.get("target_object_name", ""))
             for record in normalized_records
         }),
         "prefetch_matches_count": len(row_lookup),
@@ -428,7 +429,7 @@ def upsert_failover_state_records(records: list[Dict[str, Any]], logger=None) ->
     }
 
 
-def get_failover_state(execution_date: str, target_pvz: str, logger=None, uploader=None) -> Optional[Dict[str, Any]]:
+def get_failover_state(execution_date: str, target_object_name: str, logger=None, uploader=None) -> Optional[Dict[str, Any]]:
     logger = logger or create_failover_state_logger()
     connection_context = nullcontext(uploader) if uploader is not None else failover_state_connection(logger=logger)
     with connection_context as active_uploader:
@@ -436,8 +437,8 @@ def get_failover_state(execution_date: str, target_pvz: str, logger=None, upload
         use_config = active_uploader.table_config
         return reporter.get_row_by_unique_keys(
             unique_key_values={
-                "Дата": execution_date,
-                "target_pvz": target_pvz,
+                "work_date": execution_date,
+                "target_object_name": target_object_name,
             },
             config=use_config,
             return_raw=True,
@@ -447,7 +448,7 @@ def get_failover_state(execution_date: str, target_pvz: str, logger=None, upload
 def list_failover_state_rows(
     *,
     statuses: Optional[Iterable[str]] = None,
-    target_pvz: Optional[str] = None,
+    target_object_name: Optional[str] = None,
     claimed_by: Optional[str] = None,
     logger=None,
 ) -> list[Dict[str, Any]]:
@@ -460,7 +461,7 @@ def list_failover_state_rows(
     for record in records:
         if allowed_statuses and record.get("status") not in allowed_statuses:
             continue
-        if target_pvz and record.get("target_pvz") != target_pvz:
+        if target_object_name and record.get("target_object_name") != target_object_name:
             continue
         if claimed_by and record.get("claimed_by") != claimed_by:
             continue
@@ -492,7 +493,7 @@ def list_candidate_failover_rows_fast(
         worksheet = reporter.worksheet
         table_config = active_uploader.table_config
 
-        date_column_index = table_config.get_column_index("Дата") or 2
+        date_column_index = table_config.get_column_index("work_date") or 2
         last_data_row = reporter.get_last_row_with_data(column_index=date_column_index)
         if last_data_row < 2:
             return []
@@ -555,7 +556,7 @@ def is_claim_active(state_row: Optional[Dict[str, Any]], now: Optional[datetime]
 def verify_claim_ownership(
     *,
     execution_date: str,
-    target_pvz: str,
+    target_object_name: str,
     claimer_pvz: str,
     source_run_id: str = "",
     logger=None,
@@ -564,7 +565,7 @@ def verify_claim_ownership(
     logger = logger or create_failover_state_logger()
     persisted_state = get_failover_state(
         execution_date=execution_date,
-        target_pvz=target_pvz,
+        target_object_name=target_object_name,
         logger=logger,
         uploader=uploader,
     )
@@ -584,8 +585,8 @@ def verify_claim_ownership(
 def try_claim_failover_via_apps_script(
     *,
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     claimer_pvz: str,
     ttl_minutes: int = 15,
     source_run_id: str = "",
@@ -606,8 +607,8 @@ def try_claim_failover_via_apps_script(
         "action": "try_claim_failover",
         "shared_secret": shared_secret,
         "execution_date": execution_date,
-        "target_pvz": target_pvz,
-        "owner_pvz": owner_pvz,
+        "target_object_name": target_object_name,
+        "owner_object_name": owner_object_name,
         "claimer_pvz": claimer_pvz,
         "ttl_minutes": ttl_minutes,
         "source_run_id": source_run_id,
@@ -640,8 +641,8 @@ def try_claim_failover_via_apps_script(
 def try_claim_failover_via_sheets(
     *,
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     claimer_pvz: str,
     ttl_minutes: int = 15,
     source_run_id: str = "",
@@ -652,7 +653,7 @@ def try_claim_failover_via_sheets(
     now = _now()
     current_state = get_failover_state(
         execution_date=execution_date,
-        target_pvz=target_pvz,
+        target_object_name=target_object_name,
         logger=logger,
         uploader=uploader,
     )
@@ -677,8 +678,8 @@ def try_claim_failover_via_sheets(
     claim_expires_at = format_sheet_timestamp(now + timedelta(minutes=max(ttl_minutes, 1)))
     claimed_record = build_failover_state_record(
         execution_date=execution_date,
-        target_pvz=target_pvz,
-        owner_pvz=owner_pvz,
+        target_object_name=target_object_name,
+        owner_object_name=owner_object_name,
         status=STATUS_FAILOVER_CLAIMED,
         claimed_by=claimer_pvz,
         claim_expires_at=claim_expires_at,
@@ -699,7 +700,7 @@ def try_claim_failover_via_sheets(
 
     verification_result = verify_claim_ownership(
         execution_date=execution_date,
-        target_pvz=target_pvz,
+        target_object_name=target_object_name,
         claimer_pvz=claimer_pvz,
         source_run_id=source_run_id,
         logger=logger,
@@ -718,8 +719,8 @@ def try_claim_failover_via_sheets(
 def try_claim_failover(
     *,
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     claimer_pvz: str,
     ttl_minutes: int = 15,
     source_run_id: str = "",
@@ -730,8 +731,8 @@ def try_claim_failover(
     if claim_backend == "apps_script":
         return try_claim_failover_via_apps_script(
             execution_date=execution_date,
-            target_pvz=target_pvz,
-            owner_pvz=owner_pvz,
+            target_object_name=target_object_name,
+            owner_object_name=owner_object_name,
             claimer_pvz=claimer_pvz,
             ttl_minutes=ttl_minutes,
             source_run_id=source_run_id,
@@ -739,8 +740,8 @@ def try_claim_failover(
         )
     return try_claim_failover_via_sheets(
         execution_date=execution_date,
-        target_pvz=target_pvz,
-        owner_pvz=owner_pvz,
+        target_object_name=target_object_name,
+        owner_object_name=owner_object_name,
         claimer_pvz=claimer_pvz,
         ttl_minutes=ttl_minutes,
         source_run_id=source_run_id,
@@ -752,8 +753,8 @@ def try_claim_failover(
 def mark_failover_state(
     *,
     execution_date: str,
-    target_pvz: str,
-    owner_pvz: str,
+    target_object_name: str,
+    owner_object_name: str,
     status: str,
     claimed_by: str = "",
     ttl_minutes: int = 0,
@@ -762,15 +763,15 @@ def mark_failover_state(
     logger=None,
 ) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
-    current_state = get_failover_state(execution_date=execution_date, target_pvz=target_pvz, logger=logger) or {}
+    current_state = get_failover_state(execution_date=execution_date, target_object_name=target_object_name, logger=logger) or {}
     claim_expires_at = ""
     if ttl_minutes > 0:
         claim_expires_at = format_sheet_timestamp(_now() + timedelta(minutes=ttl_minutes))
 
     record = build_failover_state_record(
         execution_date=execution_date,
-        target_pvz=target_pvz,
-        owner_pvz=owner_pvz,
+        target_object_name=target_object_name,
+        owner_object_name=owner_object_name,
         status=status,
         claimed_by=claimed_by,
         claim_expires_at=claim_expires_at,
