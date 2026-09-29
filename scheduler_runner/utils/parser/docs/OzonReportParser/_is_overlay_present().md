@@ -39,7 +39,7 @@ def _is_overlay_present(self, selector: str, timeout: int = 5) -> bool
 
 ```python
 # Проверка наличия оверлея
-overlay_selector = "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]"
+overlay_selector = "//div[contains(@class, 'ozi__dialog__dialog__')]"
 if self._is_overlay_present(overlay_selector, timeout=5):
     if self.logger:
         self.logger.info("Обнаружен оверлей, закрываем...")

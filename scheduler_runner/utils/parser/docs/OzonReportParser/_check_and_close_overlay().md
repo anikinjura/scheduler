@@ -21,8 +21,13 @@ def _check_and_close_overlay(self) -> bool
 ```python
 "overlay_config": {
     "enabled": True,  # Флаг включения проверки оверлея
-    "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея
-    "close_button_selector": "//button[contains(@class, 'ozi__window__closeIcon__-pkPv')]",  # Селектор кнопки закрытия
+    "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__')]",  # Селектор оверлея (без хэша класса)
+    "close_button_selector": "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",  # Кнопка «Отложить»
+    "close_button_candidates": [  # Пробуются по порядку, кликается первая найденная
+        "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",
+        "//button[contains(@class, 'ozi__dialog__closeIcon__')]",  # крестик диалога
+        # ... более общие запасные варианты
+    ],
     "wait_timeout": 5,  # Таймаут ожидания появления оверлея (секунды)
     "retry_count": 3,  # Количество попыток закрытия
     "retry_delay": 1   # Задержка между попытками (секунды)
