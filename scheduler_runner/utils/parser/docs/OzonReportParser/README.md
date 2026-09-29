@@ -51,6 +51,21 @@
 
 Используется для consistent metadata в report/discovery output.
 
+## Селекторы Ozon UI
+
+Селекторы задаются в `configs/base_configs/ozon_report_config.py` (ПВЗ, таблицы, оверлей) и
+`configs/implementations/multi_step_ozon_config.py` (счетчик «Найдено: N» на шагах).
+
+Классы Ozon UI имеют вид `ozi__<компонент>__<элемент>__<hash>`. Хэш меняется при каждой пересборке фронтенда
+(так в версии 3.11.x сломались счетчик `caption-medium__v6V9R` → `__SCm2O` и список ПВЗ), поэтому селекторы
+сопоставляют только префикс класса без хэша, при необходимости уточняя его текстом:
+
+```text
+//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]
+```
+
+Как проверить селекторы на живой странице — в [DEBUG_GUIDE.md](../DEBUG_GUIDE.md).
+
 ## Что важно
 
 - `OzonReportParser` не должен содержать orchestration policy.

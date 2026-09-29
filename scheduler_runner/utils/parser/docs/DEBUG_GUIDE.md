@@ -6,7 +6,91 @@
 
 ---
 
-## 🔴 Актуальная проблема (март 2026)
+## 🔴 Актуальная проблема (сентябрь 2026): KPI не собираются с 03.07.2026
+
+### Симптомы
+
+- В листе `KPI` нет данных ни по одному ПВЗ после 03.07.2026.
+- Лог задачи содержит только `Подпроцесс завершился с кодом 1`, собственного лога процессора нет.
+- В логе парсера все попытки старта браузера (primary и fallback) падают:
+
+```
+ERROR Ошибка при настройке браузера Edge (phase=primary, попытка 1/3): Message: session not created: DevToolsActivePort file doesn't exist
+ERROR Параметры запуска браузера (phase=primary): --user-data-dir=C:\Users\<user>\AppData\Local\Microsoft\Edge\User Data, --profile-directory=Default
+ERROR BROWSER_FALLBACK_FAILED: аварийный обход headless=False не помог
+```
+
+### Причина 1: Edge запрещает Selenium на профиле по умолчанию
+
+Edge (Chromium) больше не разрешает DevTools remote debugging, если `--user-data-dir` совпадает с каталогом
+по умолчанию. Selenium подключается к браузеру именно через DevTools, поэтому Edge стартует, но порт
+управления не открывается. Проверка вручную:
+
+```bash
+msedge.exe --headless=new --remote-debugging-port=0 "--user-data-dir=%LOCALAPPDATA%\Microsoft\Edge\User Data"
+# DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.
+```
+
+С любым другим каталогом (`--user-data-dir=%TEMP%\x`) Edge пишет `DevTools listening on ws://...`.
+
+**Решение:** режим `EDGE_PROFILE_MODE = "snapshot"` (см. [BaseParser/setup_browser().md](BaseParser/setup_browser().md)):
+профиль пользователя с сохраненной сессией Ozon копируется в отдельный каталог, парсер работает с копией.
+Отдельный профиль с разовым входом (`dedicated`) не подходит: Ozon требует двухфакторную авторизацию,
+и каждое истечение сессии потребовало бы участия человека.
+
+### Причина 2: Ozon обновил фронтенд Турбо ПВЗ (версия 3.11.x)
+
+- Хэш классов компонента `ozi__text-view` сменился (`caption-medium__v6V9R` → `caption-medium__SCm2O`):
+  счетчик «Найдено: N» перестал находиться на всех трех шагах (выдача, прямой и возвратный поток).
+- Список ПВЗ больше не рендерится внутри `#ozi-window-teleport-target`: основные селекторы опций находили
+  0 элементов, ПВЗ выбирался только запасным селектором по тексту.
+
+**Решение:** селекторы сопоставляют префикс класса без хэша, например
+`//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]`.
+Хэш-суффиксы (`__SCm2O`, `__mpRrQ`, ...) в конфигах не используются.
+
+Как проверить селекторы на живой странице без запуска парсера: открыть страницу в обычном Edge,
+F12 → Console и вычислить XPath:
+
+```js
+document.evaluate("//div[contains(@class, 'ozi__text-view__caption-medium__')]", document, null,
+  XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength
+```
+
+Выпадающий список ПВЗ закрывается при переходе фокуса в консоль, поэтому проверку опций запускайте
+через `setTimeout(() => {...}, 5000)` и за 5 секунд откройте список мышкой.
+
+### Особенность сессии Ozon: одноразовый токен обновления
+
+Ozon допускает одну активную сессию на учетную запись. При использовании сессии выдается новый токен,
+старый отзывается, а повторное предъявление уже использованного токена закрывает сессию целиком
+(вход с другого устройства разрывает сессию на первом).
+
+Следствия для snapshot-режима:
+- после работы парсера обновленная сессия записывается обратно в профиль пользователя
+  (`EDGE_SNAPSHOT_SYNC`), иначе следующий запуск браузера в тот же вечер (failover, discovery, повтор)
+  попадет на страницу входа, а у сотрудника сессия окажется отозванной;
+- перед копированием Edge пользователя закрывается штатно (без `/f`), чтобы он успел сбросить cookies на диск;
+- вход под той же учетной записью в другом месте во время работы парсера разрывает его сессию.
+
+Типичная картина при отозванной сессии: переключение ПВЗ «проходит», но `ПВЗ после установки` остается
+прежним, а следующая навигация ведет на `/login`.
+
+### Поиск в логах
+
+```bash
+grep -a "EDGE_SNAPSHOT" logs/reports_domain/Parser/*.log            # копия профиля и обратная запись сессии
+grep -a "EDGE_SNAPSHOT_SYNC_SKIPPED" logs/reports_domain/Parser/*.log # Edge пользователя запускался во время работы
+grep -a "DevToolsActivePort" logs/reports_domain/Parser/*.log        # браузер не стартовал (профиль по умолчанию / занят)
+grep -a "СТРАНИЦУ ЛОГИНА" logs/reports_domain/Parser/*.log           # сессия Ozon недействительна
+```
+
+Если задача завершается с кодом 1 без лога процессора, проверьте импорт от имени пользователя задачи:
+`python -c "import scheduler_runner.tasks.reports.reports_processor"` — stderr подпроцесса пишется только на уровне DEBUG.
+
+---
+
+## 🟤 Проблема (март 2026)
 
 ### Проблема: Зависание парсера и сбой цикла выполнения (28.02.2026 — 01.03.2026)
 
@@ -620,6 +704,10 @@ grep -r "Backdrop check timeout" .\logs\reports_domain\Parser\
 ## 🔍 Диагностика SessionNotCreatedException (март 2026)
 
 ### Симптом: Парсер не запускается — ошибка сессии
+
+> С сентября 2026 основная причина `SessionNotCreatedException` с текстом `DevToolsActivePort file doesn't exist` —
+> запрет Edge на remote debugging для профиля по умолчанию, см. раздел «Актуальная проблема (сентябрь 2026)».
+> Описанный ниже случай с Lock-файлом относится к режиму `EDGE_PROFILE_MODE = "default"`.
 
 **Логи:**
 

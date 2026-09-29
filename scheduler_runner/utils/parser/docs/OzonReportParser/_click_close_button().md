@@ -39,7 +39,7 @@ def _click_close_button(self, selector: str) -> bool
 
 ```python
 # Клик по кнопке закрытия оверлея
-close_button_selector = "//button[contains(@class, 'ozi__window__closeIcon__-pkPv')]"
+close_button_selector = "//button[contains(@class, 'ozi__dialog__closeIcon__')]"  # без хэша класса
 if self._click_close_button(close_button_selector):
     if self.logger:
         self.logger.info("Оверлей закрыт")

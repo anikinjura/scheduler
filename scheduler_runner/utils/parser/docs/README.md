@@ -69,6 +69,25 @@ Lightweight discovery implementation.
 - собрать список PVZ, доступных данной учетной записи;
 - вернуть structured discovery result без report summary contract.
 
+## Browser session (Edge)
+
+Parser не выполняет вход в Ozon: учетная запись защищена двухфакторной авторизацией, поэтому используется
+сохраненная сессия сотрудника в его профиле Edge (вход в конце смены, запуск парсера после закрытия ПВЗ).
+
+Edge запрещает Selenium на профиле по умолчанию, поэтому по умолчанию используется режим `EDGE_PROFILE_MODE = "snapshot"`:
+1. Edge пользователя закрывается (штатно, затем принудительно);
+2. профиль без кэшей копируется в `%LOCALAPPDATA%/scheduler/EdgeParserSnapshot/User Data`;
+3. parser работает с копией;
+4. обновленная сессия возвращается в профиль пользователя (Ozon отзывает сессию при повторном использовании старого токена);
+5. копия удаляется.
+
+Ограничения:
+- Ozon допускает одну активную сессию на учетную запись: вход под ней в другом месте во время работы parser-а разрывает сессию;
+- parser должен запускаться от того пользователя Windows, в чьем профиле Edge выполнен вход в Турбо ПВЗ.
+
+Подробности: [BaseParser/setup_browser().md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/BaseParser/setup_browser().md),
+диагностика: [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md).
+
 ## Facade API
 
 Основные facade функции описаны в [ParserInvocation/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/ParserInvocation/README.md).
@@ -138,6 +157,18 @@ Legacy per-method markdown files в поддиректориях сохране�
 
 ```powershell
 .venv\Scripts\python.exe -m pytest scheduler_runner\utils\parser\core\tests\test_base_parser.py scheduler_runner\utils\parser\core\tests\test_base_report_parser.py scheduler_runner\utils\parser\core\tests\test_ozon_report_parser.py -q
+```
+
+Без pytest (например, на рабочей машине ПВЗ):
+
+```powershell
+python -m unittest scheduler_runner.utils.parser.core.tests.test_base_parser scheduler_runner.utils.parser.core.tests.test_base_report_parser scheduler_runner.utils.parser.core.tests.test_ozon_report_parser
+```
+
+Проверка на живом Ozon без выгрузки данных (закрывает Edge текущего пользователя):
+
+```powershell
+python -m scheduler_runner.utils.parser.tests.run_single_date_smoke --pvz ЧЕБОКСАРЫ_144 --execution_date 2026-09-28 --pretty
 ```
 
 Для live troubleshooting используйте [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md).

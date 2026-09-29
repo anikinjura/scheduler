@@ -17,7 +17,7 @@
 - `logout() -> bool`
   - абстрактная точка выхода.
 - `close_browser()`
-  - безопасно закрывает браузер и driver session.
+  - безопасно закрывает браузер и driver session; в режиме `snapshot` возвращает сессию в профиль пользователя и удаляет копию.
 - `dump_debug_artifacts(label) -> dict`
   - сохраняет screenshot/html/json metadata рядом с логами parser-а.
 - `get_element_value(...) -> str`
@@ -44,13 +44,31 @@
 
 Эти методы отвечают за устойчивый startup Edge, диагностику и fallback после headless/session startup failures.
 
+## Edge profile helpers
+
+Режим профиля задается `EDGE_PROFILE_MODE` (`snapshot` по умолчанию, `default`, `dedicated`).
+Edge запрещает Selenium (DevTools remote debugging) на профиле по умолчанию, поэтому в режиме `snapshot`
+парсер работает с копией профиля пользователя, где сохранена сессия Ozon. Подробности — в [setup_browser().md](setup_browser().md).
+
+- `_resolve_edge_runtime_user_data_dir(config) -> str`
+- `_resolve_edge_runtime_profile_directory(config) -> str`
+- `_is_snapshot_profile_mode(config) -> bool`
+- `_get_snapshot_user_data_dir() -> str`
+- `_create_edge_profile_snapshot(snapshot_user_data_dir, profile_directory) -> bool`
+- `_sync_edge_snapshot_back()`
+- `_replace_directory(src, dst)`
+- `_remove_edge_profile_snapshot(snapshot_user_data_dir)`
+- `_find_own_processes(process_name) -> list`
+- `_wait_for_own_processes_exit(process_name, timeout) -> bool`
+- `_close_browser_gracefully(browser_executable)`
+
 ## Environment и filesystem helpers
 
 - `_safe_get_current_user()`
 - `_get_default_browser_user_data_dir(username=None) -> str`
 - `_resolve_existing_edge_user_data_dir() -> Optional[str]`
 - `_get_current_user() -> str`
-- `_cleanup_lock_files(user_data_dir)`
+- `_cleanup_lock_files(user_data_dir, profile_directory="Default")`
 - `_terminate_browser_processes()`
 - `_get_file_mtime(path)`
 - `_get_disk_free_mb(path)`
