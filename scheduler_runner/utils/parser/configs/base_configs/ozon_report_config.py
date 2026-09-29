@@ -39,8 +39,9 @@ ozon_report_parser.py и обеспечивает базовую настрой�
 
 Примеры селекторов:
 - "pvz_input": "//input[@id='input___v-0-0' and @readonly]"
-- "pvz_dropdown": "//div[contains(@class, 'ozi__input__root__ie7wU') and contains(@class, 'ozi__input-select__root__UA4xr')]"
-- "pvz_option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__cDZcD')]"
+- "pvz_dropdown": "//div[contains(@class, 'ozi__input-select__root__')]"
+- "pvz_option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__')]"
+(хэш-суффиксы классов Ozon UI в селекторах не используются: они меняются при пересборке фронтенда)
 
 """
 __version__ = '0.0.1'
@@ -60,6 +61,9 @@ OZON_BASE_CONFIG = {
 # ====== ОПИСАНИЕ ОБЩИХ ПАРАМЕТРЫ ДЛЯ ИЗВЛЕЧЕНИЯ ДАННЫХ СО СТРАНИЦ OZON (используются в логике конкретного парсера под OZON) ======
 
     # === ОПИСАНИЕ ОБЩИХ СЕЛЕКТОРОВ ===
+    # Классы Ozon UI (ozi__<компонент>__<элемент>__<хэш>) содержат хэш, который меняется при каждой
+    # пересборке фронтенда, поэтому селекторы сопоставляют только префикс класса без хэша.
+    # С версии Турбо ПВЗ 3.11.x список ПВЗ рендерится вне #ozi-window-teleport-target.
     "selectors": {
         # Селлекторы для работы с выпадающим списком выбора конкретного ПВЗ
         "pvz_selectors": {
@@ -67,36 +71,39 @@ OZON_BASE_CONFIG = {
             "input_readonly": "//input[@id='input___v-0-0' and @readonly]",
             "input_class_readonly": "//input[contains(@class, 'ozi__input__input__') and @readonly]",
             "dropdown": "//div[@data-popover-reference='true' and .//input[@id='input___v-0-0']]",
-            "option": "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
-            "option_label": ".//div[contains(@class, 'ozi__data-content__label__TA_HC')]",  # XPath для получения текста метки опции
-            "selected_option": "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//svg[contains(@class, 'checkIcon')]]",
+            "option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__') and .//*[contains(@class, 'ozi__data-content__label__')]]",
+            "option_label": ".//div[contains(@class, 'ozi__data-content__label__')]",  # XPath для получения текста метки опции
+            "selected_option": "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__') and .//svg[contains(@class, 'checkIcon')]]",
             "input_candidates": [
                 "//input[@id='input___v-0-0' and @readonly]",
                 "//input[@id='input___v-0-0']",
                 "//input[contains(@class, 'ozi__input__input__') and @readonly]",
-                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]//input[@readonly]",
-                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]//input"
+                "//div[contains(@class, 'ozi__input-select__root__')][.//input[@id='input___v-0-0']]//input[@readonly]",
+                "//div[contains(@class, 'ozi__input-select__root__')][.//input[@id='input___v-0-0']]//input"
             ],
             "dropdown_candidates": [
                 "//div[@data-popover-reference='true' and .//input[@id='input___v-0-0']]",
                 "//div[contains(@class, 'ozi__input__container__') and @data-popover-reference='true' and .//input[@id='input___v-0-0']]",
-                "//div[contains(@class, 'ozi__input-select__inputSelect__UA4xr')][.//input[@id='input___v-0-0']]",
-                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@id='input___v-0-0']]",
-                "//div[contains(@class, 'ozi__input-select__root__UA4xr')][.//input[@readonly and @value]]"
+                "//div[contains(@class, 'ozi__input-select__inputSelect__')][.//input[@id='input___v-0-0']]",
+                "//div[contains(@class, 'ozi__input-select__root__')][.//input[@id='input___v-0-0']]",
+                "//div[contains(@class, 'ozi__input-select__root__')][.//input[@readonly and @value]]"
             ],
+            # Порядок важен: каждая неудачная попытка кликает по dropdown и может закрыть список,
+            # поэтому первым идет селектор, соответствующий актуальной разметке.
             "option_candidates": [
-                "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
-                "//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__')]//*[contains(@class, 'ozi__data-content__label__') and normalize-space()='{target_pvz}']",
                 "//*[contains(@class, 'ozi__data-content__label__') and normalize-space()='{target_pvz}']",
+                "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
                 "//*[normalize-space()='{target_pvz}']"
             ],
             "options_container_candidates": [
-                "//*[@id='ozi-window-teleport-target']",
                 "//div[contains(@class, 'ozi__dropdown__dropdown__')]",
+                "//*[@id='ozi-window-teleport-target']",
                 "//div[contains(@class, 'ozi__popover__content__')]",
                 "//div[contains(@class, 'ozi__select-options__')]",
             ],
             "option_item_candidates": [
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__') and .//*[contains(@class, 'ozi__data-content__label__')]]",
                 "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
                 "//div[contains(@class, 'ozi__dropdown-item') and .//*[contains(@class, 'ozi__data-content__label__')]]",
             ],
@@ -106,6 +113,7 @@ OZON_BASE_CONFIG = {
                 ".//*[normalize-space()]",
             ],
             "selected_option_candidates": [
+                "//div[contains(@class, 'ozi__dropdown-item__dropdownItem__') and .//svg[contains(@class, 'checkIcon')]]",
                 "//*[@id='ozi-window-teleport-target']//div[contains(@class, 'ozi__dropdown-item') and .//svg[contains(@class, 'checkIcon')]]",
                 "//div[contains(@class, 'ozi__dropdown-item') and .//svg[contains(@class, 'checkIcon')]]",
                 "//li[.//svg[contains(@class, 'checkIcon')]]",
@@ -119,7 +127,7 @@ OZON_BASE_CONFIG = {
     "table_configs": {
         # Конфигурация для таблицы перевозок Ozon
         "carriages_table": {
-            "table_selector": "//table[contains(@class, 'ozi__table__table__HAe8A')]", # Селектор таблицы, по которому будет производиться поиск самой таблицы
+            "table_selector": "//table[contains(@class, 'ozi__table__table__')]", # Селектор таблицы, по которому будет производиться поиск самой таблицы
             "table_type": "standard", # Тип таблицы: 'standard', 'dynamic' и т.д.
             # Описание колонок таблицы
             "table_columns": [
@@ -160,10 +168,11 @@ OZON_BASE_CONFIG = {
     # Параметры для проверки и закрытия информационных оверлеев Ozon
     "overlay_config": {
         "enabled": True,  # Флаг включения проверки оверлея
-        "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__C2BB8')]",  # Селектор оверлея (модального окна)
+        "overlay_selector": "//div[contains(@class, 'ozi__dialog__dialog__')]",  # Селектор оверлея (модального окна)
         "close_button_selector": "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",  # Селектор кнопки "Отложить"
         "close_button_candidates": [
             "//button[contains(@class, 'ozi__button') and normalize-space()='Отложить']",
+            "//button[contains(@class, 'ozi__dialog__closeIcon__')]",  # Крестик самого диалога (надежнее общего icon-button ниже)
             "//button[contains(@class, '_exitButton_')]",
             "//button[contains(@class, 'ozi__icon-button__iconButton__') and contains(@class, '_exitButton_')]",
             "//button[@aria-label='Закрыть']",

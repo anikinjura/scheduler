@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock, PropertyMock
 import subprocess
 import os
+import shutil
+import tempfile
 from scheduler_runner.utils.parser.core.base_parser import BaseParser
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -121,6 +123,138 @@ class TestBaseParser(unittest.TestCase):
         self.parser.config['EDGE_PROFILE_FALLBACK_TO_DEFAULT'] = False
         result = self.parser._resolve_edge_runtime_profile_directory(self.parser.config['browser_config'])
         self.assertEqual(result, "ParserProfile")
+
+    def _make_snapshot_dirs(self):
+        """Создает временные исходный профиль Edge и каталог для snapshot."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        source = os.path.join(root, "source", "User Data")
+        os.makedirs(os.path.join(source, "Default", "Network"))
+        os.makedirs(os.path.join(source, "Default", "Cache"))
+        os.makedirs(os.path.join(source, "Default", "Local Storage"))
+        for rel in ("Local State", "Default/Network/Cookies", "Default/Preferences", "Default/Cache/data_0",
+                    "Default/Lock", "Default/Local Storage/old.ldb"):
+            with open(os.path.join(source, rel), "w") as f:
+                f.write("x")
+        snapshot = os.path.join(root, "snapshot", "User Data")
+        self.parser.config['EDGE_USER_DATA_DIR'] = ''
+        self.parser.config['EDGE_PROFILE_MODE'] = 'snapshot'
+        self.parser.config['EDGE_SNAPSHOT_USER_DATA_DIR'] = snapshot
+        self.parser.config['EDGE_SNAPSHOT_EXCLUDE'] = ['Cache']
+        self.parser.config['EDGE_SNAPSHOT_SYNC_BACK'] = ['Network/Cookies', 'Network/Cookies-journal', 'Local Storage']
+        self.parser.config['BROWSER_GRACEFUL_CLOSE_TIMEOUT'] = 0
+        return source, snapshot
+
+    def _snapshot_with_new_session(self):
+        """Создает snapshot и имитирует обновление сессии браузером парсера (новый токен в копии)."""
+        source, snapshot = self._make_snapshot_dirs()
+        with patch.object(self.parser, '_get_default_browser_user_data_dir', return_value=source):
+            self.assertTrue(self.parser._create_edge_profile_snapshot(snapshot, "Default"))
+        with open(os.path.join(snapshot, "Default", "Network", "Cookies"), "w") as f:
+            f.write("new-token")
+        os.remove(os.path.join(snapshot, "Default", "Local Storage", "old.ldb"))
+        with open(os.path.join(snapshot, "Default", "Local Storage", "new.ldb"), "w") as f:
+            f.write("new")
+        return source, snapshot
+
+    def _read(self, path):
+        with open(path) as f:
+            return f.read()
+
+    def test_sync_edge_snapshot_back_returns_session_to_profile(self):
+        """Обновленная сессия из snapshot записывается в живой профиль, журнал старой базы удаляется."""
+        source, _snapshot = self._snapshot_with_new_session()
+        with open(os.path.join(source, "Default", "Network", "Cookies-journal"), "w") as f:
+            f.write("stale")
+        with patch.object(self.parser, '_find_own_processes', return_value=[]):
+            self.parser._sync_edge_snapshot_back()
+        self.assertEqual(self._read(os.path.join(source, "Default", "Network", "Cookies")), "new-token")
+        self.assertEqual(os.listdir(os.path.join(source, "Default", "Local Storage")), ["new.ldb"])
+        self.assertFalse(os.path.exists(os.path.join(source, "Default", "Network", "Cookies-journal")))
+
+    def test_sync_edge_snapshot_back_skipped_when_profile_cookies_changed(self):
+        """Если Edge пользователя обновил cookies во время работы парсера, профиль не перезаписывается."""
+        source, _snapshot = self._snapshot_with_new_session()
+        cookies = os.path.join(source, "Default", "Network", "Cookies")
+        os.utime(cookies, (os.path.getmtime(cookies) + 60, os.path.getmtime(cookies) + 60))
+        with patch.object(self.parser, '_find_own_processes', return_value=[]):
+            self.parser._sync_edge_snapshot_back()
+        self.assertEqual(self._read(cookies), "x")
+
+    def test_sync_edge_snapshot_back_skipped_when_user_edge_running(self):
+        """Если Edge пользователя запущен, профиль не перезаписывается."""
+        source, _snapshot = self._snapshot_with_new_session()
+        with patch.object(self.parser, '_find_own_processes', return_value=[Mock()]):
+            self.parser._sync_edge_snapshot_back()
+        self.assertEqual(self._read(os.path.join(source, "Default", "Network", "Cookies")), "x")
+
+    def test_close_browser_syncs_snapshot_only_after_driver_run(self):
+        """Обратная запись выполняется только если браузер парсера реально работал."""
+        _source, snapshot = self._snapshot_with_new_session()
+        self.parser.driver = Mock()
+        with patch.object(self.parser, '_sync_edge_snapshot_back') as mock_sync:
+            self.parser.close_browser()
+        mock_sync.assert_called_once()
+        self.assertFalse(os.path.exists(snapshot))
+
+    @patch('scheduler_runner.utils.parser.core.base_parser.subprocess.run')
+    def test_close_browser_gracefully_uses_taskkill_without_force(self, mock_subprocess_run):
+        """Штатное закрытие Edge пользователя выполняется taskkill без /f."""
+        with patch.object(self.parser, '_find_own_processes', side_effect=[[Mock()], []]):
+            self.parser._close_browser_gracefully('msedge.exe')
+        mock_subprocess_run.assert_called_once_with(
+            ["taskkill", "/im", "msedge.exe"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+    def test_resolve_edge_runtime_dirs_snapshot_mode(self):
+        """В snapshot-режиме runtime user-data-dir указывает на копию, профиль остается Default."""
+        _source, snapshot = self._make_snapshot_dirs()
+        browser_config = self.parser.config['browser_config']
+        self.assertTrue(self.parser._is_snapshot_profile_mode(browser_config))
+        self.assertEqual(self.parser._resolve_edge_runtime_user_data_dir(browser_config), snapshot)
+        self.assertEqual(self.parser._resolve_edge_runtime_profile_directory(browser_config), "Default")
+
+    def test_snapshot_mode_disabled_by_explicit_user_data_dir(self):
+        """Явно заданный user-data-dir отключает snapshot-режим."""
+        self._make_snapshot_dirs()
+        self.parser.config['EDGE_USER_DATA_DIR'] = 'explicit_dir'
+        self.assertFalse(self.parser._is_snapshot_profile_mode(self.parser.config['browser_config']))
+
+    def test_create_edge_profile_snapshot_copies_profile_without_excluded(self):
+        """Snapshot содержит Local State и профиль, но без кэшей и lock-файлов."""
+        source, snapshot = self._make_snapshot_dirs()
+        with patch.object(self.parser, '_get_default_browser_user_data_dir', return_value=source):
+            self.assertTrue(self.parser._create_edge_profile_snapshot(snapshot, "Default"))
+        self.assertTrue(os.path.exists(os.path.join(snapshot, "Local State")))
+        self.assertTrue(os.path.exists(os.path.join(snapshot, "Default", "Network", "Cookies")))
+        self.assertTrue(os.path.exists(os.path.join(snapshot, "Default", "Preferences")))
+        self.assertFalse(os.path.exists(os.path.join(snapshot, "Default", "Cache")))
+        self.assertFalse(os.path.exists(os.path.join(snapshot, "Default", "Lock")))
+
+    def test_create_edge_profile_snapshot_fails_when_cookies_locked(self):
+        """Если Cookies не скопировались (Edge пользователя запущен), snapshot считается неудачным."""
+        source, snapshot = self._make_snapshot_dirs()
+        cookies = os.path.join(source, "Default", "Network", "Cookies")
+        locked = shutil.Error([(cookies, os.path.join(snapshot, "Default", "Network", "Cookies"), "locked")])
+        with patch.object(self.parser, '_get_default_browser_user_data_dir', return_value=source), \
+                patch('scheduler_runner.utils.parser.core.base_parser.shutil.copytree', side_effect=locked):
+            self.assertFalse(self.parser._create_edge_profile_snapshot(snapshot, "Default"))
+
+    def test_create_edge_profile_snapshot_refuses_same_dir_as_source(self):
+        """Snapshot не создается поверх исходного профиля."""
+        source, _snapshot = self._make_snapshot_dirs()
+        with patch.object(self.parser, '_get_default_browser_user_data_dir', return_value=source):
+            self.assertFalse(self.parser._create_edge_profile_snapshot(source, "Default"))
+        self.assertTrue(os.path.exists(os.path.join(source, "Default", "Network", "Cookies")))
+
+    def test_close_browser_removes_snapshot(self):
+        """После закрытия браузера копия профиля с cookies удаляется."""
+        source, snapshot = self._make_snapshot_dirs()
+        with patch.object(self.parser, '_get_default_browser_user_data_dir', return_value=source):
+            self.assertTrue(self.parser._create_edge_profile_snapshot(snapshot, "Default"))
+        self.parser.close_browser()
+        self.assertFalse(os.path.exists(snapshot))
+        self.assertTrue(os.path.exists(os.path.join(source, "Default", "Network", "Cookies")))
 
     @patch('scheduler_runner.utils.parser.core.base_parser.webdriver.Edge')
     @patch('scheduler_runner.utils.parser.core.base_parser.os.path.exists', return_value=True)
