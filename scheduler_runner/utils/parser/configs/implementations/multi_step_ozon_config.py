@@ -52,7 +52,7 @@ MULTI_STEP_OZON_CONFIG = {
                 # Параметры для простой обработки
                 "data_extraction": {
                     "type": "simple",
-                    "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R')]",
+                    "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                     "pattern": r'Найдено:\s*(\d+)',                                                       # Паттерн для "Найдено: N"
                     "element_type": "div",
                     "post_processing": {
@@ -93,7 +93,7 @@ MULTI_STEP_OZON_CONFIG = {
                     "data_type_filter_template": '"articleState":"Took","articleType":"ArticlePosting"',
 
                     "data_extraction": {
-                        "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R')]",
+                        "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                         "pattern": r'Найдено:\s*(\d+)',
                         "element_type": "div",
                         "post_processing": {
@@ -139,7 +139,7 @@ MULTI_STEP_OZON_CONFIG = {
                     "data_type_filter_template": '"articleState":"Took","articleType":"ArticlePosting"',
 
                     "data_extraction": {
-                        "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__v6V9R')]",
+                        "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                         "pattern": r'Найдено:\s*(\d+)',
                         "element_type": "div",
                         "post_processing": {

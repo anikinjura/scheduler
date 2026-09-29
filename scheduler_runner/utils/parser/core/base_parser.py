@@ -184,6 +184,9 @@ class BaseParser(ABC):
         # Получаем runtime user-data-dir и profile directory для текущего режима Edge.
         user_data_dir = self._resolve_edge_runtime_user_data_dir(config)
         profile_directory = self._resolve_edge_runtime_profile_directory(config)
+        if self._is_snapshot_profile_mode(config):
+            if not self._create_edge_profile_snapshot(user_data_dir, profile_directory):
+                return False
         self._ensure_edge_runtime_profile_initialized(user_data_dir, profile_directory)
             
         if self.logger:
@@ -715,6 +718,7 @@ class BaseParser(ABC):
         """Закрытие браузера и освобождение ресурсов"""
         if self.logger:
             self.logger.trace("Попали в метод BaseParser.close_browser")
+        had_driver = self.driver is not None
         if self.driver:
             if self.logger:
                 self.logger.debug("Закрытие браузера")
@@ -735,6 +739,13 @@ class BaseParser(ABC):
         else:
             if self.logger:
                 self.logger.debug("Драйвер не инициализирован, закрывать нечего")
+
+        browser_config = self.config.get('browser_config', {})
+        if self._is_snapshot_profile_mode(browser_config):
+            if had_driver:
+                self._sync_edge_snapshot_back()
+            self._edge_snapshot_state = None
+            self._remove_edge_profile_snapshot(self._resolve_edge_runtime_user_data_dir(browser_config))
 
     def dump_debug_artifacts(self, label: str) -> dict:
         """Сохраняет screenshot и HTML текущей страницы для отладки runtime-сбоев."""
@@ -1117,6 +1128,10 @@ class BaseParser(ABC):
             force_kill_browser = self.config.get('FORCE_TERMINATE_BROWSER_PROCESSES', False)
             process_names_to_kill = list(driver_executables)
             if force_kill_browser:
+                # Сначала штатное закрытие: Edge сбрасывает cookies на диск. После taskkill /f на диске
+                # может остаться уже использованный токен обновления Ozon, и его повторное
+                # предъявление из snapshot сервер расценит как кражу сессии.
+                self._close_browser_gracefully(browser_executable)
                 process_names_to_kill.append(browser_executable)
 
             if self.logger:
@@ -1181,6 +1196,46 @@ class BaseParser(ABC):
             if self.logger:
                 self.logger.warning(f"Ошибка при завершении bootstrap-процессов браузера: {e}")
 
+    def _find_own_processes(self, process_name: str) -> list:
+        """Возвращает процессы с указанным именем, принадлежащие текущему пользователю Windows."""
+        current_user = (self._safe_get_current_user() or "").lower()
+        own_processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'username']):
+            proc_name = (proc.info.get('name') or '').lower()
+            if process_name.lower() not in proc_name:
+                continue
+            # Для процессов других пользователей psutil возвращает username=None (AccessDenied)
+            owner = (proc.info.get('username') or '').split('\\')[-1].lower()
+            if owner and owner == current_user:
+                own_processes.append(proc)
+        return own_processes
+
+    def _wait_for_own_processes_exit(self, process_name: str, timeout: float) -> bool:
+        """Ждет завершения процессов текущего пользователя; True, если все завершились."""
+        deadline = time.time() + timeout
+        while self._find_own_processes(process_name):
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.5)
+        return True
+
+    def _close_browser_gracefully(self, browser_executable: str) -> None:
+        """Штатно закрывает Edge текущего пользователя (без /f), чтобы он сохранил cookies на диск."""
+        try:
+            if not self._find_own_processes(browser_executable):
+                return
+            subprocess.run(["taskkill", "/im", browser_executable], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            timeout = self.config.get('BROWSER_GRACEFUL_CLOSE_TIMEOUT', 10)
+            closed = self._wait_for_own_processes_exit(browser_executable, timeout)
+            if self.logger:
+                if closed:
+                    self.logger.debug("Edge пользователя закрыт штатно")
+                else:
+                    self.logger.debug(f"Edge пользователя не закрылся штатно за {timeout} с, будет завершен принудительно")
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Ошибка при штатном закрытии Edge: {e}")
+
     def _get_default_browser_user_data_dir(self, username: Optional[str] = None) -> str:
         """
         Возвращает путь к пользовательским данным браузера для указанного пользователя.
@@ -1218,6 +1273,9 @@ class BaseParser(ABC):
             return explicit_user_data_dir
 
         profile_mode = self.config.get("EDGE_PROFILE_MODE", "default")
+        if profile_mode == "snapshot":
+            return self._get_snapshot_user_data_dir()
+
         fallback_to_default = bool(self.config.get("EDGE_PROFILE_FALLBACK_TO_DEFAULT", False))
         if profile_mode == "dedicated" and not fallback_to_default:
             explicit_automation_dir = (self.config.get("EDGE_AUTOMATION_USER_DATA_DIR", "") or "").strip()
@@ -1238,6 +1296,168 @@ class BaseParser(ABC):
         if profile_mode == "dedicated" and not fallback_to_default:
             return self.config.get("EDGE_AUTOMATION_PROFILE_DIRECTORY", "ParserProfile")
         return "Default"
+
+    def _is_snapshot_profile_mode(self, config: Dict[str, Any]) -> bool:
+        """Snapshot-режим активен, если он выбран в конфиге и user-data-dir не задан явно."""
+        explicit_user_data_dir = (config.get('user_data_dir', '') or self.config.get('EDGE_USER_DATA_DIR', '')).strip()
+        return self.config.get("EDGE_PROFILE_MODE", "default") == "snapshot" and not explicit_user_data_dir
+
+    def _get_snapshot_user_data_dir(self) -> str:
+        """Возвращает путь к user-data-dir, куда копируется профиль пользователя в snapshot-режиме."""
+        explicit_snapshot_dir = (self.config.get("EDGE_SNAPSHOT_USER_DATA_DIR", "") or "").strip()
+        if explicit_snapshot_dir:
+            return explicit_snapshot_dir
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip() or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        return os.path.join(local_app_data, "scheduler", "EdgeParserSnapshot", "User Data")
+
+    def _create_edge_profile_snapshot(self, snapshot_user_data_dir: str, profile_directory: str) -> bool:
+        """
+        Копирует живой профиль Edge пользователя (Local State + профиль, без кэшей) в отдельный user-data-dir.
+
+        Edge не разрешает DevTools remote debugging (а значит и Selenium) на user-data-dir по умолчанию,
+        поэтому парсер работает с копией: сессия Ozon (cookies, storage) в ней та же, что у пользователя.
+        Процессы Edge пользователя к этому моменту должны быть завершены, иначе Cookies заблокированы.
+        """
+        source_user_data_dir = self._get_default_browser_user_data_dir()
+        source_profile = os.path.join(source_user_data_dir, profile_directory)
+        if os.path.normcase(os.path.abspath(source_user_data_dir)) == os.path.normcase(os.path.abspath(snapshot_user_data_dir)):
+            if self.logger:
+                self.logger.error(f"EDGE_SNAPSHOT: каталог копии совпадает с исходным профилем: {snapshot_user_data_dir}")
+            return False
+        if not os.path.isdir(source_profile):
+            if self.logger:
+                self.logger.error(f"EDGE_SNAPSHOT: исходный профиль не найден: {source_profile}")
+            return False
+
+        excluded = set(self.config.get("EDGE_SNAPSHOT_EXCLUDE", [])) | {"Lock", "LOCK", "SingletonLock"}
+        started = time.time()
+        self._remove_edge_profile_snapshot(snapshot_user_data_dir)
+        try:
+            os.makedirs(snapshot_user_data_dir, exist_ok=True)
+            local_state = os.path.join(source_user_data_dir, "Local State")
+            if os.path.exists(local_state):
+                shutil.copy2(local_state, os.path.join(snapshot_user_data_dir, "Local State"))
+            shutil.copytree(
+                source_profile,
+                os.path.join(snapshot_user_data_dir, profile_directory),
+                ignore=lambda _dir, names: [n for n in names if n in excluded],
+            )
+        except shutil.Error as e:
+            failed = [str(src) for src, _dst, _why in e.args[0]]
+            cookies_failed = any(os.path.join("Network", "Cookies") in path for path in failed)
+            if self.logger:
+                log = self.logger.error if cookies_failed else self.logger.warning
+                log(f"EDGE_SNAPSHOT: не скопировано файлов: {len(failed)} (первые: {failed[:3]})")
+            if cookies_failed:
+                if self.logger:
+                    self.logger.error("EDGE_SNAPSHOT: Cookies не скопированы (Edge пользователя ещё запущен?), сессии в копии не будет")
+                return False
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"EDGE_SNAPSHOT: ошибка копирования профиля: {e}")
+            return False
+
+        self._edge_snapshot_state = {
+            "snapshot_profile": os.path.join(snapshot_user_data_dir, profile_directory),
+            "source_profile": source_profile,
+            "source_cookies_mtime": self._get_file_mtime(os.path.join(source_profile, "Network", "Cookies")),
+        }
+        if self.logger:
+            self.logger.info(
+                f"EDGE_SNAPSHOT: профиль скопирован за {time.time() - started:.1f} с: "
+                f"{source_profile} -> {snapshot_user_data_dir}"
+            )
+        return True
+
+    @staticmethod
+    def _get_file_mtime(path: str) -> Optional[float]:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return None
+
+    def _sync_edge_snapshot_back(self) -> None:
+        """
+        Возвращает обновленную сессию из snapshot в живой профиль пользователя.
+
+        Ozon выдает при обновлении сессии новый токен и отзывает старый, а повторное предъявление
+        старого токена закрывает сессию целиком. Без обратной записи в профиле пользователя
+        остается отозванный токен: следующий запуск парсера (или сотрудник) попадет на страницу входа.
+        Запись пропускается, если Edge пользователя запускался во время работы парсера.
+        """
+        state = getattr(self, "_edge_snapshot_state", None)
+        if not state:
+            return
+        browser_executable = self.config.get('BROWSER_EXECUTABLE', 'msedge.exe')
+        if not self._wait_for_own_processes_exit(browser_executable, self.config.get('BROWSER_GRACEFUL_CLOSE_TIMEOUT', 10)):
+            if self.logger:
+                self.logger.warning("EDGE_SNAPSHOT_SYNC_SKIPPED: Edge пользователя запущен, сессия в профиль не возвращена")
+            return
+
+        snapshot_profile = state["snapshot_profile"]
+        source_profile = state["source_profile"]
+        current_mtime = self._get_file_mtime(os.path.join(source_profile, "Network", "Cookies"))
+        if current_mtime != state["source_cookies_mtime"]:
+            if self.logger:
+                self.logger.warning(
+                    "EDGE_SNAPSHOT_SYNC_SKIPPED: cookies профиля изменились во время работы парсера "
+                    "(Edge пользователя запускался), сессия в профиль не возвращена"
+                )
+            return
+
+        synced = []
+        try:
+            for relative_path in self.config.get("EDGE_SNAPSHOT_SYNC_BACK", []):
+                src = os.path.join(snapshot_profile, relative_path)
+                dst = os.path.join(source_profile, relative_path)
+                if not os.path.exists(src):
+                    continue
+                if os.path.isdir(src):
+                    self._replace_directory(src, dst)
+                else:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                synced.append(relative_path)
+            # Журнал SQLite от старой базы нельзя оставлять рядом с новой Cookies: он будет применен к ней
+            stale_journal = os.path.join(source_profile, "Network", "Cookies-journal")
+            if not os.path.exists(os.path.join(snapshot_profile, "Network", "Cookies-journal")) and os.path.exists(stale_journal):
+                os.remove(stale_journal)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"EDGE_SNAPSHOT_SYNC_FAILED: ошибка возврата сессии в профиль (выполнено: {synced}): {e}")
+            return
+
+        if self.logger:
+            self.logger.info(f"EDGE_SNAPSHOT_SYNC: сессия возвращена в профиль пользователя: {synced}")
+
+    @staticmethod
+    def _replace_directory(src: str, dst: str) -> None:
+        """Заменяет каталог dst копией src так, чтобы при сбое копирования исходный dst сохранился."""
+        tmp_dst = dst + ".sync_tmp"
+        old_dst = dst + ".sync_old"
+        shutil.rmtree(tmp_dst, ignore_errors=True)
+        shutil.rmtree(old_dst, ignore_errors=True)
+        shutil.copytree(src, tmp_dst)
+        if os.path.exists(dst):
+            os.rename(dst, old_dst)
+        os.rename(tmp_dst, dst)
+        shutil.rmtree(old_dst, ignore_errors=True)
+
+    def _remove_edge_profile_snapshot(self, snapshot_user_data_dir: str) -> None:
+        """Удаляет копию профиля: в ней рабочие cookies сессии, хранить их на диске не нужно."""
+        if not snapshot_user_data_dir or not os.path.exists(snapshot_user_data_dir):
+            return
+        for attempt in range(3):
+            shutil.rmtree(snapshot_user_data_dir, ignore_errors=True)
+            if not os.path.exists(snapshot_user_data_dir):
+                if self.logger:
+                    self.logger.debug(f"EDGE_SNAPSHOT: копия профиля удалена: {snapshot_user_data_dir}")
+                return
+            time.sleep(1)  # процессы Edge могут освобождать файлы с задержкой
+        if self.logger:
+            self.logger.warning(f"EDGE_SNAPSHOT: не удалось полностью удалить копию профиля: {snapshot_user_data_dir}")
 
     def _ensure_edge_runtime_profile_initialized(self, user_data_dir: str, profile_directory: str) -> None:
         """Гарантирует существование runtime user-data-dir и profile directory."""
