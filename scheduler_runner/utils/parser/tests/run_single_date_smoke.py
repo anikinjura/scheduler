@@ -12,6 +12,7 @@ import sys
 
 from scheduler_runner.utils.parser import invoke_parser_for_single_date
 from scheduler_runner.utils.parser.parser_invocation import create_parser_logger
+from scheduler_runner.utils.parser.configs.implementations.multi_step_ozon_config import MULTI_STEP_OZON_CONFIG
 
 
 def parse_args():
@@ -39,12 +40,21 @@ def parse_args():
         action="store_true",
         help="Pretty-print JSON output",
     )
+    parser.add_argument(
+        "--data_source",
+        choices=["dom", "shadow", "api_with_dom_fallback", "api"],
+        default=None,
+        help="Override DATA_SOURCE_MODE for this run (see docs/MODERNIZATION_PLAN.md)",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     logger = create_parser_logger()
+    if args.data_source:
+        # invoke_parser_for_single_date копирует MULTI_STEP_OZON_CONFIG — переопределение действует на этот запуск
+        MULTI_STEP_OZON_CONFIG["DATA_SOURCE_MODE"] = args.data_source
 
     try:
         result = invoke_parser_for_single_date(

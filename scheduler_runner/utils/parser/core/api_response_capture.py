@@ -78,7 +78,7 @@ HOOK_TEMPLATE = r"""
 class ApiResponseCapture:
     """Установка перехватчика в браузер и чтение перехваченных ответов."""
 
-    def __init__(self, wait_timeout: float = 15.0, poll_interval: float = 0.5,
+    def __init__(self, wait_timeout: float = 30.0, poll_interval: float = 0.5,
                  max_records: int = 500, max_body_chars: int = 2_000_000, logger=None):
         self.wait_timeout = wait_timeout
         self.poll_interval = poll_interval
@@ -90,7 +90,7 @@ class ApiResponseCapture:
     def from_config(cls, config: Optional[Dict[str, Any]], logger=None) -> "ApiResponseCapture":
         config = config or {}
         return cls(
-            wait_timeout=float(config.get("wait_timeout", 15)),
+            wait_timeout=float(config.get("wait_timeout", 30)),
             poll_interval=float(config.get("poll_interval", 0.5)),
             max_records=int(config.get("max_records", 500)),
             max_body_chars=int(config.get("max_body_chars", 2_000_000)),

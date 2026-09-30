@@ -55,12 +55,26 @@ MULTI_STEP_OZON_CONFIG = {
                     "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                     "pattern": r'Найдено:\s*(\d+)',                                                       # Паттерн для "Найдено: N"
                     "element_type": "div",
+                    # Не required: при 0 выдач Ozon не показывает счетчик «Найдено» вовсе, и в разметке настоящий 0
+                    # неотличим от незагрузившейся страницы (проверено 30.09.2026 на дате без данных). Надежно — только
+                    # в режиме API (logV2.totalCount = 0 явно). Счетчик на странице перевозки — required (он всегда > 0).
                     "post_processing": {
                         "convert_to": "int",
                         "default_value": 0
                     }
                 },
-                "result_key": "giveout_count"
+                "result_key": "giveout_count",
+
+                # Извлечение из ответа API (DATA_SOURCE_MODE != "dom", docs/MODERNIZATION_PLAN.md)
+                "api_extraction": {
+                    "type": "value",
+                    "request": {
+                        "path": "/api2/reports/give_out/logV2",
+                        "query_contains": {"startDate": "{date}T00:00+03:00", "operationTypes": "GiveoutAll"},
+                    },
+                    "value_path": "logV2.totalCount",
+                    "post_processing": {"convert_to": "int"},  # без default_value: нет поля — ошибка, а не 0
+                },
             },
             "direct_flow": {
                 # Общие параметры для навигации
@@ -88,6 +102,9 @@ MULTI_STEP_OZON_CONFIG = {
                 # Параметры для вложенной обработки
                 "nested_processing": {
                     "enabled": True,
+                    # strict: таблица не найдена, страница перевозки не открылась или счетчик пуст — ошибка шага,
+                    # а не молчаливый пропуск перевозки (занижение суммы). Пустая таблица (0 перевозок) — честный 0.
+                    "strict": True,
                     "base_url_template": "https://turbo-pvz.ozon.ru/outbound/carriages-archive/{carriage_id}",
                     "filter_template": "?filter={{{data_type_filter_template}}}",
                     "data_type_filter_template": '"articleState":"Took","articleType":"ArticlePosting"',
@@ -96,6 +113,7 @@ MULTI_STEP_OZON_CONFIG = {
                         "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                         "pattern": r'Найдено:\s*(\d+)',
                         "element_type": "div",
+                        "required": True,
                         "post_processing": {
                             "convert_to": "int",
                             "default_value": 0
@@ -106,7 +124,25 @@ MULTI_STEP_OZON_CONFIG = {
                         "target_field": "total_carriages"  # Поле, в которое будут агрегироваться результаты
                     }
                 },
-                "result_key": "direct_flow_data"
+                "result_key": "direct_flow_data",
+
+                # Извлечение из ответов API: список перевозок, затем число отправлений на странице каждой перевозки
+                "api_extraction": {
+                    "type": "list_nested",
+                    "list_request": {
+                        "path": "/api2/reports/CarriageReport/GetCarriages",
+                        "query_contains": {"startSentMoment": "{date}T00:00:00+03:00", "flowType": "Direct"},
+                    },
+                    "items_path": "carriages",
+                    "id_field": "carriageId",
+                    "total_path": "totalCount",
+                    "nested_request": {
+                        "path": "/api2/reports/CarriageReport/GetCarriageArticles",
+                        "query_contains": {"carriageId": "{identifier}", "articleState": "Took", "articleType": "ArticlePosting"},
+                    },
+                    "nested_value_path": "totalCount",
+                    "post_processing": {"convert_to": "int"},
+                },
             },
             "return_flow": {
                 # Общие параметры для навигации
@@ -134,6 +170,9 @@ MULTI_STEP_OZON_CONFIG = {
                 # Параметры для вложенной обработки
                 "nested_processing": {
                     "enabled": True,
+                    # strict: таблица не найдена, страница перевозки не открылась или счетчик пуст — ошибка шага,
+                    # а не молчаливый пропуск перевозки (занижение суммы). Пустая таблица (0 перевозок) — честный 0.
+                    "strict": True,
                     "base_url_template": "https://turbo-pvz.ozon.ru/outbound/carriages-archive/{carriage_id}",
                     "filter_template": "?filter={{{data_type_filter_template}}}",
                     "data_type_filter_template": '"articleState":"Took","articleType":"ArticlePosting"',
@@ -142,6 +181,7 @@ MULTI_STEP_OZON_CONFIG = {
                         "selector": "//div[contains(@class, 'ozi__text-view__caption-medium__') and contains(normalize-space(.), 'Найдено')]",  # без хэша класса: он меняется при пересборке фронтенда Ozon
                         "pattern": r'Найдено:\s*(\d+)',
                         "element_type": "div",
+                        "required": True,
                         "post_processing": {
                             "convert_to": "int",
                             "default_value": 0
@@ -152,7 +192,25 @@ MULTI_STEP_OZON_CONFIG = {
                         "target_field": "total_carriages"  # Поле, в которое будут агрегироваться результаты
                     }
                 },
-                "result_key": "return_flow_data"
+                "result_key": "return_flow_data",
+
+                # Извлечение из ответов API: список перевозок, затем число отправлений на странице каждой перевозки
+                "api_extraction": {
+                    "type": "list_nested",
+                    "list_request": {
+                        "path": "/api2/reports/CarriageReport/GetCarriages",
+                        "query_contains": {"startSentMoment": "{date}T00:00:00+03:00", "flowType": "Return"},
+                    },
+                    "items_path": "carriages",
+                    "id_field": "carriageId",
+                    "total_path": "totalCount",
+                    "nested_request": {
+                        "path": "/api2/reports/CarriageReport/GetCarriageArticles",
+                        "query_contains": {"carriageId": "{identifier}", "articleState": "Took", "articleType": "ArticlePosting"},
+                    },
+                    "nested_value_path": "totalCount",
+                    "post_processing": {"convert_to": "int"},
+                },
             }
         },
 
@@ -175,5 +233,8 @@ MULTI_STEP_OZON_CONFIG = {
     },
 
     # === ДОПОЛНИТЕЛЬНЫЕ ПАРАМЕТРЫ ===
+    # Дата с ошибкой хотя бы одного шага — ошибка даты (не выгружается, повтор следующим запуском),
+    # а не частичный результат с пустой ячейкой, который coverage-check больше не соберет
+    "FAIL_DATE_ON_STEP_ERROR": True,
     "BROWSER_CLOSE_DELAY": 5,  # Задержка перед закрытием браузера для наблюдения (секунды)
 }

@@ -83,6 +83,10 @@ grep -a "EDGE_SNAPSHOT" logs/reports_domain/Parser/*.log            # копия
 grep -a "EDGE_SNAPSHOT_SYNC_SKIPPED" logs/reports_domain/Parser/*.log # Edge пользователя запускался во время работы
 grep -a "DevToolsActivePort" logs/reports_domain/Parser/*.log        # браузер не стартовал (профиль по умолчанию / занят)
 grep -a "СТРАНИЦУ ЛОГИНА" logs/reports_domain/Parser/*.log           # сессия Ozon недействительна
+grep -a "API_" logs/reports_domain/Parser/*.log                      # источник данных API (DATA_SOURCE_MODE != dom):
+#   API_CAPTURE_INSTALLED, API_EXTRACTED, API_RETRY_RELOAD, API_EXTRACTION_FALLBACK, API_LIST_TRUNCATED,
+#   API_SHADOW_MATCH / API_SHADOW_MISMATCH / API_SHADOW_ERROR
+grep -a "Результат извлечения: 0" logs/reports_domain/Parser/*_debug.log  # DOM: счетчик пустой -> 0 (проверить сеть)
 ```
 
 Если задача завершается с кодом 1 без лога процессора, проверьте импорт от имени пользователя задачи:

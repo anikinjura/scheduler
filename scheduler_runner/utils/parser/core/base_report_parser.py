@@ -37,6 +37,11 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import Dict, Any, Optional
 from .base_parser import BaseParser
+from .api_response_capture import ApiCaptureError, ApiResponseNotFound, resolve_path
+
+
+class DomValueNotFound(Exception):
+    """Обязательное значение (data_extraction.required) не найдено в разметке: страница не загрузила данные."""
 from datetime import datetime
 from .contracts import ParserJob, ParserJobResult, ParserRuntimeContext, ReportDefinition
 
@@ -187,6 +192,12 @@ class BaseReportParser(BaseParser, ABC):
 
     # === МЕТОДЫ РАБОТЫ С ОТЧЕТАМИ ===
 
+    @staticmethod
+    def _failed_step_names(data) -> list:
+        """Имена полей summary, в которых результат шага — ошибка."""
+        summary = data.get("summary", {}) if isinstance(data, dict) else {}
+        return [name for name, value in summary.items() if isinstance(value, dict) and value.get("error")]
+
     def _run_single_date_in_current_session(
         self,
         execution_date: str,
@@ -208,8 +219,14 @@ class BaseReportParser(BaseParser, ABC):
         run_status = data.get('__RUN_STATUS__', 'success') if isinstance(data, dict) else 'success'
         if run_status == 'failed':
             raise Exception(f"Парсинг за дату {execution_date} завершился неуспешно: все шаги завершились ошибкой")
-        if run_status == 'partial' and self.logger:
-            self.logger.warning(f"Парсинг за дату {execution_date} завершен частично")
+        if run_status == 'partial':
+            failed_steps = self._failed_step_names(data)
+            if self.config.get("FAIL_DATE_ON_STEP_ERROR", False):
+                # Частичный результат не выгружается: у неудавшегося шага была бы пустая ячейка, а coverage-check
+                # больше не собрал бы дату. Ошибка даты — повтор следующим запуском.
+                raise Exception(f"PARTIAL_DATE_REJECTED: парсинг за дату {execution_date} с ошибкой в шагах {failed_steps}")
+            if self.logger:
+                self.logger.warning(f"Парсинг за дату {execution_date} завершен частично: ошибки в шагах {failed_steps}")
 
         if save_to_file:
             self.save_report(data=data, output_format=output_format)
@@ -908,25 +925,8 @@ class BaseReportParser(BaseParser, ABC):
             if self.logger:
                 self.logger.debug(f"URL источника данных для шага: {step_source_url}")
 
-            # Определяем тип обработки
-            processing_type = step_config.get("processing_type", "simple")
-            if self.logger:
-                self.logger.debug(f"Тип обработки: {processing_type}")
-
-            if processing_type == "simple":
-                if self.logger:
-                    self.logger.debug("Выполняем простое извлечение")
-                result = self._handle_simple_extraction(step_config)
-            elif processing_type == "table":
-                if self.logger:
-                    self.logger.debug("Выполняем табличное извлечение")
-                result = self._handle_table_extraction(step_config)
-            elif processing_type == "table_nested":
-                if self.logger:
-                    self.logger.debug("Выполняем вложенное табличное извлечение")
-                result = self._handle_table_nested_extraction(step_config)
-            else:
-                raise Exception(f"Неизвестный тип обработки: {processing_type}")
+            # Извлечение: из разметки страницы или из ответов API (DATA_SOURCE_MODE)
+            result, data_source = self._extract_step_result(step_config)
 
             # Добавляем информацию об источнике данных к результату
             if isinstance(result, dict):
@@ -936,6 +936,7 @@ class BaseReportParser(BaseParser, ABC):
                     'value': result,
                     '__STEP_SOURCE_URL__': step_source_url
                 }
+            result['__STEP_DATA_SOURCE__'] = data_source
 
             if self.logger:
                 self.logger.debug(f"Результат обработки шага: {result}")
@@ -953,6 +954,226 @@ class BaseReportParser(BaseParser, ABC):
             self.config.update(original_config)
             if self.logger:
                 self.logger.debug("Конфигурация восстановлена")
+
+    def _handle_dom_extraction(self, step_config):
+        """Извлечение из разметки страницы по processing_type: simple | table | table_nested."""
+        processing_type = step_config.get("processing_type", "simple")
+        if self.logger:
+            self.logger.debug(f"Тип обработки: {processing_type}")
+
+        if processing_type == "simple":
+            if self.logger:
+                self.logger.debug("Выполняем простое извлечение")
+            return self._handle_simple_extraction(step_config)
+        if processing_type == "table":
+            if self.logger:
+                self.logger.debug("Выполняем табличное извлечение")
+            return self._handle_table_extraction(step_config)
+        if processing_type == "table_nested":
+            if self.logger:
+                self.logger.debug("Выполняем вложенное табличное извлечение")
+            return self._handle_table_nested_extraction(step_config)
+        raise Exception(f"Неизвестный тип обработки: {processing_type}")
+
+    def _extract_step_result(self, step_config):
+        """
+        Результат шага по DATA_SOURCE_MODE (docs/MODERNIZATION_PLAN.md).
+
+        Returns:
+            (результат, источник): источник — "dom" | "api" | "dom_fallback"
+        """
+        mode = self._get_data_source_mode()
+        step = step_config.get("result_key", "?")
+        if mode == "dom" or not step_config.get("api_extraction"):
+            return self._handle_dom_extraction(step_config), "dom"
+
+        if mode == "api":
+            return self._handle_api_extraction(step_config), "api"
+
+        if mode == "api_with_dom_fallback":
+            try:
+                return self._handle_api_extraction(step_config), "api"
+            except Exception as e:
+                if str(e).startswith("AUTH_REQUIRED:"):
+                    raise
+                if self.logger:
+                    self.logger.warning(f"API_EXTRACTION_FALLBACK step={step} error={e}")
+                self._return_to_step_page(step_config)
+                return self._handle_dom_extraction(step_config), "dom_fallback"
+
+        # shadow: результат — из разметки, значение из API только сравнивается
+        api_result, api_error = None, None
+        try:
+            api_result = self._handle_api_extraction(step_config)
+        except Exception as e:
+            if str(e).startswith("AUTH_REQUIRED:"):
+                raise
+            api_error = e
+        self._return_to_step_page(step_config)
+        dom_result = self._handle_dom_extraction(step_config)
+        self._log_shadow_comparison(step, dom_result, api_result, api_error)
+        return dom_result, "dom"
+
+    def _return_to_step_page(self, step_config):
+        """После API-извлечения со вложенными переходами вернуться на страницу шага для чтения разметки."""
+        if (step_config.get("api_extraction") or {}).get("type") != "list_nested":
+            return
+        if not self.navigate_to_target():
+            if self.config.get('_last_navigation_failure_reason') == 'login_redirect':
+                raise Exception("AUTH_REQUIRED: redirected_to_login")
+            raise Exception("Не удалось вернуться на страницу шага после извлечения из API")
+
+    def _handle_api_extraction(self, step_config):
+        """
+        Значение шага из ответов API, которые получила страница (перехватчик ApiResponseCapture).
+
+        api_extraction.type:
+        - "value": один запрос -> значение по value_path (например, logV2.totalCount);
+        - "list_nested": список id из list_request, для каждого id — переход на страницу (nested_processing.base_url_template,
+          как в DOM-режиме) и значение из nested_request; агрегация — как у DOM (_aggregate_nested_results).
+
+        Значений по умолчанию нет: отсутствие запроса, поля или страницы — исключение (ApiCaptureError и др.).
+        """
+        api_config = step_config.get("api_extraction") or {}
+        capture = getattr(self, "api_capture", None)
+        if capture is None or not getattr(self, "driver", None):
+            raise ApiCaptureError("Перехватчик ответов API не установлен (см. DATA_SOURCE_MODE, API_CAPTURE_INSTALL_FAILED)")
+
+        step = step_config.get("result_key", "?")
+        context = {"date": self.config.get("execution_date", "")}
+        kind = api_config.get("type", "value")
+
+        if kind == "value":
+            request = api_config["request"]
+            data = self._wait_api_response(capture, request["path"], self._format_api_query(request.get("query_contains"), context), step)
+            value = self._convert_api_value(resolve_path(data, api_config["value_path"]), api_config.get("post_processing"))
+            if self.logger:
+                self.logger.info(f"API_EXTRACTED step={step} value={value}")
+            return value
+
+        if kind == "list_nested":
+            return self._handle_api_list_nested(step_config, api_config, capture, context, step)
+
+        raise ApiCaptureError(f"Неизвестный тип api_extraction: {kind}")
+
+    def _handle_api_list_nested(self, step_config, api_config, capture, context, step):
+        """Список id из одного ответа API и значение по каждому id со своей страницы."""
+        list_request = api_config["list_request"]
+        data = self._wait_api_response(capture, list_request["path"], self._format_api_query(list_request.get("query_contains"), context), step)
+        identifiers = resolve_path(data, f"{api_config['items_path']}[].{api_config['id_field']}")
+        total_path = api_config.get("total_path")
+        if total_path:
+            total = resolve_path(data, total_path)
+            if isinstance(total, int) and total > len(identifiers):
+                message = f"API_LIST_TRUNCATED step={step}: всего {total}, получено {len(identifiers)} (постраничная загрузка не реализована)"
+                if self._get_data_source_mode() == "api":
+                    raise ApiCaptureError(message)
+                if self.logger:
+                    self.logger.warning(message)
+
+        nested_config = step_config.get("nested_processing", {})
+        nested_request = api_config["nested_request"]
+        post_processing = api_config.get("post_processing") or {"convert_to": "int"}
+        nested_results = []
+        for identifier in identifiers:
+            target_url = nested_config.get("base_url_template", "").replace("{carriage_id}", str(identifier))
+            saved = {key: self.config.get(key, "") for key in ("base_url", "filter_template", "data_type_filter_template")}
+            try:
+                self.config["base_url"] = target_url
+                self.config["filter_template"] = nested_config.get("filter_template", "")
+                self.config["data_type_filter_template"] = nested_config.get("data_type_filter_template", "")
+                if not self.navigate_to_target():
+                    if self.config.get('_last_navigation_failure_reason') == 'login_redirect':
+                        raise Exception("AUTH_REQUIRED: redirected_to_login")
+                    # В DOM-режиме такая перевозка молча пропускается (сумма занижается) — здесь это ошибка шага
+                    raise ApiCaptureError(f"Не удалось открыть страницу {target_url}")
+                response = self._wait_api_response(
+                    capture, nested_request["path"],
+                    self._format_api_query(nested_request.get("query_contains"), {**context, "identifier": identifier}), step,
+                )
+                value = self._convert_api_value(resolve_path(response, api_config["nested_value_path"]), post_processing)
+                nested_results.append({"identifier": str(identifier), "value": value,
+                                       "url": self.config.get("target_url", target_url)})
+            finally:
+                self.config.update(saved)
+
+        result = self._aggregate_nested_results(nested_results, api_config.get("aggregation") or nested_config.get("aggregation", {}))
+        if self.logger:
+            totals = {key: value for key, value in result.items() if key != "details"}
+            self.logger.info(f"API_EXTRACTED step={step} items={len(nested_results)} result={totals}")
+        return result
+
+    def _wait_api_response(self, capture, path, query_contains, step):
+        """
+        Ответ API текущей страницы; если страница его не получила — одна перезагрузка и повторное ожидание.
+
+        При нестабильной сети страница может не загрузить данные вовсе (30.09.2026: ни ответ API, ни счетчик в
+        разметке не появились за ~30 с, DOM-режим записал 0). Перезагрузка той же страницы — через navigate_to_target
+        с текущей конфигурацией (страница шага или страница перевозки).
+        """
+        try:
+            return capture.wait_for(self.driver, path, query_contains)
+        except ApiResponseNotFound as first_error:
+            if self.logger:
+                self.logger.warning(f"API_RETRY_RELOAD step={step} path={path}: {first_error}")
+            if not self.navigate_to_target():
+                if self.config.get('_last_navigation_failure_reason') == 'login_redirect':
+                    raise Exception("AUTH_REQUIRED: redirected_to_login")
+                raise
+            return capture.wait_for(self.driver, path, query_contains)
+
+    @staticmethod
+    def _format_api_query(query_contains, context):
+        """Подстановка {date}, {identifier} в значения query_contains."""
+        if not query_contains:
+            return None
+        formatted = {}
+        for key, value in query_contains.items():
+            text = str(value)
+            for name, replacement in context.items():
+                text = text.replace("{" + name + "}", str(replacement))
+            formatted[key] = text
+        return formatted
+
+    @staticmethod
+    def _convert_api_value(value, post_processing):
+        """Преобразование типа без значения по умолчанию: неподходящее значение — ошибка, а не 0."""
+        convert_to = (post_processing or {}).get("convert_to")
+        try:
+            if convert_to == "int":
+                if isinstance(value, bool) or value is None:
+                    raise ValueError(value)
+                return int(value)
+            if convert_to == "float":
+                return float(value)
+            if convert_to == "str":
+                return str(value)
+        except (TypeError, ValueError) as e:
+            raise ApiCaptureError(f"Значение из API не преобразуется в {convert_to}: {value!r}") from e
+        return value
+
+    @staticmethod
+    def _comparable_step_value(result):
+        """Значение шага для сравнения DOM и API: число или (итоги, {identifier: значение})."""
+        if isinstance(result, dict):
+            details = {str(d.get("identifier")): d.get("value") for d in result.get("details", []) if isinstance(d, dict)}
+            totals = {key: value for key, value in result.items() if key != "details" and not key.startswith("__")}
+            return totals, details
+        return result
+
+    def _log_shadow_comparison(self, step, dom_result, api_result, api_error):
+        """API_SHADOW_MATCH / API_SHADOW_MISMATCH / API_SHADOW_ERROR — для обкатки режима shadow."""
+        if not self.logger:
+            return
+        if api_error is not None:
+            self.logger.warning(f"API_SHADOW_ERROR step={step} error={api_error}")
+            return
+        dom_value = self._comparable_step_value(dom_result)
+        api_value = self._comparable_step_value(api_result)
+        if dom_value == api_value:
+            self.logger.info(f"API_SHADOW_MATCH step={step} value={dom_value}")
+        else:
+            self.logger.warning(f"API_SHADOW_MISMATCH step={step} dom={dom_value} api={api_value}")
 
     def _update_config_for_step(self, step_config):
         """
@@ -981,7 +1202,7 @@ class BaseReportParser(BaseParser, ABC):
 
         # Применяем параметры из step_config к основной конфигурации
         for key, value in step_config.items():
-            if key not in ["processing_type", "data_extraction", "table_processing", "nested_processing", "result_key"]:
+            if key not in ["processing_type", "data_extraction", "table_processing", "nested_processing", "result_key", "api_extraction"]:
                 if self.logger:
                     self.logger.debug(f"Обновляем параметр {key}: {value}")
                 self.config[key] = value
@@ -1107,6 +1328,12 @@ class BaseReportParser(BaseParser, ABC):
         if self.logger:
             self.logger.debug(f"Конфигурация вложенной обработки: {nested_config}")
 
+        if nested_config.get("strict"):
+            table_errors = [row.get("error") for row in (table_data or []) if isinstance(row, dict) and row.get("error")]
+            if table_errors:
+                # Таблица не найдена — страница не загрузилась. Пустая таблица (0 строк) — это честный 0, не ошибка
+                raise Exception(f"DOM_TABLE_ERROR: {table_errors[0]}")
+
         if not nested_config.get("enabled", False):
             if self.logger:
                 self.logger.debug("Вложенная обработка отключена, возвращаем табличные данные")
@@ -1197,6 +1424,10 @@ class BaseReportParser(BaseParser, ABC):
 
                 # Выполняем навигацию к новому URL
                 if not self.navigate_to_target():
+                    if self.config.get('_last_navigation_failure_reason') == 'login_redirect':
+                        raise Exception("AUTH_REQUIRED: redirected_to_login")
+                    if nested_config.get("strict"):
+                        raise Exception(f"DOM_NESTED_PAGE_FAILED: не удалось открыть страницу для {identifier}")
                     if self.logger:
                         self.logger.warning(f"Не удалось выполнить навигацию к URL для идентификатора {identifier}")
                     continue
@@ -1225,6 +1456,9 @@ class BaseReportParser(BaseParser, ABC):
                     self.logger.error(f"Ошибка при обработке идентификатора {identifier}: {e}")
                     import traceback
                     self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
+                if nested_config.get("strict") or str(e).startswith("AUTH_REQUIRED:"):
+                    # Без этого перевозка молча выпадает из суммы, и итог занижается
+                    raise
                 continue
             finally:
                 # Восстанавливаем оригинальную конфигурацию
@@ -1665,6 +1899,9 @@ class BaseReportParser(BaseParser, ABC):
             raw_value = self.get_element_value(selector=selector, element_type=element_type, pattern=pattern)
             if self.logger:
                 self.logger.debug(f"Извлеченное значение (с примененным паттерном): '{raw_value}'")
+            if extraction_config.get("required") and (raw_value is None or str(raw_value).strip() == ""):
+                # Пустой счетчик — страница не загрузила данные; через default_value это превратилось бы в 0
+                raise DomValueNotFound(f"DOM_VALUE_NOT_FOUND: пустое значение по селектору {selector}")
 
             # Применяем постобработку
             post_processing_config = extraction_config.get("post_processing", {})
@@ -1675,6 +1912,8 @@ class BaseReportParser(BaseParser, ABC):
                 self.logger.debug(f"Значение после постобработки: '{processed_value}'")
 
             return processed_value
+        except DomValueNotFound:
+            raise
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Ошибка при извлечении значения по конфигурации: {e}")
