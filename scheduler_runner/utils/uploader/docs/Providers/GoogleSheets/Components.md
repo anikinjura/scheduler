@@ -162,6 +162,35 @@ class ColumnDefinition:
 ### Функция `_index_to_column_letter`
 Функция `_index_to_column_letter()` преобразует числовой индекс колонки в буквенное обозначение (A, B, C...), что необходимо для формирования диапазонов при использовании `batch_get`.
 
+## Пакетный upsert (`upsert_rows_batch`)
+
+`GoogleSheetsReporter.upsert_rows_batch(data_list, config=None, strategy="update_or_append")` — upsert пакета строк
+за константное число запросов (заголовок уже в кэше подключения):
+
+| Шаг | Запрос |
+|---|---|
+| Ключевые колонки и `timestamp` открытыми диапазонами (`B2:B`, `C2:C`, `K2:K`) | 1 `batch_get` (чтение) |
+| Все новые строки без формул | 1 `append_rows` (запись) |
+| Полные строки обновляемых записей + формулы добавленных строк с номерами из `updatedRange` | 1 `batch_update` (запись) |
+
+Подготовка (`_prepare_data_for_table`), валидация (`_validate_data_for_config`), нормализация ключей
+(`_normalize_for_comparison`/`_prepare_value_for_search`) и состав строк — те же, что у построчного
+`update_or_append_data_with_config`; при обновлении `timestamp` строки сохраняется.
+
+Поведение на краях:
+- одинаковый ключ во входных данных — побеждает последняя запись, предыдущие получают `action="superseded"`;
+- повторяющийся ключ в листе — используется первая строка, предупреждение `KPI_BATCH_DUPLICATE_ROWS`;
+- `updatedRange` не разобран или число строк не совпало — повторное чтение ключей (+1 чтение), `append_range_fallback`;
+- ошибка чтения ключей или `append_rows` — все затронутые записи с ошибкой, записей в лист нет / нет новых строк;
+- ошибка `batch_update` после `append_rows` — строки добавлены без формул и возвращаются как ошибка; повтор загрузки
+  найдет их по ключам и допишет формулы обновлением (операция идемпотентна).
+
+Результат совместим с `BaseUploader.batch_upload` (`success`, `uploaded`, `failed`, `details[]`) и дополнен `error`
+и `diagnostics` (`appended`, `updated`, `skipped`, `superseded`, `duplicate_sheet_rows`, `append_range_fallback`).
+
+Проверка на тестовой таблице: `python -m scheduler_runner.tasks.reports.tests.run_kpi_batch_upload_smoke`
+(7 новых строк — 4 чтения и 2 записи с подключением, повтор — 4 чтения и 1 запись, два процесса одновременно).
+
 ## Квота Google Sheets API и повторы запросов
 
 ### Квота

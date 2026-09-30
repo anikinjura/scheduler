@@ -199,7 +199,8 @@ set_default_store(MyPostgreSQLStore())
 тратит ~10 запросов на строку KPI. Меры: повтор любого запроса к Sheets при 429 через 65+ с на уровне HTTP-клиента
 (`QuotaBackoffHTTPClient`), 429 — повторяемая ошибка batch upload, случайная пауза до 120 с перед загрузкой, ошибка
 чтения при поиске строки больше не приводит к дубликату, таймаут задачи 2700 с. Параметры `BACKFILL_CONFIG`:
-`upload_start_jitter_seconds`, `google_sheets_quota_retry_delay_seconds`. Подробности и следующий шаг (пакетная
+`upload_start_jitter_seconds`, `google_sheets_quota_retry_delay_seconds`. Пакетная загрузка KPI (1 чтение и до 2 записей на пакет
+плюс подключение) включается `kpi_upload_mode` / `kpi_upload_mode_by_pvz` (`row` | `batch`, по умолчанию `row`). Подробности и следующий шаг (пакетная
 загрузка) — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Тесты

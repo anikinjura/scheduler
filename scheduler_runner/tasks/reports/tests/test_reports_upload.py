@@ -21,8 +21,10 @@ from ..reports_upload import (
     is_retryable_google_sheets_upload_error,
     is_quota_error,
     log_upload_stats,
+    resolve_kpi_upload_mode,
     run_google_sheets_upload_with_retry,
     summarize_upload_actions,
+    upload_records,
     wait_upload_start_jitter,
     transform_record_for_upload,
     prepare_upload_data,
@@ -125,6 +127,37 @@ class TestUploadStats(unittest.TestCase):
         )
         line = logger.info.call_args[0][0]
         self.assertTrue(line.startswith("KPI_UPLOAD_STATS mode=row rows=2 appended=2 updated=0 failed=0 reads=11 writes=12 retries_429=1"))
+
+
+class TestKpiUploadMode(unittest.TestCase):
+    def test_default_row(self):
+        with patch.dict(BACKFILL_CONFIG, {"kpi_upload_mode": "row", "kpi_upload_mode_by_pvz": {}}):
+            self.assertEqual(resolve_kpi_upload_mode("ЧЕБОКСАРЫ_144"), "row")
+
+    def test_per_pvz_override(self):
+        with patch.dict(BACKFILL_CONFIG, {"kpi_upload_mode": "row", "kpi_upload_mode_by_pvz": {"ЧЕБОКСАРЫ_144": "batch"}}):
+            self.assertEqual(resolve_kpi_upload_mode("ЧЕБОКСАРЫ_144"), "batch")
+            self.assertEqual(resolve_kpi_upload_mode("ЧЕБОКСАРЫ_143"), "row")
+
+    def test_unknown_mode_falls_back_to_row(self):
+        with patch.dict(BACKFILL_CONFIG, {"kpi_upload_mode": "bulk", "kpi_upload_mode_by_pvz": {}}):
+            self.assertEqual(resolve_kpi_upload_mode("ЧЕБОКСАРЫ_144"), "row")
+
+    @patch("scheduler_runner.tasks.reports.reports_upload.upload_batch_data", return_value={"success": True})
+    @patch("scheduler_runner.tasks.reports.reports_upload.test_upload_connection")
+    def test_batch_mode_skips_separate_connection_check(self, mock_test_connection, mock_upload):
+        upload_records([{"work_date": "30.09.2026"}], {"X": 1}, MagicMock(), "batch")
+
+        mock_test_connection.assert_not_called()
+        self.assertEqual(mock_upload.call_args.kwargs["UPLOAD_MODE"], "batch")
+
+    @patch("scheduler_runner.tasks.reports.reports_upload.upload_batch_data", return_value={"success": True})
+    @patch("scheduler_runner.tasks.reports.reports_upload.test_upload_connection", return_value={"success": True})
+    def test_row_mode_keeps_connection_check(self, mock_test_connection, mock_upload):
+        upload_records([{"work_date": "30.09.2026"}], {"X": 1}, MagicMock(), "row")
+
+        mock_test_connection.assert_called_once()
+        self.assertEqual(mock_upload.call_args.kwargs["UPLOAD_MODE"], "row")
 
 
 class TestUploadStartJitter(unittest.TestCase):

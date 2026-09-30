@@ -157,6 +157,60 @@ class GoogleSheetsUploader(BaseReportUploader):
                 self.logger.debug(f"Полный стек трейса ошибки: {traceback.format_exc()}")
             return {"success": False, "error": str(e)}
 
+    def batch_upload(self, data_list: list, **kwargs) -> Dict[str, Any]:
+        """
+        Пакетная загрузка с выбором режима.
+
+        UPLOAD_MODE (kwargs["upload_mode"] или config["UPLOAD_MODE"]):
+        - "row" (по умолчанию) — построчный upsert базового класса (~10 запросов на строку);
+        - "batch" — GoogleSheetsReporter.upsert_rows_batch: 1 чтение и до 2 записей на весь пакет.
+        """
+        mode = kwargs.get("upload_mode") or self.config.get("UPLOAD_MODE", "row")
+        if mode != "batch":
+            return super().batch_upload(data_list, **kwargs)
+
+        if not self.connected or not self.sheets_reporter:
+            self.logger.error("Нет подключения к целевой системе")
+            return {"success": False, "error": "Нет подключения к целевой системе"}
+        if not data_list:
+            return {"success": True, "uploaded": 0, "failed": 0, "details": []}
+
+        # Валидация и трансформация — как в upload_data построчного режима
+        prepared, rejected = [], {}
+        for index, data in enumerate(data_list):
+            validation = self._validate_data(data)
+            if validation["success"]:
+                prepared.append((index, self._transform_data_if_needed(data)))
+            else:
+                rejected[index] = validation
+
+        strategy = kwargs.get("strategy", self.config.get("UPLOAD_STRATEGY", "update_or_append"))
+        batch_result = self.sheets_reporter.upsert_rows_batch(
+            [data for _, data in prepared], config=self.table_config, strategy=strategy
+        )
+
+        details = [None] * len(data_list)
+        for (index, _), detail in zip(prepared, batch_result.get("details", [])):
+            details[index] = {**detail, "index": index}
+        for index, validation in rejected.items():
+            details[index] = {"index": index, "data_sample": str(data_list[index])[:100],
+                              "result": {"success": False, "action": "error", "message": validation.get("error", "")}}
+
+        failed = sum(1 for d in details if not d["result"].get("success", False))
+        self.uploaded_count += len(details) - failed
+        self.failed_count += failed
+        result = {
+            "success": failed == 0,
+            "uploaded": len(details) - failed,
+            "failed": failed,
+            "details": details,
+            "diagnostics": batch_result.get("diagnostics", {}),
+        }
+        if failed:
+            result["error"] = batch_result.get("error") or next(
+                d["result"].get("message", "") for d in details if not d["result"].get("success", False))
+        return result
+
     def _perform_upload_process(self, **kwargs) -> Dict[str, Any]:
         """
         Выполнение процесса загрузки отчетов в Google Sheets
