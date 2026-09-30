@@ -37,6 +37,11 @@
 - `_build_url_filter() -> str`
 - `_execute_multi_step_processing(multi_step_config)`
 - `_execute_single_step(step_config)`
+- `_extract_step_result(step_config) -> (result, source)` — источник по `DATA_SOURCE_MODE`: dom | api | dom_fallback
+- `_handle_dom_extraction(step_config)` — извлечение из разметки по `processing_type`
+- `_handle_api_extraction(step_config)` / `_handle_api_list_nested(...)` — извлечение из ответов API (`api_extraction`)
+- `_wait_api_response(capture, path, query_contains, step)` — ожидание ответа с одной перезагрузкой страницы
+- `_log_shadow_comparison(step, dom_result, api_result, api_error)` — сравнение в режиме `shadow`
 - `_update_config_for_step(step_config)`
 - `_handle_simple_extraction(step_config)`
 - `_handle_table_extraction(step_config)`

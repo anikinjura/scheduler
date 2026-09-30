@@ -65,7 +65,9 @@ OZON_BASE_CONFIG = {
     # в логе; api_with_dom_fallback — из API, при сбое из разметки; api — только из API, при сбое явная ошибка.
     # В режимах кроме dom после старта браузера ставится перехватчик ответов API (API_CAPTURE_INSTALLED).
     "DATA_SOURCE_MODE": "dom",
-    "api_capture": {"wait_timeout": 15, "poll_interval": 0.5, "max_records": 500, "max_body_chars": 2_000_000},
+    # wait_timeout: ожидание ответа API после загрузки страницы; при отсутствии ответа страница перезагружается один раз
+    # (API_RETRY_RELOAD). 30.09.2026 при нестабильной сети первая страница сессии получала данные дольше 15 с.
+    "api_capture": {"wait_timeout": 30, "poll_interval": 0.5, "max_records": 500, "max_body_chars": 2_000_000},
 
     # === ОПИСАНИЕ ОБЩИХ СЕЛЕКТОРОВ ===
     # Классы Ozon UI (ozi__<компонент>__<элемент>__<хэш>) содержат хэш, который меняется при каждой
