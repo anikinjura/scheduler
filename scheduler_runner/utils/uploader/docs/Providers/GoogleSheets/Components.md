@@ -192,3 +192,21 @@ Quota exceeded for quota metric 'Read requests' ...`.
 
 Декоратор `retry_on_api_error` (на `_update_existing_row`, `_append_new_row` и др.) коды, которые уже повторил
 транспортный клиент (`TRANSPORT_RETRY_CODES`), не повторяет второй раз.
+
+### Статистика запросов
+`QuotaBackoffHTTPClient` считает каждую отправленную попытку: `reads` (GET), `writes` (POST/PUT/…), `retries_429`,
+`retries_other` — в `client.stats` (одно подключение) и в `QuotaBackoffHTTPClient.process_stats` (весь процесс).
+Функции пакета `utils.uploader`:
+- `get_google_sheets_request_stats()` — снимок статистики процесса;
+- `diff_google_sheets_request_stats(before, after=None)` — запросы между снимками (например, одного этапа).
+
+Прямые вызовы `gspread` в обход `GoogleSheetsReporter` (скрипты диагностики) не учитываются.
+
+### Кэш заголовка
+`GoogleSheetsReporter._get_headers()` читает строку заголовка один раз за подключение и возвращает копию; им
+пользуются `_sync_table_structure`, `_validate_table_structure`, поиск, добавление и обновление строк, coverage-check
+(при `header_row == 1`). Раньше заголовок перечитывался при каждой операции — включая два чтения подряд при
+подключении. Новое подключение (новый `GoogleSheetsReporter`) читает заголовок заново.
+
+Фактическая стоимость подключения — 3 чтения: метаданные таблицы (`open_by_key`), метаданные листа (`worksheet()`),
+заголовок. Coverage-check — 5 чтений: подключение, `col_values` для поиска последней строки, `batch_get`.

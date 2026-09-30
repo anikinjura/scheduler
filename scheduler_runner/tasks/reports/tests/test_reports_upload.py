@@ -20,7 +20,9 @@ from ..reports_upload import (
     parse_sheet_date_to_iso,
     is_retryable_google_sheets_upload_error,
     is_quota_error,
+    log_upload_stats,
     run_google_sheets_upload_with_retry,
+    summarize_upload_actions,
     wait_upload_start_jitter,
     transform_record_for_upload,
     prepare_upload_data,
@@ -98,6 +100,31 @@ class TestUploadRetryDelays(unittest.TestCase):
         run_google_sheets_upload_with_retry(upload_callable=upload, logger=MagicMock())
 
         self.assertLess(mock_sleep.call_args[0][0], 60)
+
+
+class TestUploadStats(unittest.TestCase):
+    def test_summarize_upload_actions(self):
+        upload_result = {"details": [
+            {"result": {"success": True, "action": "appended"}},
+            {"result": {"success": True, "action": "appended"}},
+            {"result": {"success": True, "action": "updated"}},
+            {"result": {"success": False, "action": "error"}},
+        ]}
+        self.assertEqual(summarize_upload_actions(upload_result), {"appended": 2, "updated": 1, "failed": 1})
+
+    def test_summarize_empty_result(self):
+        self.assertEqual(summarize_upload_actions({}), {"appended": 0, "updated": 0, "failed": 0})
+
+    def test_log_upload_stats_line(self):
+        logger = MagicMock()
+        log_upload_stats(
+            logger, mode="row", rows=2,
+            upload_result={"details": [{"result": {"success": True, "action": "appended"}}] * 2},
+            request_stats={"reads": 11, "writes": 12, "retries_429": 1, "retries_other": 0},
+            started_at=0,
+        )
+        line = logger.info.call_args[0][0]
+        self.assertTrue(line.startswith("KPI_UPLOAD_STATS mode=row rows=2 appended=2 updated=0 failed=0 reads=11 writes=12 retries_429=1"))
 
 
 class TestUploadStartJitter(unittest.TestCase):

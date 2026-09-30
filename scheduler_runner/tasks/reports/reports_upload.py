@@ -18,6 +18,8 @@ from .reports_utils import normalize_pvz_id
 from scheduler_runner.utils.logging import TRACE_LEVEL, configure_logger
 from scheduler_runner.utils.uploader import (
     check_missing_items,
+    diff_google_sheets_request_stats,
+    get_google_sheets_request_stats,
     test_connection as test_upload_connection,
     upload_batch_data,
 )
@@ -69,6 +71,29 @@ def is_retryable_google_sheets_upload_error(error_text):
         "remote end closed connection",
     )
     return any(marker in normalized_error for marker in retryable_markers)
+
+
+def summarize_upload_actions(upload_result):
+    """Число добавленных, обновленных и неуспешных строк по деталям batch upload."""
+    counts = {"appended": 0, "updated": 0, "failed": 0}
+    for detail in (upload_result or {}).get("details", []) or []:
+        result = detail.get("result", {}) if isinstance(detail, dict) else {}
+        if not result.get("success", False):
+            counts["failed"] += 1
+        elif result.get("action") in ("appended", "updated"):
+            counts[result["action"]] += 1
+    return counts
+
+
+def log_upload_stats(logger, *, mode, rows, upload_result, request_stats, started_at):
+    """KPI_UPLOAD_STATS — сколько запросов к Google Sheets стоила загрузка (квота общая для всех ПВЗ)."""
+    actions = summarize_upload_actions(upload_result)
+    logger.info(
+        f"KPI_UPLOAD_STATS mode={mode} rows={rows} appended={actions['appended']} updated={actions['updated']} "
+        f"failed={actions['failed']} reads={request_stats.get('reads', 0)} writes={request_stats.get('writes', 0)} "
+        f"retries_429={request_stats.get('retries_429', 0)} retries_other={request_stats.get('retries_other', 0)} "
+        f"duration={time.monotonic() - started_at:.0f}s"
+    )
 
 
 def is_quota_error(error_text):
@@ -340,6 +365,8 @@ def run_upload_microservice(parsing_result=None):
 
     connection_params = prepare_connection_params()
     upload_data_list = prepare_upload_data(parsing_result)
+    stats_before = get_google_sheets_request_stats()
+    started_at = time.monotonic()
 
     connection_result = test_upload_connection(connection_params, logger=logger)
     logger.info(f"Результат проверки подключения: {connection_result}")
@@ -352,6 +379,8 @@ def run_upload_microservice(parsing_result=None):
         logger=logger,
         strategy="update_or_append",
     )
+    log_upload_stats(logger, mode="row", rows=len(upload_data_list), upload_result=upload_result,
+                     request_stats=diff_google_sheets_request_stats(stats_before), started_at=started_at)
     return upload_result
 
 
@@ -367,6 +396,8 @@ def run_upload_batch_microservice(batch_parsing_result=None):
         return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
 
     wait_upload_start_jitter(logger=logger)
+    stats_before = get_google_sheets_request_stats()
+    started_at = time.monotonic()
 
     def perform_upload_attempt():
         connection_result = test_upload_connection(connection_params, logger=logger)
@@ -391,5 +422,7 @@ def run_upload_batch_microservice(batch_parsing_result=None):
         logger=logger,
     )
     upload_result["uploaded_records"] = len(upload_data_list)
+    log_upload_stats(logger, mode="row", rows=len(upload_data_list), upload_result=upload_result,
+                     request_stats=diff_google_sheets_request_stats(stats_before), started_at=started_at)
     return upload_result
 

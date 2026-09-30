@@ -13,6 +13,8 @@ import requests
 from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_core import (
     GoogleSheetsReporter,
     QuotaBackoffHTTPClient,
+    diff_google_sheets_request_stats,
+    get_google_sheets_request_stats,
     retry_on_api_error,
 )
 from scheduler_runner.utils.uploader.core.providers.google_sheets.google_sheets_data_models import (
@@ -90,6 +92,38 @@ class TestQuotaBackoffHTTPClient(unittest.TestCase):
 
         self.assertEqual(mock_request.call_count, client.max_attempts)
         self.assertEqual(mock_sleep.call_count, client.max_attempts - 1)
+
+
+class TestRequestStats(unittest.TestCase):
+    @patch(SLEEP)
+    @patch(BASE_REQUEST)
+    def test_counts_reads_writes_and_retries(self, mock_request, mock_sleep):
+        mock_request.side_effect = [Mock(), api_error(429), Mock(), Mock()]
+        before = get_google_sheets_request_stats()
+        client = make_client()
+
+        client.request("get", "values:batchGet")        # 1 чтение
+        client.request("post", "values:append")         # 429 + повтор = 2 записи
+        client.request("put", "values/A1")              # 1 запись
+
+        self.assertEqual(client.stats, {"reads": 1, "writes": 3, "retries_429": 1, "retries_other": 0})
+        self.assertEqual(diff_google_sheets_request_stats(before),
+                         {"reads": 1, "writes": 3, "retries_429": 1, "retries_other": 0})
+
+
+class TestHeaderCache(unittest.TestCase):
+    def test_header_read_once_per_connection(self):
+        reporter = GoogleSheetsReporter.__new__(GoogleSheetsReporter)
+        reporter.logger = MagicMock()
+        reporter.worksheet = MagicMock()
+        reporter.worksheet.row_values.return_value = ["id", "work_date"]
+
+        first = reporter._get_headers()
+        first.append("mutated")  # вызывающий код не портит кэш
+        second = reporter._get_headers()
+
+        self.assertEqual(second, ["id", "work_date"])
+        reporter.worksheet.row_values.assert_called_once_with(1)
 
 
 class TestRetryDecoratorSkipsTransportCodes(unittest.TestCase):
