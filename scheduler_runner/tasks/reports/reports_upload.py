@@ -6,6 +6,7 @@ Coverage-check logic, upload payload preparation, KPI upload orchestration и re
 Извлечено из reports_processor.py (Phase 1.3 — low-risk extraction).
 """
 import logging
+import random
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -54,6 +55,10 @@ def prepare_connection_params():
 def is_retryable_google_sheets_upload_error(error_text):
     normalized_error = str(error_text or "").lower()
     retryable_markers = (
+        "[429]",
+        "quota exceeded",
+        "rate_limit_exceeded",
+        "resource_exhausted",
         "[503]",
         "service is currently unavailable",
         "temporarily unavailable",
@@ -64,6 +69,23 @@ def is_retryable_google_sheets_upload_error(error_text):
         "remote end closed connection",
     )
     return any(marker in normalized_error for marker in retryable_markers)
+
+
+def is_quota_error(error_text):
+    normalized_error = str(error_text or "").lower()
+    return any(marker in normalized_error for marker in ("[429]", "quota exceeded", "rate_limit_exceeded", "resource_exhausted"))
+
+
+def wait_upload_start_jitter(logger=None):
+    """Случайная пауза перед загрузкой: ПВЗ стартуют одновременно и делят одну квоту Sheets API."""
+    jitter_seconds = float(BACKFILL_CONFIG.get("upload_start_jitter_seconds", 0) or 0)
+    if jitter_seconds <= 0:
+        return 0.0
+    delay = random.uniform(0, jitter_seconds)
+    if logger:
+        logger.info(f"Пауза перед загрузкой в Google Sheets: {delay:.0f} с (разнос ПВЗ по времени, квота общая)")
+    time.sleep(delay)
+    return delay
 
 
 def run_google_sheets_upload_with_retry(*, upload_callable, logger=None):
@@ -84,12 +106,16 @@ def run_google_sheets_upload_with_retry(*, upload_callable, logger=None):
         if attempt >= max_attempts or not is_retryable_google_sheets_upload_error(error_text):
             return last_result
 
+        attempt_delay = delay_seconds
+        if is_quota_error(error_text):
+            # Квота Sheets API считается поминутно и общая для всех ПВЗ
+            attempt_delay = max(delay_seconds, float(BACKFILL_CONFIG.get("google_sheets_quota_retry_delay_seconds", 65) or 65))
         logger.warning(
             f"Retryable upload error при batch upload в Google Sheets: {error_text}; "
-            f"sleep={delay_seconds}s before next attempt"
+            f"sleep={attempt_delay}s before next attempt"
         )
-        if delay_seconds > 0:
-            time.sleep(delay_seconds)
+        if attempt_delay > 0:
+            time.sleep(attempt_delay)
 
     return last_result
 
@@ -339,6 +365,8 @@ def run_upload_batch_microservice(batch_parsing_result=None):
     if not upload_data_list:
         logger.warning("Для batch upload нет подготовленных записей")
         return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
+
+    wait_upload_start_jitter(logger=logger)
 
     def perform_upload_attempt():
         connection_result = test_upload_connection(connection_params, logger=logger)

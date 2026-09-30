@@ -193,6 +193,15 @@ set_default_store(MyPostgreSQLStore())
 4 объекта стартовали одновременно (~21:30) → 2 получили 429 на `KPI_FAILOVER_STATE`.
 Добавлен retry с jitter в `owner_state_sync.py` (конфигурируемый через `BACKFILL_CONFIG`).
 
+### Квота Google Sheets API при массовой выгрузке (30.09.2026)
+
+Квота Sheets API общая для всех ПВЗ (один сервисный аккаунт, 60 чтений и 60 записей в минуту), а построчный upsert
+тратит ~10 запросов на строку KPI. Меры: повтор любого запроса к Sheets при 429 через 65+ с на уровне HTTP-клиента
+(`QuotaBackoffHTTPClient`), 429 — повторяемая ошибка batch upload, случайная пауза до 120 с перед загрузкой, ошибка
+чтения при поиске строки больше не приводит к дубликату, таймаут задачи 2700 с. Параметры `BACKFILL_CONFIG`:
+`upload_start_jitter_seconds`, `google_sheets_quota_retry_delay_seconds`. Подробности и следующий шаг (пакетная
+загрузка) — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Тесты
 
 ### Unit Tests

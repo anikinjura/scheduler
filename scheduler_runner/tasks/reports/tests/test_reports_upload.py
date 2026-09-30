@@ -12,11 +12,16 @@ Unit tests for reports_upload (Phase 1.3).
 normalize_pvz_id тестируется отдельно (reports_utils).
 """
 import unittest
+from unittest.mock import MagicMock, Mock, patch
 
+from ..config.scripts.reports_processor_config import BACKFILL_CONFIG
 from ..reports_upload import (
     prepare_coverage_filters,
     parse_sheet_date_to_iso,
     is_retryable_google_sheets_upload_error,
+    is_quota_error,
+    run_google_sheets_upload_with_retry,
+    wait_upload_start_jitter,
     transform_record_for_upload,
     prepare_upload_data,
     prepare_upload_data_batch,
@@ -66,6 +71,48 @@ class TestRetryableErrors(unittest.TestCase):
 
     def test_parse_error_is_not_retryable(self):
         self.assertFalse(is_retryable_google_sheets_upload_error("Invalid JSON: parse error"))
+
+    def test_quota_429_is_retryable(self):
+        error = "APIError: [429]: Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user'"
+        self.assertTrue(is_retryable_google_sheets_upload_error(error))
+        self.assertTrue(is_quota_error(error))
+
+    def test_503_is_not_quota_error(self):
+        self.assertFalse(is_quota_error("[503] The service is currently unavailable"))
+
+
+class TestUploadRetryDelays(unittest.TestCase):
+    @patch("scheduler_runner.tasks.reports.reports_upload.time.sleep")
+    def test_quota_error_waits_at_least_a_minute(self, mock_sleep):
+        upload = Mock(side_effect=[{"success": False, "error": "[429] Quota exceeded"}, {"success": True}])
+
+        result = run_google_sheets_upload_with_retry(upload_callable=upload, logger=MagicMock())
+
+        self.assertTrue(result["success"])
+        self.assertGreaterEqual(mock_sleep.call_args[0][0], 60)
+
+    @patch("scheduler_runner.tasks.reports.reports_upload.time.sleep")
+    def test_non_quota_error_keeps_short_delay(self, mock_sleep):
+        upload = Mock(side_effect=[{"success": False, "error": "[503] unavailable"}, {"success": True}])
+
+        run_google_sheets_upload_with_retry(upload_callable=upload, logger=MagicMock())
+
+        self.assertLess(mock_sleep.call_args[0][0], 60)
+
+
+class TestUploadStartJitter(unittest.TestCase):
+    @patch("scheduler_runner.tasks.reports.reports_upload.time.sleep")
+    def test_jitter_within_configured_window(self, mock_sleep):
+        with patch.dict(BACKFILL_CONFIG, {"upload_start_jitter_seconds": 120}):
+            delay = wait_upload_start_jitter()
+        self.assertTrue(0 <= delay <= 120)
+        mock_sleep.assert_called_once_with(delay)
+
+    @patch("scheduler_runner.tasks.reports.reports_upload.time.sleep")
+    def test_jitter_disabled(self, mock_sleep):
+        with patch.dict(BACKFILL_CONFIG, {"upload_start_jitter_seconds": 0}):
+            self.assertEqual(wait_upload_start_jitter(), 0.0)
+        mock_sleep.assert_not_called()
 
 
 class TestTransformRecordForUpload(unittest.TestCase):
