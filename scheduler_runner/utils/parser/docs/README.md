@@ -172,3 +172,8 @@ python -m scheduler_runner.utils.parser.tests.run_single_date_smoke --pvz ЧЕБ
 ```
 
 Для live troubleshooting используйте [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md).
+
+## Планы развития
+
+- [MODERNIZATION_PLAN.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/MODERNIZATION_PLAN.md) — переход
+  от чтения DOM к данным из API Турбо ПВЗ с переключателем `DATA_SOURCE_MODE` (`dom` | `shadow` | `api_with_dom_fallback` | `api`).
