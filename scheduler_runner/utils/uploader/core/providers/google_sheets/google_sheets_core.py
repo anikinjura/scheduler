@@ -46,6 +46,18 @@ class QuotaBackoffHTTPClient(HTTPClient):
     jitter_seconds: float = 15.0
     logger = None
 
+    # Суммарная статистика запросов процесса по всем подключениям (метрика, на поведение не влияет):
+    # позволяет посчитать запросы этапа (разница снимков) без протаскивания клиента через интерфейсы загрузчика
+    process_stats: Dict[str, int] = {"reads": 0, "writes": 0, "retries_429": 0, "retries_other": 0}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stats = {"reads": 0, "writes": 0, "retries_429": 0, "retries_other": 0}
+
+    def _count(self, key: str) -> None:
+        self.stats[key] += 1
+        QuotaBackoffHTTPClient.process_stats[key] += 1
+
     def _retry_delay(self, attempt: int, code: Optional[int]) -> float:
         if code == 429:
             delay = self.quota_delay_seconds
@@ -54,7 +66,10 @@ class QuotaBackoffHTTPClient(HTTPClient):
         return delay + random.uniform(0, self.jitter_seconds)
 
     def request(self, *args, **kwargs):
+        method = str(args[0] if args else kwargs.get("method", "")).lower()
         for attempt in range(1, self.max_attempts + 1):
+            # Каждая отправленная попытка расходует квоту: GET — чтение, остальные методы — запись
+            self._count("reads" if method == "get" else "writes")
             try:
                 return super().request(*args, **kwargs)
             except gspread.exceptions.APIError as e:
@@ -67,6 +82,7 @@ class QuotaBackoffHTTPClient(HTTPClient):
                 if attempt == self.max_attempts:
                     raise
                 reason = type(e).__name__
+            self._count("retries_429" if code == 429 else "retries_other")
             delay = self._retry_delay(attempt, code)
             if self.logger:
                 self.logger.warning(
@@ -74,6 +90,17 @@ class QuotaBackoffHTTPClient(HTTPClient):
                     f"попытка {attempt}/{self.max_attempts}, пауза {delay:.0f} с"
                 )
             time.sleep(delay)
+
+
+def get_google_sheets_request_stats() -> Dict[str, int]:
+    """Снимок суммарной статистики запросов к Google Sheets в текущем процессе."""
+    return dict(QuotaBackoffHTTPClient.process_stats)
+
+
+def diff_google_sheets_request_stats(before: Dict[str, int], after: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    """Запросы между двумя снимками статистики (after по умолчанию — текущий снимок)."""
+    after = after if after is not None else get_google_sheets_request_stats()
+    return {key: after.get(key, 0) - before.get(key, 0) for key in after}
 
 
 def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
@@ -199,6 +226,20 @@ class GoogleSheetsReporter:
             self.logger.info(f"Используется конфигурация таблицы с {len(self.table_config.columns)} колонками")
 
     @retry_on_api_error(max_retries=3, base_delay=1.0, max_delay=10.0)
+    def _get_headers(self) -> List[str]:
+        """
+        Заголовки листа (строка 1), кэшируются на время подключения.
+
+        Раньше заголовок перечитывался при каждой операции (подключение, поиск, добавление, обновление строки) —
+        это 6-7 запросов чтения на одну загрузку при общей для всех ПВЗ квоте. Структура листа за время сессии
+        не меняется; новое подключение (новый GoogleSheetsReporter) читает заголовок заново.
+        """
+        cached = getattr(self, "_headers", None)
+        if cached is None:
+            cached = self.worksheet.row_values(1)
+            self._headers = cached
+        return list(cached)
+
     def _sync_table_structure(self) -> None:
         """
         Синхронизирует конфигурацию таблицы с реальной структурой Google Sheets.
@@ -214,7 +255,7 @@ class GoogleSheetsReporter:
         """
         try:
             # Загружаем заголовки из первой строки таблицы
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
 
             if not headers:
                 self.logger.warning("Таблица пуста или не содержит заголовков")
@@ -264,7 +305,7 @@ class GoogleSheetsReporter:
 
         try:
             # Получаем заголовки из таблицы
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
 
             # Проверяем, что все обязательные колонки из конфигурации присутствуют в таблице
             missing_columns = []
@@ -299,7 +340,7 @@ class GoogleSheetsReporter:
             List[str]: Список заголовков
         """
         try:
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
             return headers
         except Exception as e:
             self.logger.error(f"Ошибка получения заголовков: {e}")
@@ -577,7 +618,7 @@ class GoogleSheetsReporter:
                 }
 
         # 4. Получение заголовков и индексов колонок
-        headers = self.worksheet.row_values(cfg.header_row)
+        headers = self._get_headers() if cfg.header_row == 1 else self.worksheet.row_values(cfg.header_row)
         headers_normalized = [h.strip().lower() for h in headers]
         
         # Поиск индексов coverage-колонок
@@ -1233,7 +1274,7 @@ class GoogleSheetsReporter:
         Если return_raw=True — возвращает значения, как есть в таблице.
         """
         try:
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
             if not headers:
                 self.logger.error("Таблица не содержит заголовков")
                 return None
@@ -1381,7 +1422,7 @@ class GoogleSheetsReporter:
                 return []
 
             # Получаем заголовки из первой строки и нормализуем их
-            raw_headers = self.worksheet.row_values(1)
+            raw_headers = self._get_headers()
             headers = [h.strip() for h in raw_headers]
             # Создаем маппинг нормализованных заголовков для поиска
             normalized_header_to_idx = {h.lower(): i+1 for i, h in enumerate(headers)}
@@ -1532,7 +1573,7 @@ class GoogleSheetsReporter:
         """
         try:
             # Получаем заголовки
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
 
             # Подготавливаем значения для обновления, исключая timestamp.
             # timestamp — время создания записи, его нельзя перезаписывать при update.
@@ -1605,7 +1646,7 @@ class GoogleSheetsReporter:
         Returns:
             Список значений для строки
         """
-        headers = self.worksheet.row_values(1)
+        headers = self._get_headers()
         values = []
 
         for header in headers:
@@ -1648,7 +1689,7 @@ class GoogleSheetsReporter:
             # Это нужно т.к. мы не знаем реальный номер строки до append_rows.
             values_no_formulas = []
             formula_col_indices = []
-            headers = self.worksheet.row_values(1)
+            headers = self._get_headers()
 
             for col_idx, header in enumerate(headers):
                 col_def = config.get_column(header)

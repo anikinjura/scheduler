@@ -256,6 +256,10 @@ logs/reports_domain/FailoverState/{YYYY-MM-DD}_trace.log
 - `Пауза перед загрузкой в Google Sheets: N с (разнос ПВЗ по времени, квота общая)`
 - `Повторная попытка batch upload в Google Sheets: attempt=2/3`
 - `GOOGLE_SHEETS_RETRY: HTTP 429 на ... запросе, попытка N/5, пауза N с` — повтор на уровне HTTP-клиента (лог `system/GoogleSheetsReporter`)
+- `KPI_UPLOAD_STATS mode=row rows=7 appended=7 updated=0 failed=0 reads=N writes=N retries_429=N retries_other=N duration=Ns` — стоимость загрузки в запросах к Google Sheets
+
+**Processor:**
+- `GOOGLE_SHEETS_RUN_STATS reads=N writes=N retries_429=N retries_other=N` — запросы к Google Sheets за весь запуск (пишется всегда, в том числе при ошибке)
 
 **FailoverState:**
 - `Попытка подключения к целевой системе...`

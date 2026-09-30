@@ -78,6 +78,7 @@ from .storage.failover_state import (
 )
 from .config.scripts.reports_processor_config import BACKFILL_CONFIG
 from scheduler_runner.utils.logging import configure_logger
+from scheduler_runner.utils.uploader import get_google_sheets_request_stats
 
 
 def main():
@@ -369,6 +370,13 @@ def main():
     except Exception as e:
         processor_logger.error(f"Произошла ошибка в продуктовом процессоре: {e}", exc_info=True)
         raise
+    finally:
+        # Сколько запросов к Google Sheets стоил весь запуск: квота общая для всех ПВЗ (60 чтений / 60 записей в минуту)
+        run_stats = get_google_sheets_request_stats()
+        processor_logger.info(
+            f"GOOGLE_SHEETS_RUN_STATS reads={run_stats.get('reads', 0)} writes={run_stats.get('writes', 0)} "
+            f"retries_429={run_stats.get('retries_429', 0)} retries_other={run_stats.get('retries_other', 0)}"
+        )
 
     processor_logger.info("Продуктовый процессор домена reports завершен успешно")
 

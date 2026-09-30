@@ -11,6 +11,7 @@
 - upload_batch_data(): Пакетная загрузка данных
 - test_connection(): Проверка подключения
 - check_missing_items(): Проверка отсутствия комбинаций ключей в таблице
+- get_google_sheets_request_stats() / diff_google_sheets_request_stats(): статистика запросов к Google Sheets (квота)
 
 Параметры, которые принимаются извне:
 - Параметры подключения (путь к учетным данным, ID таблицы и т.д.)
@@ -20,6 +21,10 @@
 """
 
 from .interface import upload_data, upload_batch_data, test_connection, check_missing_items
+from .core.providers.google_sheets.google_sheets_core import (
+    get_google_sheets_request_stats,
+    diff_google_sheets_request_stats,
+)
 from .configs.base_configs.base_uploader_config import BASE_UPLOADER_CONFIG
 from .configs.base_configs.google_sheets_config import GOOGLE_SHEETS_BASE_CONFIG
 
@@ -28,6 +33,8 @@ __all__ = [
     'upload_batch_data',
     'test_connection',
     'check_missing_items',
+    'get_google_sheets_request_stats',
+    'diff_google_sheets_request_stats',
     'BASE_UPLOADER_CONFIG',
     'GOOGLE_SHEETS_BASE_CONFIG'
 ]
