@@ -22,6 +22,60 @@ from scheduler_runner.utils.logging import configure_logger
 from scheduler_runner.utils.system import SystemUtils
 
 
+import requests
+from gspread.http_client import HTTPClient
+
+# Коды, которые повторяет транспортный клиент QuotaBackoffHTTPClient (декоратор ниже их не повторяет повторно)
+TRANSPORT_RETRY_CODES = {408, 429, 500, 502, 503, 504}
+
+
+class QuotaBackoffHTTPClient(HTTPClient):
+    """
+    HTTP-клиент gspread с повтором запросов при превышении квоты и временных сбоях Google Sheets API.
+
+    Квота Sheets API (по умолчанию 60 чтений и 60 записей в минуту на пользователя) общая для всех ПВЗ:
+    они пишут одним сервисным аккаунтом. Квота считается поминутно, поэтому на 429 ждем не меньше минуты;
+    на 408/5xx и сетевые ошибки — экспоненциальная пауза. Встроенный gspread.BackOffHTTPClient не подходит:
+    пауза 2, 4, 8... секунд доходит до минуты только к 5-й попытке, а счетчик хранится на уровне класса.
+    """
+
+    max_attempts: int = 5
+    quota_delay_seconds: float = 65.0
+    base_delay_seconds: float = 5.0
+    max_delay_seconds: float = 60.0
+    jitter_seconds: float = 15.0
+    logger = None
+
+    def _retry_delay(self, attempt: int, code: Optional[int]) -> float:
+        if code == 429:
+            delay = self.quota_delay_seconds
+        else:
+            delay = min(self.base_delay_seconds * (2 ** (attempt - 1)), self.max_delay_seconds)
+        return delay + random.uniform(0, self.jitter_seconds)
+
+    def request(self, *args, **kwargs):
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                return super().request(*args, **kwargs)
+            except gspread.exceptions.APIError as e:
+                code = getattr(e, "code", None)
+                if code not in TRANSPORT_RETRY_CODES or attempt == self.max_attempts:
+                    raise
+                reason = f"HTTP {code}"
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                code = None
+                if attempt == self.max_attempts:
+                    raise
+                reason = type(e).__name__
+            delay = self._retry_delay(attempt, code)
+            if self.logger:
+                self.logger.warning(
+                    f"GOOGLE_SHEETS_RETRY: {reason} на {args[0] if args else ''} запросе, "
+                    f"попытка {attempt}/{self.max_attempts}, пауза {delay:.0f} с"
+                )
+            time.sleep(delay)
+
+
 def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
     """
     Декоратор для retry-механизма при ошибках API Google Sheets.
@@ -46,6 +100,9 @@ def retry_on_api_error(max_retries: int = 3, base_delay: float = 1.0, max_delay:
                     return func(*args, **kwargs)
                 except gspread.exceptions.APIError as e:
                     last_exception = e
+                    if getattr(e, "code", None) in TRANSPORT_RETRY_CODES:
+                        # Уже повторено транспортным клиентом QuotaBackoffHTTPClient
+                        raise
                     if attempt < max_retries:
                         # Exponential backoff с jitter
                         delay = min(base_delay * (2 ** attempt), max_delay)
@@ -122,7 +179,8 @@ class GoogleSheetsReporter:
         )
 
         # Подключение к Google Sheets
-        self.gc = gspread.authorize(credentials)
+        self.gc = gspread.authorize(credentials, http_client=QuotaBackoffHTTPClient)
+        self.gc.http_client.logger = self.logger
 
         # Открытие таблицы
         if len(self.spreadsheet_name) > 20:  # Предполагаем, что это ID
@@ -1020,6 +1078,10 @@ class GoogleSheetsReporter:
         except ValueError:
             # Не перехватываем ValueError, особенно при дубликатах
             raise
+        except gspread.exceptions.APIError:
+            # Ошибка API (например, квота 429 после всех повторов) — не «строка не найдена»,
+            # иначе update_or_append добавит дубликат; вызывающий вернет ошибку операции
+            raise
         except Exception as e:
             self.logger.exception(f"Ошибка при поиске строк по ключам {filtered_unique_key_values}: {e}")
             return None
@@ -1381,6 +1443,9 @@ class GoogleSheetsReporter:
             # Выполняем batch_get запрос
             try:
                 batch_values = self.worksheet.batch_get(ranges)  # list of ValueRange objects
+            except gspread.exceptions.APIError:
+                # Не превращать ошибку чтения в «строк нет»: upsert добавит дубликат вместо обновления
+                raise
             except Exception as e:
                 self.logger.exception("batch_get error: %s", e)
                 return []
@@ -1414,6 +1479,8 @@ class GoogleSheetsReporter:
                 if ok:
                     matches.append(i + 2)  # +2 потому что i начинается с 0, а строки начинаются с 2 (пропускаем заголовки)
             return matches
+        except gspread.exceptions.APIError:
+            raise
         except Exception as e:
             self.logger.error(f"Ошибка поиска строк по ключам (batch): {e}")
             return []

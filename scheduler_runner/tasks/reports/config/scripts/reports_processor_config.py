@@ -25,6 +25,10 @@ BACKFILL_CONFIG = {
     "owner_state_sync_base_delay_seconds": 2.0,
     "owner_state_sync_max_delay_seconds": 8.0,
     "owner_state_sync_jitter_seconds": 1.0,
+    # Квота Google Sheets API общая для всех ПВЗ (один сервисный аккаунт) и считается поминутно:
+    # ПВЗ стартуют одновременно, поэтому загрузка разносится случайной паузой, а 429 повторяется не раньше чем через минуту
+    "upload_start_jitter_seconds": 120,
+    "google_sheets_quota_retry_delay_seconds": 65,
 }
 
 FAILOVER_POLICY_CONFIG = {
@@ -61,7 +65,7 @@ SCHEDULE = [
         "schedule": "daily",
         "time": "21:10",
         "user": "operator",
-        "timeout": 1200,
+        "timeout": 2700,  # парсинг 7 дат ~15 мин + паузы при квоте Google Sheets (429) — с запасом до следующего часа
     },
 ]
 

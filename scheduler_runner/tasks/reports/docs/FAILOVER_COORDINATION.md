@@ -178,6 +178,11 @@ Retryable error при owner state prefetch: [429] ...; attempt=1/3, retry в N.
 
 Non-retryable ошибки (auth, connection) пробрасываются немедленно.
 
+С 30.09.2026 под этим retry работает транспортный повтор `QuotaBackoffHTTPClient` (для всех запросов к Google Sheets):
+429 повторяется через 65+ с до 5 попыток, так как квота восстанавливается поминутно, а паузы 2–4 с ее не дожидаются.
+Ошибка API при чтении состояния (`get_failover_state`, поиск по ключам) пробрасывается, а не трактуется как
+«записи нет» — решение о claim не принимается по неполным данным.
+
 ## Quota Discipline
 
 - один coordination pass за запуск
