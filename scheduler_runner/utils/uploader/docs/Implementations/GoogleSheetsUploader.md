@@ -19,6 +19,11 @@ class GoogleSheetsUploader(BaseReportUploader):
 - `_establish_connection()` - устанавливает подключение к Google Sheets API
 - `_close_connection()` - закрывает подключение к Google Sheets API
 - `_perform_upload()` - выполняет загрузку данных в Google Sheets
+- `batch_upload(data_list, upload_mode=None, strategy=...)` - пакетная загрузка; режим из `upload_mode` или `config["UPLOAD_MODE"]`:
+  - `"row"` (по умолчанию) — построчно через базовый `BaseUploader.batch_upload` (~10 запросов на строку);
+  - `"batch"` — `GoogleSheetsReporter.upsert_rows_batch` (1 чтение и до 2 записей на пакет, см. `Providers/GoogleSheets/Components.md`).
+    В отличие от режима `row`, `success` равен `False`, если не сохранилась хотя бы одна запись, и заполняется `error`
+    (текст первой ошибки — по нему вызывающий код решает о повторе, например при 429)
 - `check_missing_items()` - делегирует read-only coverage-check в `GoogleSheetsReporter`
 - `_perform_upload_process()` - реализует основной процесс загрузки отчетов
 - `upload_multiple_reports()` - загрузка нескольких отчетов

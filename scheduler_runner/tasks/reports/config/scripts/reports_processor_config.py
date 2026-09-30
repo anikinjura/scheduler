@@ -29,6 +29,10 @@ BACKFILL_CONFIG = {
     # ПВЗ стартуют одновременно, поэтому загрузка разносится случайной паузой, а 429 повторяется не раньше чем через минуту
     "upload_start_jitter_seconds": 120,
     "google_sheets_quota_retry_delay_seconds": 65,
+    # Загрузка KPI: "row" — построчный upsert (~10 запросов на строку), "batch" — пакетный (1 чтение и до 2 записей
+    # на пакет + подключение). kpi_upload_mode_by_pvz — включение по ПВЗ, например {"ЧЕБОКСАРЫ_144": "batch"}
+    "kpi_upload_mode": "row",
+    "kpi_upload_mode_by_pvz": {},
 }
 
 FAILOVER_POLICY_CONFIG = {

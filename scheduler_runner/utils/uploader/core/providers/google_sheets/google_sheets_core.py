@@ -972,6 +972,271 @@ class GoogleSheetsReporter:
                 data=data
             )
 
+    def upsert_rows_batch(self,
+                          data_list: List[Dict[str, Any]],
+                          config: Optional[TableConfig] = None,
+                          strategy: str = "update_or_append",
+                          formula_row_placeholder: str = "{row}") -> Dict[str, Any]:
+        """
+        Пакетный upsert: константное число запросов на весь пакет вместо ~10 на строку.
+
+        Запросы (заголовок уже в кэше подключения): 1 batch_get ключевых колонок и timestamp,
+        1 append_rows всех новых строк без формул, 1 batch_update (полные строки обновляемых записей
+        и формулы добавленных строк с номерами из ответа append_rows). Итого 1 чтение и до 2 записей.
+
+        Подготовка и валидация данных, нормализация ключей и состав строки — те же, что у
+        update_or_append_data_with_config. Операция идемпотентна: если batch_update не прошел,
+        повтор найдет добавленные строки по ключам и допишет формулы обновлением.
+
+        Returns:
+            Dict в формате BaseUploader.batch_upload: success, uploaded, failed, details[], а также
+            error (текст первой ошибки — для решения о повторе) и diagnostics.
+        """
+        use_config = config or self.table_config
+        results: List[Optional[Dict[str, Any]]] = [None] * len(data_list)
+        diagnostics = {
+            "mode": "batch", "appended": 0, "updated": 0, "skipped": 0, "superseded": 0,
+            "duplicate_sheet_rows": 0, "append_range_fallback": False,
+        }
+
+        def finish() -> Dict[str, Any]:
+            details = [
+                {"index": i, "data_sample": str(data_list[i])[:100], "result": result}
+                for i, result in enumerate(results)
+            ]
+            failed = [d for d in details if not d["result"].get("success", False)]
+            summary = {
+                "success": not failed,
+                "uploaded": len(details) - len(failed),
+                "failed": len(failed),
+                "details": details,
+                "diagnostics": diagnostics,
+            }
+            if failed:
+                summary["error"] = failed[0]["result"].get("message", "batch upsert failed")
+            self.logger.info(
+                f"Пакетный upsert: строк={len(data_list)}, добавлено={diagnostics['appended']}, "
+                f"обновлено={diagnostics['updated']}, ошибок={len(failed)}"
+            )
+            return summary
+
+        def fail(indexes, message, data_by_index=None):
+            for i in indexes:
+                data = (data_by_index or {}).get(i, data_list[i])
+                results[i] = self._create_result(success=False, action="error", message=message, data=data)
+
+        if not use_config:
+            fail(range(len(data_list)), "Не указана конфигурация таблицы")
+            return finish()
+
+        # 1. Подготовка и валидация — как в построчном режиме
+        prepared: Dict[int, Dict[str, Any]] = {}
+        for i, data in enumerate(data_list):
+            prepared_data = self._prepare_data_for_table(data or {}, use_config)
+            if not data or not self._validate_data_for_config(prepared_data, use_config):
+                results[i] = self._create_result(success=False, action="error",
+                                                 message="Данные не прошли валидацию", data=prepared_data)
+                continue
+            prepared[i] = prepared_data
+
+        key_columns = list(use_config.unique_key_columns or [])
+
+        def key_of(record: Dict[str, Any]) -> tuple:
+            return tuple(self._normalize_for_comparison(self._prepare_value_for_search(record.get(k, "")))
+                         for k in key_columns)
+
+        # 2. Дубли во входных данных: по одному ключу побеждает последняя запись
+        latest: Dict[tuple, int] = {}
+        for i, prepared_data in prepared.items():
+            key = key_of(prepared_data) if key_columns else ("__row__", i)
+            if key in latest:
+                previous = latest[key]
+                results[previous] = self._create_result(
+                    success=True, action="superseded",
+                    message=f"Заменено записью #{i} с тем же ключом", data=prepared[previous])
+                diagnostics["superseded"] += 1
+            latest[key] = i
+
+        headers = self._get_headers()
+
+        # 3. Одно чтение: какие ключи уже есть в таблице (и timestamp этих строк)
+        existing_rows: Dict[tuple, int] = {}
+        timestamps: Dict[int, Any] = {}
+        if strategy != "append_only" and key_columns and latest:
+            try:
+                existing_rows, timestamps, duplicates = self._read_rows_by_keys(headers, key_columns)
+                diagnostics["duplicate_sheet_rows"] = duplicates
+            except Exception as e:
+                fail(latest.values(), f"Ошибка чтения ключей: {e}", prepared)
+                return finish()
+
+        to_update: List[tuple] = []
+        to_append: List[int] = []
+        for key, i in latest.items():
+            row = existing_rows.get(key)
+            if row:
+                to_update.append((i, row))
+            elif strategy == "update_only":
+                results[i] = self._create_result(success=True, action="skipped",
+                                                 message="Стратегия указывает пропустить операцию", data=prepared[i])
+                diagnostics["skipped"] += 1
+            else:
+                to_append.append(i)
+
+        # 4. Одна запись: все новые строки без формул (позицию выбирает Google — параллельные ПВЗ не затирают строки)
+        appended_rows: Dict[int, Optional[int]] = {}
+        if to_append:
+            values = [self._row_values_for_append(headers, use_config, prepared[i]) for i in to_append]
+            try:
+                response = self.worksheet.append_rows(values=values, value_input_option="USER_ENTERED")
+            except Exception as e:
+                fail(to_append, f"Ошибка добавления строк: {e}", prepared)
+                to_append = []
+            else:
+                row_numbers = self._rows_from_append_response(response, len(to_append))
+                if row_numbers is None:
+                    diagnostics["append_range_fallback"] = True
+                    self.logger.warning(f"Номера добавленных строк не определены из ответа: {response}; ищем по ключам")
+                    try:
+                        found, _, _ = self._read_rows_by_keys(headers, key_columns)
+                        row_numbers = [found.get(key_of(prepared[i])) for i in to_append]
+                    except Exception as e:
+                        self.logger.error(f"Поиск добавленных строк по ключам не удался: {e}")
+                        row_numbers = [None] * len(to_append)
+                appended_rows = dict(zip(to_append, row_numbers))
+
+        # 5. Одна запись: полные строки обновляемых записей и формулы добавленных строк
+        update_data = []
+        last_column = _index_to_column_letter(len(headers))
+        for i, row in to_update:
+            update_data.append({
+                "range": f"A{row}:{last_column}{row}",
+                "values": [self._row_values_for_update(headers, use_config, prepared[i], row,
+                                                       formula_row_placeholder, timestamps.get(row, ""))],
+            })
+        for i, row in appended_rows.items():
+            if row:
+                update_data.extend(self._formula_cells(headers, use_config, row, formula_row_placeholder))
+
+        write_error = None
+        if update_data:
+            try:
+                self.worksheet.batch_update(update_data, value_input_option="USER_ENTERED")
+            except Exception as e:
+                write_error = str(e)
+
+        for i, row in to_update:
+            if write_error:
+                fail([i], f"Ошибка обновления строки {row}: {write_error}", prepared)
+            else:
+                results[i] = self._create_result(success=True, action="updated",
+                                                 message=f"Строка {row} обновлена", data=prepared[i], row_number=row)
+                diagnostics["updated"] += 1
+        for i, row in appended_rows.items():
+            if not row:
+                fail([i], "Строка добавлена, но ее номер не определен: формулы не записаны", prepared)
+            elif write_error:
+                fail([i], f"Строка {row} добавлена без формул ({write_error}); повтор загрузки допишет их", prepared)
+            else:
+                results[i] = self._create_result(success=True, action="appended",
+                                                 message=f"Строка {row} добавлена", data=prepared[i], row_number=row)
+                diagnostics["appended"] += 1
+
+        return finish()
+
+    def _read_rows_by_keys(self, headers: List[str], key_columns: List[str]) -> tuple:
+        """
+        Одно чтение (batch_get открытых диапазонов) ключевых колонок и timestamp.
+
+        Returns:
+            (карта нормализованный ключ -> номер первой строки, карта строка -> timestamp, число строк-дублей)
+        """
+        header_index = {h.strip(): i for i, h in enumerate(headers)}
+        columns = list(key_columns) + (["timestamp"] if "timestamp" in header_index else [])
+        missing = [c for c in columns if c not in header_index]
+        if missing:
+            raise ValueError(f"Колонки не найдены в заголовке листа: {missing}")
+
+        letters = [_index_to_column_letter(header_index[c] + 1) for c in columns]
+        batch_values = self.worksheet.batch_get([f"{letter}2:{letter}" for letter in letters])
+        column_values = {}
+        for column, values in zip(columns, batch_values):
+            column_values[column] = [row[0] if isinstance(row, list) and row else "" for row in values]
+
+        rows: Dict[tuple, int] = {}
+        timestamps: Dict[int, Any] = {}
+        duplicates = 0
+        max_len = max((len(v) for c, v in column_values.items() if c in key_columns), default=0)
+        for index in range(max_len):
+            raw = [column_values[c][index] if index < len(column_values[c]) else "" for c in key_columns]
+            if all(value in ("", None) for value in raw):
+                continue
+            key = tuple(self._normalize_for_comparison(self._prepare_value_for_search(value)) for value in raw)
+            row_number = index + 2
+            if key in rows:
+                duplicates += 1
+                continue
+            rows[key] = row_number
+            ts_values = column_values.get("timestamp", [])
+            timestamps[row_number] = ts_values[index] if index < len(ts_values) else ""
+        if duplicates:
+            self.logger.warning(f"KPI_BATCH_DUPLICATE_ROWS: в листе {duplicates} строк с повторяющимся ключом {key_columns}, используется первая")
+        return rows, timestamps, duplicates
+
+    @staticmethod
+    def _rows_from_append_response(response: Any, expected_count: int) -> Optional[List[int]]:
+        """Номера строк из ответа append_rows (updates.updatedRange, например 'KPI'!A349:K355)."""
+        import re
+        if not isinstance(response, dict):
+            return None
+        updated_range = (response.get("updates") or response).get("updatedRange", "")
+        match = re.search(r"![A-Z]+(\d+)(?::[A-Z]+(\d+))?$", updated_range)
+        if not match:
+            return None
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if end - start + 1 != expected_count:
+            return None
+        return list(range(start, end + 1))
+
+    def _row_values_for_append(self, headers: List[str], config: TableConfig, data: Dict[str, Any]) -> List[Any]:
+        """Строка для append_rows: значения данных, формульные колонки пустые (номер строки еще неизвестен)."""
+        values = []
+        for header in headers:
+            col_def = config.get_column(header)
+            if not col_def or (col_def.column_type == ColumnType.FORMULA and col_def.formula_template):
+                values.append("")
+            else:
+                values.append(data.get(col_def.name, ""))
+        return values
+
+    def _row_values_for_update(self, headers: List[str], config: TableConfig, data: Dict[str, Any], row_number: int,
+                               formula_row_placeholder: str, existing_timestamp: Any) -> List[Any]:
+        """Полная строка для обновления — как _update_existing_row: формулы с номером строки, timestamp сохраняется."""
+        values = []
+        for header in headers:
+            col_def = config.get_column(header)
+            if header == "timestamp":
+                values.append(existing_timestamp or "")
+            elif not col_def:
+                values.append("")
+            elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+                values.append(col_def.formula_template.replace(formula_row_placeholder, str(row_number)))
+            else:
+                values.append(data.get(col_def.name, ""))
+        return values
+
+    def _formula_cells(self, headers: List[str], config: TableConfig, row_number: int,
+                       formula_row_placeholder: str) -> List[Dict[str, Any]]:
+        """Диапазоны batch_update с формулами одной строки."""
+        cells = []
+        for index, header in enumerate(headers):
+            col_def = config.get_column(header)
+            if col_def and col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
+                formula = col_def.formula_template.replace(formula_row_placeholder, str(row_number))
+                cells.append({"range": f"{_index_to_column_letter(index + 1)}{row_number}", "values": [[formula]]})
+        return cells
+
     def _prepare_data_for_table(self, data: Dict[str, Any], config: TableConfig) -> Dict[str, Any]:
         """
         Подготавливает данные для записи в таблицу.

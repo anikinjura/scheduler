@@ -36,7 +36,7 @@ Windows свой PATH и свои user site-packages. Двойной клик и
 python scheduler_runner\utils\parser\docs\debug\kpi_last_dates.py
 python scheduler_runner\utils\parser\docs\debug\kpi_last_dates.py --show-from 2026-09-20
 ```
-Последняя дата и пропуски в листе `KPI` по каждому ПВЗ; `--show-from` выводит значения. Строки smoke-тестов (2099 год)
+Последняя дата, пропуски и дубликаты (ПВЗ + дата) в листе `KPI` по каждому ПВЗ; `--show-from` выводит значения. Строки smoke-тестов (2099 год)
 не учитываются. Одна дата обрыва у всех ПВЗ указывает на внешнюю причину (Ozon, Edge), а не на конкретную машину.
 
 ## Разметка Турбо ПВЗ (консоль Edge)

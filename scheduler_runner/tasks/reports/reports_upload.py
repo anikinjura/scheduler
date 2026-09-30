@@ -96,6 +96,36 @@ def log_upload_stats(logger, *, mode, rows, upload_result, request_stats, starte
     )
 
 
+def resolve_kpi_upload_mode(pvz_id=PVZ_ID):
+    """
+    Режим загрузки KPI: "row" (построчный upsert) или "batch" (пакетный: 1 чтение и до 2 записей на пакет).
+    kpi_upload_mode_by_pvz позволяет включить пакетный режим сначала на отдельных ПВЗ.
+    """
+    mode = (BACKFILL_CONFIG.get("kpi_upload_mode_by_pvz") or {}).get(pvz_id) or BACKFILL_CONFIG.get("kpi_upload_mode", "row")
+    return mode if mode in ("row", "batch") else "row"
+
+
+def upload_records(upload_data_list, connection_params, logger, mode):
+    """Одна попытка загрузки. В режиме batch отдельной проверки подключения нет: подключение загрузчика и есть проверка."""
+    if mode == "row":
+        connection_result = test_upload_connection(connection_params, logger=logger)
+        logger.info(f"Результат проверки подключения: {connection_result}")
+        if not connection_result.get("success", False):
+            return {
+                "success": False,
+                "error": "Не удалось подключиться к Google Sheets",
+                "uploaded_records": 0,
+                "connection_params_valid": connection_result.get("connection_params_valid"),
+            }
+    return upload_batch_data(
+        data_list=upload_data_list,
+        connection_params=connection_params,
+        logger=logger,
+        strategy="update_or_append",
+        UPLOAD_MODE=mode,
+    )
+
+
 def is_quota_error(error_text):
     normalized_error = str(error_text or "").lower()
     return any(marker in normalized_error for marker in ("[429]", "quota exceeded", "rate_limit_exceeded", "resource_exhausted"))
@@ -365,21 +395,12 @@ def run_upload_microservice(parsing_result=None):
 
     connection_params = prepare_connection_params()
     upload_data_list = prepare_upload_data(parsing_result)
+    mode = resolve_kpi_upload_mode()
     stats_before = get_google_sheets_request_stats()
     started_at = time.monotonic()
 
-    connection_result = test_upload_connection(connection_params, logger=logger)
-    logger.info(f"Результат проверки подключения: {connection_result}")
-    if not connection_result.get("success", False):
-        return {"success": False, "error": "Не удалось подключиться к Google Sheets"}
-
-    upload_result = upload_batch_data(
-        data_list=upload_data_list,
-        connection_params=connection_params,
-        logger=logger,
-        strategy="update_or_append",
-    )
-    log_upload_stats(logger, mode="row", rows=len(upload_data_list), upload_result=upload_result,
+    upload_result = upload_records(upload_data_list, connection_params, logger, mode)
+    log_upload_stats(logger, mode=mode, rows=len(upload_data_list), upload_result=upload_result,
                      request_stats=diff_google_sheets_request_stats(stats_before), started_at=started_at)
     return upload_result
 
@@ -396,33 +417,16 @@ def run_upload_batch_microservice(batch_parsing_result=None):
         return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
 
     wait_upload_start_jitter(logger=logger)
+    mode = resolve_kpi_upload_mode()
     stats_before = get_google_sheets_request_stats()
     started_at = time.monotonic()
 
-    def perform_upload_attempt():
-        connection_result = test_upload_connection(connection_params, logger=logger)
-        logger.info(f"Результат проверки подключения: {connection_result}")
-        if not connection_result.get("success", False):
-            return {
-                "success": False,
-                "error": "Не удалось подключиться к Google Sheets",
-                "uploaded_records": 0,
-                "connection_params_valid": connection_result.get("connection_params_valid"),
-            }
-
-        return upload_batch_data(
-            data_list=upload_data_list,
-            connection_params=connection_params,
-            logger=logger,
-            strategy="update_or_append",
-        )
-
     upload_result = run_google_sheets_upload_with_retry(
-        upload_callable=perform_upload_attempt,
+        upload_callable=lambda: upload_records(upload_data_list, connection_params, logger, mode),
         logger=logger,
     )
     upload_result["uploaded_records"] = len(upload_data_list)
-    log_upload_stats(logger, mode="row", rows=len(upload_data_list), upload_result=upload_result,
+    log_upload_stats(logger, mode=mode, rows=len(upload_data_list), upload_result=upload_result,
                      request_stats=diff_google_sheets_request_stats(stats_before), started_at=started_at)
     return upload_result
 
