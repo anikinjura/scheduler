@@ -48,6 +48,12 @@ __version__ = '0.0.1'
 
 # Импортируем PVZ_ID из базовой конфигурации
 from config.base_config import PVZ_ID
+
+# Источник данных парсера по ПВЗ машины (docs/MODERNIZATION_PLAN.md, этап 4 — обкатка на проде).
+# 30.09.2026: ЧЕБОКСАРЫ_144 — "api": в разметке ноль выдач неотличим от незагрузившейся страницы, в API — явный totalCount.
+DATA_SOURCE_MODE_BY_PVZ = {
+    "ЧЕБОКСАРЫ_144": "api",
+}
 from .base_report_config import BASE_REPORT_CONFIG
 
 # Базовая конфигурация для парсера отчетов Ozon
@@ -64,7 +70,8 @@ OZON_BASE_CONFIG = {
     # dom — числа из разметки страницы (текущее поведение); shadow — из разметки, плюс сравнение со значением из API
     # в логе; api_with_dom_fallback — из API, при сбое из разметки; api — только из API, при сбое явная ошибка.
     # В режимах кроме dom после старта браузера ставится перехватчик ответов API (API_CAPTURE_INSTALLED).
-    "DATA_SOURCE_MODE": "dom",
+    # Режим задается по ПВЗ машины (PVZ_ID из pvz_config.ini) через DATA_SOURCE_MODE_BY_PVZ, остальные — "dom".
+    "DATA_SOURCE_MODE": DATA_SOURCE_MODE_BY_PVZ.get(PVZ_ID, "dom"),
     # wait_timeout: ожидание ответа API после загрузки страницы; при отсутствии ответа страница перезагружается один раз
     # (API_RETRY_RELOAD). 30.09.2026 при нестабильной сети первая страница сессии получала данные дольше 15 с.
     "api_capture": {"wait_timeout": 30, "poll_interval": 0.5, "max_records": 500, "max_body_chars": 2_000_000},

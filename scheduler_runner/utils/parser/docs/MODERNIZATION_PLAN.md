@@ -206,7 +206,7 @@ query-параметры содержат указанные значения (�
 | 1 ✅ | `ApiResponseCapture`, установка в `setup_browser`, параметр `DATA_SOURCE_MODE`, тесты | `dom` | все тесты проходят, поведение в `dom` не изменилось; живая проверка — раздел 10 |
 | 2 ✅ | `api_extraction` в шагах, `_handle_api_extraction`, режимы `shadow`/`api_with_dom_fallback`/`api`, smoke `--data_source` | `dom` | smoke за 28.09 для 144 в `api` совпадает с DOM (508/89/24) — раздел 11 |
 | 3 | ПВЗ через API: текущий, список, проверка переключения | `dom` | smoke с переключением 143 ↔ 144 и discovery в `api` |
-| 4 | Обкатка: `shadow` на 144 не менее 7 вечерних запусков | `shadow` | нет `API_SHADOW_MISMATCH` |
+| 4 🔄 | Обкатка на 144: сразу `api` (решение 30.09.2026 вместо `shadow` — в `shadow` результат берется из разметки с «тихим нулем» выдачи), режим по ПВЗ — `DATA_SOURCE_MODE_BY_PVZ` в `ozon_report_config.py` | `api` на 144 | 7 вечерних запусков без ошибок `API_*` и `PARTIAL_DATE_REJECTED` по вине API |
 | 5 | Переход: `api_with_dom_fallback`, затем `api`; распространение на остальные ПВЗ через `UpdaterScript` | `api` | 7 запусков без `API_EXTRACTION_FALLBACK` |
 | 6 | (опционально) удаление DOM-селекторов шагов данных | `api` | решение принимается отдельно |
 
