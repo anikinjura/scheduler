@@ -88,6 +88,13 @@ Edge запрещает Selenium на профиле по умолчанию, п
 Подробности: [BaseParser/setup_browser().md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/BaseParser/setup_browser().md),
 диагностика: [DEBUG_GUIDE.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/DEBUG_GUIDE.md).
 
+## Источник данных (`DATA_SOURCE_MODE`)
+
+Параметр в `configs/base_configs/ozon_report_config.py`: `dom` (по умолчанию — числа из разметки страницы) |
+`shadow` | `api_with_dom_fallback` | `api`. В режимах кроме `dom` после старта браузера в страницу встраивается
+перехватчик ответов API (`core/api_response_capture.py`, в логе `API_CAPTURE_INSTALLED`). Извлечение чисел шагов из API —
+этап 2 плана [MODERNIZATION_PLAN.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/MODERNIZATION_PLAN.md).
+
 ## Facade API
 
 Основные facade функции описаны в [ParserInvocation/README.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/ParserInvocation/README.md).

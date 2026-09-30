@@ -61,7 +61,13 @@ def setup_browser(self, browser_config: Optional[Dict[str, Any]] = None) -> bool
 - `headless` / `HEADLESS` - режим headless.
 - `window_size` - размер окна.
 
+## Перехват ответов API
+Если `DATA_SOURCE_MODE` не `dom`, после успешного старта драйвера (primary или fallback) вызывается
+`_install_api_capture()`: перехватчик `fetch`/XHR регистрируется через CDP `Page.addScriptToEvaluateOnNewDocument`
+до первой навигации и доступен как `self.api_capture`. Сбой установки не прерывает запуск браузера.
+
 ## Диагностические маркеры в логах
+- `API_CAPTURE_INSTALLED` / `API_CAPTURE_INSTALL_FAILED` - установка перехватчика ответов API.
 - `EDGE_SNAPSHOT` - профиль скопирован (время, пути) или ошибка копирования.
 - `EDGE_SNAPSHOT_SYNC` / `EDGE_SNAPSHOT_SYNC_SKIPPED` / `EDGE_SNAPSHOT_SYNC_FAILED` - обратная запись сессии.
 - `ENV_BROWSER_STARTUP_CONTEXT` - снимок окружения перед запуском.
@@ -73,6 +79,7 @@ def setup_browser(self, browser_config: Optional[Dict[str, Any]] = None) -> bool
 
 ## Внутренние helper-методы
 - `_start_edge_driver_with_retries(...)`
+- `_install_api_capture()`
 - `_build_edge_options(...)`
 - `_is_snapshot_profile_mode(config)`
 - `_get_snapshot_user_data_dir()`
