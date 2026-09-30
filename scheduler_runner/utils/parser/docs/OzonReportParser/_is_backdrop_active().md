@@ -90,3 +90,8 @@ if self._is_backdrop_active():
 [10:32:31] DEBUG Backdrop найден: selector='//div[contains(@class, 'ozi__backdrop__backdrop__')]...', class='ozi__backdrop__backdrop__xyz123...'
 [10:32:31] DEBUG   style='position: fixed; z-index: 1000; ...'
 ```
+
+### Изменения 30.09.2026
+Проверка переведена на поиск без ожидания (`_find_elements_now`, implicit wait 0): фон либо показан сейчас,
+либо нет. Раньше — `WebDriverWait` до 1 с на каждый из 4 селекторов (~4–8 с на каждую «чистую» проверку
+оверлея, которых несколько на каждую дату).

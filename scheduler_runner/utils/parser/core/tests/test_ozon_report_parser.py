@@ -315,6 +315,7 @@ class TestOzonReportParser(unittest.TestCase):
             "wait_timeout": 1,
             "retry_count": 1,
             "retry_delay": 0,
+            "transition_wait": 0,
         }
         self.parser._is_overlay_present = Mock(side_effect=[True, False])
         self.parser._click_close_button = Mock(side_effect=[False, True])
@@ -324,6 +325,51 @@ class TestOzonReportParser(unittest.TestCase):
         self.assertTrue(result)
         self.parser._click_close_button.assert_any_call("//first")
         self.parser._click_close_button.assert_any_call("//second")
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep")
+    def test_check_and_close_overlay_waits_out_backdrop_only_transition(self, mock_sleep):
+        """Окно скрыто, виден только фон: ждем анимацию и не кликаем, если оверлей исчез."""
+        self.parser.config["overlay_config"] = {
+            "enabled": True, "overlay_selector": "//overlay", "close_button_candidates": ["//first"],
+            "wait_timeout": 1, "retry_count": 3, "retry_delay": 0, "transition_wait": 2,
+        }
+        self.parser._is_overlay_present = Mock(side_effect=[True, False])
+        self.parser._is_overlay_dialog_visible = Mock(return_value=False)
+        self.parser._click_close_button = Mock()
+
+        self.assertTrue(self.parser._check_and_close_overlay())
+        mock_sleep.assert_called_once_with(2)
+        self.parser._click_close_button.assert_not_called()
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep")
+    def test_unclosable_overlay_dumps_artifacts_once(self, mock_sleep):
+        self.parser.config["overlay_config"] = {
+            "enabled": True, "overlay_selector": "//overlay", "close_button_candidates": ["//first"],
+            "wait_timeout": 1, "retry_count": 2, "retry_delay": 0, "transition_wait": 0,
+        }
+        self.parser._is_overlay_present = Mock(return_value=True)
+        self.parser._click_close_button = Mock(return_value=False)
+        self.parser.dump_debug_artifacts = Mock(return_value={"screenshot_path": "x.png"})
+
+        self.assertFalse(self.parser._check_and_close_overlay())
+        self.assertFalse(self.parser._check_and_close_overlay())
+        self.parser.dump_debug_artifacts.assert_called_once_with("overlay_not_closed")
+
+    def test_click_close_button_does_not_wait_and_skips_hidden(self):
+        hidden, visible = Mock(), Mock()
+        hidden.is_displayed.return_value = False
+        visible.is_displayed.return_value = True
+        visible.is_enabled.return_value = True
+        self.parser._find_elements_now = Mock(return_value=[hidden, visible])
+
+        with patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep"):
+            self.assertTrue(self.parser._click_close_button("//button"))
+        hidden.click.assert_not_called()
+        visible.click.assert_called_once()
+
+    def test_click_close_button_returns_false_when_absent(self):
+        self.parser._find_elements_now = Mock(return_value=[])
+        self.assertFalse(self.parser._click_close_button("//button"))
 
     # Тесты для метода ensure_correct_pvz
     def test_ensure_correct_pvz_with_matching_pvz(self):

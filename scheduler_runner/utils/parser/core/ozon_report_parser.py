@@ -666,6 +666,16 @@ class OzonReportParser(BaseReportParser):
 
         # Проверяем наличие оверлея на странице
         if self._is_overlay_present(overlay_selector, wait_timeout):
+            transition_wait = overlay_config.get("transition_wait", 2)
+            if transition_wait and not self._is_overlay_dialog_visible(overlay_selector):
+                # Окно в DOM скрыто, виден только затемненный фон: как правило, идет анимация открытия/закрытия
+                if self.logger:
+                    self.logger.debug(f"Окно оверлея скрыто, виден только фон — ждем завершения анимации {transition_wait} с")
+                time.sleep(transition_wait)
+                if not self._is_overlay_present(overlay_selector, timeout=0):
+                    if self.logger:
+                        self.logger.debug("Оверлей исчез после завершения анимации")
+                    return True
             if self.logger:
                 self.logger.info("Обнаружен оверлей на странице, пытаемся закрыть...")
 
@@ -699,11 +709,40 @@ class OzonReportParser(BaseReportParser):
             # Если все попытки исчерпаны
             if self.logger:
                 self.logger.error(f"Не удалось закрыть оверлей после {retry_count} попыток")
+            if not getattr(self, "_overlay_artifacts_dumped", False):
+                # Один раз за запуск: скриншот и HTML незакрытого окна — чтобы подобрать селектор его кнопки
+                self._overlay_artifacts_dumped = True
+                artifacts = self.dump_debug_artifacts("overlay_not_closed")
+                if self.logger and artifacts:
+                    self.logger.error(f"OVERLAY_NOT_CLOSED: артефакты сохранены: {artifacts}")
             return False
         else:
             if self.logger:
                 self.logger.debug("Оверлей не обнаружен на странице")
             return True
+
+    def _find_elements_now(self, selector: str) -> list:
+        """Элементы по XPath без ожидания (implicit wait временно 0) — для проверок «есть ли сейчас»."""
+        if not getattr(self, "driver", None):
+            return []
+        old_implicit_wait = self.driver.timeouts.implicit_wait
+        try:
+            self.driver.implicitly_wait(0)
+            return self.driver.find_elements(By.XPATH, selector)
+        except Exception:
+            return []
+        finally:
+            self.driver.implicitly_wait(old_implicit_wait)
+
+    def _is_overlay_dialog_visible(self, overlay_selector: str) -> bool:
+        """Видно ли само окно оверлея (а не только затемненный фон)."""
+        for element in self._find_elements_now(overlay_selector):
+            try:
+                if element.is_displayed():
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _click_close_button_candidates(self, selectors: list[str]) -> bool:
         """Последовательно пробует несколько селекторов кнопки закрытия overlay."""
@@ -821,10 +860,6 @@ class OzonReportParser(BaseReportParser):
             self.logger.trace("Попали в метод OzonReportParser._is_backdrop_active")
 
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-
             # Получаем селекторы backdrop из конфигурации
             overlay_config = self.config.get("overlay_config", {})
             backdrop_selectors = overlay_config.get("backdrop_selectors", [])
@@ -837,44 +872,18 @@ class OzonReportParser(BaseReportParser):
             if self.logger:
                 self.logger.debug(f"Проверка backdrop: {len(backdrop_selectors)} селекторов из конфигурации")
 
-            # === ОПТИМИЗАЦИЯ ПРОИЗВОДИТЕЛЬНОСТИ ===
-            # Сохраняем текущий implicit_wait для последующего восстановления
-            old_implicit_wait = self.driver.timeouts.implicit_wait
-            
-            try:
-                # Устанавливаем короткий implicit_wait для быстрой проверки
-                # Это критично для производительности: без этого WebDriverWait ждёт до implicit_wait
-                self.driver.implicitly_wait(0.5)  # 0.5 секунды вместо 20
-                
-                # Используем короткий таймаут для проверки backdrop (1 сек)
-                # 4 селектора × 1 сек = 4 секунды на проверку (вместо 80 сек с implicit_wait(20))
-                backdrop_timeout = 1  # секунды на каждый селектор
-
-                for selector in backdrop_selectors:
+            # Проверка без ожидания: фон либо показан сейчас, либо нет (раньше — до 1 с на каждый из 4 селекторов)
+            for selector in backdrop_selectors:
+                for elem in self._find_elements_now(selector):
                     try:
-                        # Быстрая проверка наличия элементов с коротким таймаутом
-                        backdrop_elements = WebDriverWait(self.driver, backdrop_timeout).until(
-                            EC.presence_of_all_elements_located((By.XPATH, selector)),
-                            message=f"Backdrop check timeout for selector: {selector[:50]}..."
-                        )
-
-                        for elem in backdrop_elements:
-                            if elem.is_displayed():
-                                elem_class = elem.get_attribute('class')
-                                elem_style = elem.get_attribute('style')
-                                if self.logger:
-                                    self.logger.debug(f"Backdrop найден: selector='{selector[:60]}...', class='{elem_class[:80] if elem_class else None}...'")
-                                    if elem_style:
-                                        self.logger.debug(f"  style='{elem_style[:100]}...'")
-                                return True
+                        if not elem.is_displayed():
+                            continue
                     except Exception:
-                        # Элементы не найдены или таймаут - переходим к следующему селектору
-                        pass
-            finally:
-                # Восстанавливаем исходный implicit_wait
-                self.driver.implicitly_wait(old_implicit_wait)
-                if self.logger:
-                    self.logger.debug(f"Восстановлен implicit_wait: {old_implicit_wait} сек")
+                        continue
+                    if self.logger:
+                        elem_class = elem.get_attribute('class')
+                        self.logger.debug(f"Backdrop найден: selector='{selector[:60]}...', class='{elem_class[:80] if elem_class else None}...'")
+                    return True
 
             if self.logger:
                 self.logger.debug("Backdrop не активен")
@@ -887,47 +896,31 @@ class OzonReportParser(BaseReportParser):
 
     def _click_close_button(self, selector: str) -> bool:
         """
-        Клик по кнопке закрытия оверлея
+        Клик по кнопке закрытия оверлея — без ожидания.
 
-        Метод находит кнопку закрытия по селектору и выполняет клик по ней.
-
-        Args:
-            selector: XPath или CSS селектор для поиска кнопки закрытия
+        Вызывается, когда оверлей уже обнаружен: кнопка либо есть на странице сейчас, либо ее нет.
+        Раньше на каждый селектор ждали кликабельности до 5 с, и неудачная попытка по 7 селекторам
+        стоила ~35 с (3 попытки — ~1 мин 50 с на каждую проверку оверлея).
 
         Returns:
-            bool: True, если клик успешно выполнен, False в случае ошибки
+            bool: True, если найден видимый активный элемент и по нему выполнен клик
         """
         if self.logger:
             self.logger.trace(f"Попали в метод OzonReportParser._click_close_button с селектором: {selector}")
 
-        try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-
+        for element in self._find_elements_now(selector):
+            try:
+                if not (element.is_displayed() and element.is_enabled()):
+                    continue
+            except Exception:
+                continue
+            try:
+                element.click()
+            except Exception:
+                # Перекрыт анимацией/фоном — клик через JS по тому же элементу
+                self.driver.execute_script("arguments[0].click();", element)
             if self.logger:
-                self.logger.debug(f"Поиск кнопки закрытия по селектору: {selector}")
-
-            # Ждём кликабельности элемента
-            close_button = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, selector))
-            )
-
-            if self.logger:
-                self.logger.debug("Кнопка закрытия найдена и кликабельна, выполняем клик")
-
-            # Выполняем клик
-            close_button.click()
-
-            if self.logger:
-                self.logger.info("Клик по кнопке закрытия успешно выполнен")
-
-            # Небольшая задержка после клика
+                self.logger.info(f"Клик по кнопке закрытия оверлея выполнен: {selector}")
             time.sleep(0.5)
-
             return True
-
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"Не удалось кликнуть по кнопке закрытия: {e}")
-            return False
+        return False
