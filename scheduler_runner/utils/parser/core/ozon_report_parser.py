@@ -664,18 +664,27 @@ class OzonReportParser(BaseReportParser):
         if self.logger:
             self.logger.debug(f"Проверка оверлея: selector={overlay_selector}, timeout={wait_timeout}s")
 
+        # Всплывающие уведомления («Внимание — У вас N непрочитанных сообщений») не блокируют страницу фоном,
+        # но перекрывают элементы, например выбор ПВЗ (30.09.2026: клики по списку ПВЗ уходили в уведомление)
+        self._dismiss_notifications(overlay_config.get("notification_close_selectors") or [])
+
         # Проверяем наличие оверлея на странице
         if self._is_overlay_present(overlay_selector, wait_timeout):
             transition_wait = overlay_config.get("transition_wait", 2)
             if transition_wait and not self._is_overlay_dialog_visible(overlay_selector):
-                # Окно в DOM скрыто, виден только затемненный фон: как правило, идет анимация открытия/закрытия
+                # Окно в DOM скрыто, виден только затемненный фон: идет анимация открытия/закрытия.
+                # Ждем, пока окно станет видимым (тогда закрываем) или исчезнет — появление бывает медленным (>10 с).
                 if self.logger:
-                    self.logger.debug(f"Окно оверлея скрыто, виден только фон — ждем завершения анимации {transition_wait} с")
-                time.sleep(transition_wait)
-                if not self._is_overlay_present(overlay_selector, timeout=0):
-                    if self.logger:
-                        self.logger.debug("Оверлей исчез после завершения анимации")
-                    return True
+                    self.logger.debug(f"Окно оверлея скрыто, виден только фон — ждем до {transition_wait} с")
+                deadline = time.monotonic() + transition_wait
+                while time.monotonic() < deadline:
+                    time.sleep(0.5)
+                    if self._is_overlay_dialog_visible(overlay_selector):
+                        break
+                    if not self._is_overlay_present(overlay_selector, timeout=0):
+                        if self.logger:
+                            self.logger.debug("Оверлей исчез после завершения анимации")
+                        return True
             if self.logger:
                 self.logger.info("Обнаружен оверлей на странице, пытаемся закрыть...")
 
@@ -733,6 +742,25 @@ class OzonReportParser(BaseReportParser):
             return []
         finally:
             self.driver.implicitly_wait(old_implicit_wait)
+
+    def _dismiss_notifications(self, selectors: list) -> int:
+        """
+        Закрывает всплывающие уведомления по их крестику (JS-клик); возвращает число нажатых крестиков.
+        Видимость не проверяется: крестик — SVG внутри анимируемого уведомления, Selenium может считать его невидимым,
+        а клик по крестику уже скрытого уведомления ничему не вредит.
+        """
+        closed = 0
+        for selector in selectors:
+            for element in self._find_elements_now(selector):
+                try:
+                    self._js_click(element)
+                    closed += 1
+                except Exception:
+                    continue
+        if closed and self.logger:
+            self.logger.info(f"NOTIFICATION_DISMISSED: закрыто уведомлений: {closed}")
+            time.sleep(0.5)
+        return closed
 
     def _is_overlay_dialog_visible(self, overlay_selector: str) -> bool:
         """Видно ли само окно оверлея (а не только затемненный фон)."""

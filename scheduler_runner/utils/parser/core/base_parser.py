@@ -36,6 +36,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import ElementClickInterceptedException
 from datetime import datetime
 from typing import Dict, Any, Union, Optional
 from scheduler_runner.utils.logging import ensure_logger_artifacts_dir
@@ -1064,7 +1065,14 @@ class BaseParser(ABC):
 
             if self.logger:
                 self.logger.debug(f"Элемент найден, выполнение клика")
-            element.click()
+            try:
+                element.click()
+            except ElementClickInterceptedException as intercepted:
+                # Элемент перекрыт (уведомление, окно, анимация): клик через JS по тому же элементу.
+                # Без этого каждый вариант селектора ждал ~29 с и клик все равно уходил в перекрывающий элемент.
+                if self.logger:
+                    self.logger.warning(f"CLICK_INTERCEPTED: {selector} перекрыт, клик через JavaScript ({str(intercepted).splitlines()[0][:160]})")
+                self._js_click(element)
             if self.logger:
                 self.logger.debug(f"Клик выполнен успешно")
             return True
@@ -1093,6 +1101,30 @@ class BaseParser(ABC):
 
 
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ===
+
+    def _js_click(self, element) -> None:
+        """
+        Клик через JavaScript: срабатывает, даже если поверх элемента что-то показано.
+        У SVG-элементов (например, крестик уведомления Ozon) нет метода click() — для них отправляется событие клика.
+        """
+        self.driver.execute_script(
+            "const el = arguments[0];"
+            "if (typeof el.click === 'function') { el.click(); }"
+            "else { el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window})); }",
+            element,
+        )
+
+    def _is_element_covered(self, element) -> bool:
+        """Перекрыт ли центр элемента другим элементом (клик по координатам ушел бы в него, без ошибки)."""
+        try:
+            return True is (self.driver.execute_script(
+                "const el = arguments[0]; const r = el.getBoundingClientRect();"
+                "const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+                "return !(top && (top === el || el.contains(top)));",
+                element,
+            ))  # только явный true из браузера: при любой неопределенности — обычный клик
+        except Exception:
+            return False
 
     def _cleanup_lock_files(self, user_data_dir: str, profile_directory: str = "Default") -> None:
         """
@@ -1735,9 +1767,15 @@ class BaseParser(ABC):
                 if target_option:
                     if self.logger:
                         self.logger.debug(f"Выбрана опция: {target_option.text if target_option.text else 'без текста'}")
-                    # Используем ActionChains для более надежного клика
-                    actions = ActionChains(self.driver)
-                    actions.move_to_element(target_option).click().perform()
+                    if self._is_element_covered(target_option):
+                        # ActionChains кликает по координатам: при перекрытии клик молча ушел бы в перекрывающий элемент
+                        if self.logger:
+                            self.logger.warning("CLICK_INTERCEPTED: пункт списка перекрыт, клик через JavaScript")
+                        self._js_click(target_option)
+                    else:
+                        # Используем ActionChains для более надежного клика
+                        actions = ActionChains(self.driver)
+                        actions.move_to_element(target_option).click().perform()
 
                     # Ждем обновления страницы
                     time.sleep(self.config.get('PAGE_UPDATE_DELAY', 2))

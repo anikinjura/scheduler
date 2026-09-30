@@ -124,6 +124,29 @@ class TestBaseParser(unittest.TestCase):
         result = self.parser._resolve_edge_runtime_profile_directory(self.parser.config['browser_config'])
         self.assertEqual(result, "ParserProfile")
 
+    @patch('scheduler_runner.utils.parser.core.base_parser.WebDriverWait')
+    def test_click_element_falls_back_to_js_when_intercepted(self, mock_wait):
+        from selenium.common.exceptions import ElementClickInterceptedException
+        element = Mock()
+        element.click.side_effect = ElementClickInterceptedException("Other element would receive the click")
+        mock_wait.return_value.until.return_value = element
+        self.parser.driver = Mock()
+
+        self.assertTrue(self.parser._click_element("//div[@id='pvz']"))
+        script, target = self.parser.driver.execute_script.call_args.args
+        self.assertIn("click", script)
+        self.assertIs(target, element)
+
+    def test_js_click_supports_svg_without_click_method(self):
+        self.parser.driver = Mock()
+        self.parser._js_click(Mock())
+        self.assertIn("dispatchEvent", self.parser.driver.execute_script.call_args.args[0])
+
+    def test_is_element_covered_false_when_script_fails(self):
+        self.parser.driver = Mock()
+        self.parser.driver.execute_script.side_effect = RuntimeError("detached")
+        self.assertFalse(self.parser._is_element_covered(Mock()))
+
     def test_api_capture_not_installed_in_dom_mode(self):
         self.parser.driver = Mock()
         self.parser.config['DATA_SOURCE_MODE'] = 'dom'

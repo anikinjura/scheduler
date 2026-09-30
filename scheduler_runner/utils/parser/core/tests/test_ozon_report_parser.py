@@ -338,8 +338,42 @@ class TestOzonReportParser(unittest.TestCase):
         self.parser._click_close_button = Mock()
 
         self.assertTrue(self.parser._check_and_close_overlay())
-        mock_sleep.assert_called_once_with(2)
+        mock_sleep.assert_called_with(0.5)
         self.parser._click_close_button.assert_not_called()
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep")
+    def test_check_and_close_overlay_waits_until_dialog_visible_then_closes(self, mock_sleep):
+        """Окно проявляется медленно: ждем, пока станет видимым, и закрываем «Отложить»."""
+        self.parser.config["overlay_config"] = {
+            "enabled": True, "overlay_selector": "//overlay", "close_button_candidates": ["//postpone"],
+            "wait_timeout": 1, "retry_count": 1, "retry_delay": 0, "transition_wait": 12,
+        }
+        self.parser._is_overlay_present = Mock(side_effect=[True, True, False])
+        self.parser._is_overlay_dialog_visible = Mock(side_effect=[False, False, True])
+        self.parser._click_close_button = Mock(return_value=True)
+
+        self.assertTrue(self.parser._check_and_close_overlay())
+        self.parser._click_close_button.assert_called_once_with("//postpone")
+
+    def test_check_and_close_overlay_dismisses_notifications_first(self):
+        self.parser.config["overlay_config"] = {
+            "enabled": True, "overlay_selector": "//overlay", "close_button_candidates": ["//x"],
+            "notification_close_selectors": ["//notification-close"],
+        }
+        self.parser._dismiss_notifications = Mock(return_value=1)
+        self.parser._is_overlay_present = Mock(return_value=False)
+
+        self.assertTrue(self.parser._check_and_close_overlay())
+        self.parser._dismiss_notifications.assert_called_once_with(["//notification-close"])
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep")
+    def test_dismiss_notifications_clicks_every_close_icon(self, mock_sleep):
+        icons = [Mock(), Mock()]
+        self.parser._find_elements_now = Mock(return_value=icons)
+        self.parser._js_click = Mock()
+
+        self.assertEqual(self.parser._dismiss_notifications(["//close"]), 2)
+        self.assertEqual(self.parser._js_click.call_count, 2)
 
     @patch("scheduler_runner.utils.parser.core.ozon_report_parser.time.sleep")
     def test_unclosable_overlay_dumps_artifacts_once(self, mock_sleep):
