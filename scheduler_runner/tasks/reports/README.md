@@ -249,6 +249,7 @@ set_default_store(MyPostgreSQLStore())
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектурная диаграмма модулей
 - [docs/FAILOVER_COORDINATION.md](docs/FAILOVER_COORDINATION.md) — детальное описание failover flow
+- [docs/BATCH_UPLOAD_PLAN.md](docs/BATCH_UPLOAD_PLAN.md) — план пакетной загрузки KPI (4 чтения / 2 записи на ПВЗ) и очереди `pending_uploads.json`
 - [storage/INFRASTRUCTURE_GOOGLE_SHEETS.md](storage/INFRASTRUCTURE_GOOGLE_SHEETS.md) — подготовка Google Sheets + Apps Script
 - [storage/README.md](storage/README.md) — storage protocol и implementations
 - [utils/parser/README.md](../../../utils/parser/docs/README.md) — parser runtime docs
