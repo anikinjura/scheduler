@@ -39,6 +39,9 @@ from selenium.webdriver.common.action_chains import ActionChains
 from datetime import datetime
 from typing import Dict, Any, Union, Optional
 from scheduler_runner.utils.logging import ensure_logger_artifacts_dir
+from scheduler_runner.utils.parser.core.api_response_capture import ApiResponseCapture
+
+DATA_SOURCE_MODES = ("dom", "shadow", "api_with_dom_fallback", "api")
 
 
 class BaseParser(ABC):
@@ -100,6 +103,7 @@ class BaseParser(ABC):
             self.logger.trace("Попали в метод BaseParser.__init__")
 
         self.driver = None
+        self.api_capture = None  # ApiResponseCapture, если DATA_SOURCE_MODE != "dom" (ставится в setup_browser)
         self._startup_environment_logged = False
 
     # === АБСТРАКТНЫЕ МЕТОДЫ (обязательны для реализации в дочерних классах) ===
@@ -222,6 +226,7 @@ class BaseParser(ABC):
             phase='primary'
         )
         if primary_success:
+            self._install_api_capture()
             return True
 
         requested_headless = config.get('headless', self.config.get('HEADLESS', False))
@@ -248,11 +253,37 @@ class BaseParser(ABC):
             if fallback_success:
                 if self.logger:
                     self.logger.warning("BROWSER_FALLBACK_SUCCESS: браузер запущен в режиме headless=False")
+                self._install_api_capture()
                 return True
             if self.logger:
                 self.logger.error("BROWSER_FALLBACK_FAILED: аварийный обход headless=False не помог")
 
         return False
+
+    def _get_data_source_mode(self) -> str:
+        """Источник данных парсера: dom | shadow | api_with_dom_fallback | api (см. docs/MODERNIZATION_PLAN.md)."""
+        mode = str(self.config.get("DATA_SOURCE_MODE", "dom") or "dom")
+        if mode not in DATA_SOURCE_MODES:
+            if self.logger:
+                self.logger.warning(f"Неизвестный DATA_SOURCE_MODE={mode!r}, используется 'dom'")
+            return "dom"
+        return mode
+
+    def _install_api_capture(self) -> None:
+        """
+        Ставит перехватчик ответов API сразу после старта браузера, до первой навигации — если источник данных не DOM.
+        В режиме dom ничего не делает: поведение парсера не меняется.
+        """
+        self.api_capture = None
+        if self._get_data_source_mode() == "dom" or not self.driver:
+            return
+        capture = ApiResponseCapture.from_config(self.config.get("api_capture"), logger=self.logger)
+        try:
+            capture.install(self.driver)
+            self.api_capture = capture
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"API_CAPTURE_INSTALL_FAILED: {e} — извлечение из API недоступно в этой сессии")
 
     def _start_edge_driver_with_retries(
         self,

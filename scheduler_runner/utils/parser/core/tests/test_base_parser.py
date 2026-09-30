@@ -124,6 +124,32 @@ class TestBaseParser(unittest.TestCase):
         result = self.parser._resolve_edge_runtime_profile_directory(self.parser.config['browser_config'])
         self.assertEqual(result, "ParserProfile")
 
+    def test_api_capture_not_installed_in_dom_mode(self):
+        self.parser.driver = Mock()
+        self.parser.config['DATA_SOURCE_MODE'] = 'dom'
+        self.parser._install_api_capture()
+        self.assertIsNone(self.parser.api_capture)
+        self.parser.driver.execute_cdp_cmd.assert_not_called()
+
+    def test_api_capture_installed_in_api_modes(self):
+        for mode in ('shadow', 'api_with_dom_fallback', 'api'):
+            self.parser.driver = Mock()
+            self.parser.config['DATA_SOURCE_MODE'] = mode
+            self.parser._install_api_capture()
+            self.assertIsNotNone(self.parser.api_capture, mode)
+            self.assertEqual(self.parser.driver.execute_cdp_cmd.call_args.args[0], "Page.addScriptToEvaluateOnNewDocument")
+
+    def test_unknown_data_source_mode_falls_back_to_dom(self):
+        self.parser.config['DATA_SOURCE_MODE'] = 'magic'
+        self.assertEqual(self.parser._get_data_source_mode(), 'dom')
+
+    def test_api_capture_install_failure_does_not_break_browser(self):
+        self.parser.driver = Mock()
+        self.parser.driver.execute_cdp_cmd.side_effect = RuntimeError("cdp unavailable")
+        self.parser.config['DATA_SOURCE_MODE'] = 'api'
+        self.parser._install_api_capture()
+        self.assertIsNone(self.parser.api_capture)
+
     def _make_snapshot_dirs(self):
         """Создает временные исходный профиль Edge и каталог для snapshot."""
         root = tempfile.mkdtemp()

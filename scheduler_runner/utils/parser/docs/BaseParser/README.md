@@ -44,6 +44,13 @@
 
 Эти методы отвечают за устойчивый startup Edge, диагностику и fallback после headless/session startup failures.
 
+## API capture helpers
+
+- `_get_data_source_mode() -> str` — `DATA_SOURCE_MODE` с проверкой (неизвестное значение → `dom`)
+- `_install_api_capture()` — после старта браузера ставит `ApiResponseCapture` (`self.api_capture`), если режим не `dom`
+
+Модуль `core/api_response_capture.py`: `ApiResponseCapture.install/records/wait_for/debug_dump`, `resolve_path`.
+
 ## Edge profile helpers
 
 Режим профиля задается `EDGE_PROFILE_MODE` (`snapshot` по умолчанию, `default`, `dedicated`).
