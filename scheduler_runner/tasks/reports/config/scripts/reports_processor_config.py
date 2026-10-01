@@ -17,7 +17,7 @@ BACKFILL_CONFIG = {
     "max_scan_rows": 5000,
     "max_expected_keys": 1000,
     "enable_failover_coordination": True,
-    "failover_claim_ttl_minutes": 15,
+    "failover_claim_ttl_minutes": 30,  # больше времени восстановления (браузер + до 3 дат), иначе дату перехватит второй помощник
     "failover_max_claims_per_run": 3,
     "failover_claim_backend": "apps_script",
     "failover_apps_script_timeout_seconds": 15,
@@ -57,6 +57,7 @@ FAILOVER_POLICY_CONFIG = {
     "dry_run_capability_ranked": True,
     "default_rank_delay_minutes": 10,
     "max_attempts_per_date": 3,
+    "candidate_window_days": 7,  # строки KPI_FAILOVER_STATE старше окна не восстанавливаются (как окно backfill владельца)
     "max_claims_per_run": 3,
     "allow_unlisted_fallback": False,
     "prefer_lower_load_helpers": False,

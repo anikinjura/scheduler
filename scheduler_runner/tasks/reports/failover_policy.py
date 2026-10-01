@@ -8,6 +8,7 @@ from .reports_utils import normalize_pvz_id
 from .storage.failover_state import (
     STATUS_FAILOVER_SUCCESS,
     STATUS_OWNER_SUCCESS,
+    is_claim_active,
     parse_sheet_timestamp,
 )
 
@@ -105,6 +106,39 @@ def get_current_rank(target_object_name: str, claimer_pvz: str) -> int | None:
     return None
 
 
+def parse_state_work_date(value: Any) -> datetime | None:
+    """Дата строки KPI_FAILOVER_STATE: в листе dd.mm.yyyy, во внутренних записях yyyy-mm-dd."""
+    text = str(value or "").strip()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def get_candidate_window_days() -> int:
+    return max(int(FAILOVER_POLICY_CONFIG.get("candidate_window_days", 7) or 7), 1)
+
+
+def check_claim_and_window(state_row: Dict[str, Any], now: datetime) -> str:
+    """Общие отказы для обоих режимов выбора ('' — строка проходит).
+
+    - claim_active: дату сейчас восстанавливает другой помощник (failover_claimed с действующим сроком);
+      брошенный захват (срок истек) снова доступен;
+    - outside_window: дата старше окна candidate_window_days (как окно backfill владельца) — давние строки
+      (тестовые, март–апрель 2026) не восстанавливаются.
+    """
+    if is_claim_active(state_row, now=now):
+        return "claim_active"
+    work_date = parse_state_work_date(state_row.get("work_date"))
+    if work_date is not None:
+        oldest = (now - timedelta(days=get_candidate_window_days() - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        if work_date < oldest:
+            return "outside_window"
+    return ""
+
+
 def get_reference_timestamp(state_row: Dict[str, Any] | None) -> datetime | None:
     if not state_row:
         return None
@@ -137,6 +171,9 @@ def can_attempt_failover_claim_legacy(
         return {"eligible": False, "reason": "missing_target_object_name"}
     if status in TERMINAL_STATUSES:
         return {"eligible": False, "reason": "terminal_status"}
+    common_rejection = check_claim_and_window(state_row, current_time)
+    if common_rejection:
+        return {"eligible": False, "reason": common_rejection}
     if normalized_target_object_name == normalized_configured_pvz_id:
         return {"eligible": False, "reason": "own_target_object_name"}
     if normalized_target_object_name not in normalized_available_pvz:
@@ -190,6 +227,9 @@ def can_attempt_failover_claim_capability_ranked(
         return {"eligible": False, "reason": "missing_target_object_name"}
     if status in TERMINAL_STATUSES:
         return {"eligible": False, "reason": "terminal_status"}
+    common_rejection = check_claim_and_window(state_row, now or datetime.now())
+    if common_rejection:
+        return {"eligible": False, "reason": common_rejection}
     if normalized_target_object_name == normalized_configured_pvz_id:
         return {"eligible": False, "reason": "own_target_object_name"}
     if normalized_target_object_name not in normalized_available_pvz:

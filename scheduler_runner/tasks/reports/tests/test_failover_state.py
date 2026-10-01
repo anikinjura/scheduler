@@ -401,6 +401,24 @@ class TestFailoverState(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["target_object_name"], "PVZ1")
 
+    def test_list_candidate_failover_rows_fast_normalizes_sheet_dates(self):
+        """Лист отдает отформатированную дату (dd.mm.yyyy) — кандидат получает yyyy-mm-dd для claim и parser."""
+        uploader = Mock()
+        uploader.table_config.get_column_index.side_effect = lambda name: {"work_date": 2}.get(name)
+        uploader.table_config.get_column_letter.side_effect = lambda name: {
+            "work_date": "B", "target_object_name": "C", "status": "E"}.get(name)
+        uploader.sheets_reporter.get_last_row_with_data.return_value = 3
+        uploader.sheets_reporter.worksheet.batch_get.return_value = [
+            [["30.09.2026"], ["2026-09-29"]],
+            [["PVZ1"], ["PVZ2"]],
+            [[failover_state.STATUS_OWNER_FAILED], [failover_state.STATUS_OWNER_FAILED]],
+        ]
+
+        result = failover_state.list_candidate_failover_rows_fast(
+            statuses=[failover_state.STATUS_OWNER_FAILED], logger=Mock(), uploader=uploader)
+
+        self.assertEqual([row["work_date"] for row in result], ["2026-09-30", "2026-09-29"])
+
     def test_get_failover_state_reuses_existing_uploader(self):
         uploader = Mock()
         uploader.table_config = Mock()

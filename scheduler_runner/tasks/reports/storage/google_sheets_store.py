@@ -479,6 +479,21 @@ def _flatten_batch_column_values(values):
     return flattened
 
 
+def normalize_state_work_date(value: Any) -> str:
+    """work_date строки состояния в формат запуска yyyy-mm-dd.
+
+    batch_get возвращает отформатированное значение ячейки ('31.12.2099'), а Apps Script, parser jobs и сортировка
+    ждут yyyy-mm-dd. Нераспознанное значение возвращается как есть.
+    """
+    text = str(value or "").strip()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return text
+
+
 def list_candidate_failover_rows_fast(
     *,
     statuses: Optional[Iterable[str]] = None,
@@ -537,6 +552,8 @@ def list_candidate_failover_rows_fast(
             continue
         if allowed_statuses and record.get("status") not in allowed_statuses:
             continue
+        if "work_date" in record:
+            record["work_date"] = normalize_state_work_date(record["work_date"])
         records.append(record)
 
     return records

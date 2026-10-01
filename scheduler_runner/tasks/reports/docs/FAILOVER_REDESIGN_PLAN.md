@@ -1,6 +1,6 @@
 # План доработки failover (помощь коллегам)
 
-Статус: **этап A выполнен (01.10.2026), этапы B–E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
+Статус: **этапы A–B выполнены (01.10.2026), этапы C–E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
 сейчас), [BATCH_UPLOAD_PLAN.md](BATCH_UPLOAD_PLAN.md) (загрузка KPI).
 
 ## 1. Зачем
@@ -100,7 +100,15 @@
   нельзя) или не прошла загрузка (Google Sheets недоступен). Причина пишется в лог: `FAILOVER_PASS_SKIPPED reason=...`.
 - Тесты: единичные на ветки процессора (все даты не собраны / часть / загрузка упала).
 
-### Этап B. Брошенные захваты и окно дат (P4, P5, P7)
+### Этап B. Брошенные захваты и окно дат (P4, P5, P7) ✅
+
+Сделано 01.10.2026: `failover_policy.check_claim_and_window` (оба режима выбора), `failover_claimed` в сканировании,
+`FAILOVER_POLICY_CONFIG["candidate_window_days"] = 7`, `failover_claim_ttl_minutes = 30`.
+
+Найдено и исправлено там же (P10): сканирование кандидатов возвращало `work_date` в виде отформатированной ячейки
+(`30.09.2026`), а Apps Script сравнивает с `yyyy-mm-dd`, parser ждет `yyyy-mm-dd`, сортировка шла по строке. Обычный путь
+помощи (S1) поэтому не мог завершиться (`row_not_found` при захвате) — в тестах даты были сразу `yyyy-mm-dd`.
+Теперь `list_candidate_failover_rows_fast` приводит дату к `yyyy-mm-dd` (`normalize_state_work_date`).
 
 - Сканирование кандидатов: добавить `failover_claimed`, если `claim_expires_at` в прошлом (решение — в policy,
   как для остальных статусов); отбрасывать строки с датой вне окна `default_days` (причина `outside_window`).
