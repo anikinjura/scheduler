@@ -20,10 +20,10 @@ BACKFILL_CONFIG = {
     "failover_claim_ttl_minutes": 30,  # больше времени восстановления (браузер + до 3 дат), иначе дату перехватит второй помощник
     "failover_max_claims_per_run": 3,
     "failover_claim_backend": "apps_script",
-    "failover_apps_script_timeout_seconds": 15,
+    "failover_apps_script_timeout_seconds": 30,  # вызов 4–7 с, холодный старт скрипта и ожидание LockService — дольше 15 с
     # Молчащие ПВЗ (не запускались, строк состояния нет): помощник ищет их пропуски в KPI (до вчерашнего дня) и захватывает
     # с созданием строки — нужен Apps Script версии 2 (create_if_missing). Помощник ранга r > 1 ждет еще (r-1)*lag дней.
-    "failover_detect_silent_owners": False,
+    "failover_detect_silent_owners": True,  # 01.10.2026: Apps Script версии 2 развернут, create_if_missing проверен
     "failover_silent_rank_lag_days": 1,
     "owner_state_sync_max_attempts": 3,
     "owner_state_sync_base_delay_seconds": 2.0,
