@@ -126,7 +126,7 @@ Failover-проход (помощь коллегам) после этого пр
 ### Текущая Policy Поддерживает
 
 - reject own target
-- reject active claim (`claim_active`) and dates older than `candidate_window_days` (`outside_window`)
+- reject active claim (`claim_active`), dates older than `candidate_window_days` (`outside_window`) and future dates (`future_date`)
 - reject not accessible target
 - enforce `max_attempts_per_date`
 - explicit `priority_map`
