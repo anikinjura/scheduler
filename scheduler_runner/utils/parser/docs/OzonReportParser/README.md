@@ -10,7 +10,8 @@
 - `set_pvz(target_pvz) -> bool`
   - переключает UI на нужный PVZ.
 - `ensure_correct_pvz() -> bool`
-  - гарантирует, что parser работает в ожидаемом PVZ context.
+  - гарантирует, что parser работает в ожидаемом PVZ context. С `DATA_SOURCE_MODE` ≠ `dom` — по ответу API
+    `stores/current` без проверки окон, пока ПВЗ правильный; окна и клик — только при переключении (этап 3).
 - `navigate_to_target() -> bool`
   - переходит на Ozon target page и проверяет корректность PVZ context.
 - `extract_report_data() -> dict`

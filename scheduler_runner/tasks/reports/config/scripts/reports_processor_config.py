@@ -30,7 +30,8 @@ BACKFILL_CONFIG = {
     "upload_start_jitter_seconds": 120,
     "google_sheets_quota_retry_delay_seconds": 65,
     # Загрузка KPI: "row" — построчный upsert (~10 запросов на строку), "batch" — пакетный (1 чтение и до 2 записей
-    # на пакет + подключение). kpi_upload_mode_by_pvz — включение по ПВЗ, например {"ЧЕБОКСАРЫ_144": "batch"}
+    # на пакет + подключение). kpi_upload_mode — режим для всех ПВЗ (новые ПВЗ получают его автоматически);
+    # kpi_upload_mode_by_pvz — только временные исключения на время обкатки, после нее меняется kpi_upload_mode.
     "kpi_upload_mode": "row",
     "kpi_upload_mode_by_pvz": {"ЧЕБОКСАРЫ_144": "batch"},  # 30.09.2026: проверено на боевой таблице (7 строк, 4 чтения / 2 записи)
 }
