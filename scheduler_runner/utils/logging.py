@@ -43,6 +43,7 @@ Author: anikinjura
 __version__ = '0.0.2'
 
 import logging
+import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -63,6 +64,9 @@ logging.Logger.trace = trace
 
 def build_log_path(user: str, task_name: Optional[str] = None, logs_dir: str = "logs") -> Path:
     """?????????? ???????????? ???? ? ?????????? ????? ??? user/task."""
+    if logs_dir == "logs" and os.environ.get("SCHEDULER_LOGS_DIR"):
+        # Переопределение каталога логов по умолчанию: тесты пишут во временный каталог, а не в рабочие логи
+        logs_dir = os.environ["SCHEDULER_LOGS_DIR"]
     log_path = Path(logs_dir) / user
     if task_name:
         log_path = log_path / task_name
