@@ -458,6 +458,12 @@ class TestClaimAndWindow(unittest.TestCase):
         self.assertEqual(self.decide(work_date="24.09.2026")["reason"], "outside_window")
         self.assertEqual(self.decide(work_date="06.04.2026")["reason"], "outside_window")
 
+    def test_today_allowed_future_rejected(self):
+        """Сегодняшняя дата (owner_failed за сегодня) — можно; будущая (тестовые строки 2099) — нет."""
+        self.assertTrue(self.decide(work_date="01.10.2026")["eligible"])
+        self.assertEqual(self.decide(work_date="02.10.2026")["reason"], "future_date")
+        self.assertEqual(self.decide(work_date="21.12.2099")["reason"], "future_date")
+
     def test_unparsable_date_not_rejected_by_window(self):
         self.assertTrue(self.decide(work_date="")["eligible"])
 

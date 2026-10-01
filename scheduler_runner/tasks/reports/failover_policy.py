@@ -127,15 +127,19 @@ def check_claim_and_window(state_row: Dict[str, Any], now: datetime) -> str:
     - claim_active: дату сейчас восстанавливает другой помощник (failover_claimed с действующим сроком);
       брошенный захват (срок истек) снова доступен;
     - outside_window: дата старше окна candidate_window_days (как окно backfill владельца) — давние строки
-      (тестовые, март–апрель 2026) не восстанавливаются.
+      (тестовые, март–апрель 2026) не восстанавливаются;
+    - future_date: дата позже сегодняшней (тестовые строки 2099 года) — отчета за нее еще нет.
     """
     if is_claim_active(state_row, now=now):
         return "claim_active"
     work_date = parse_state_work_date(state_row.get("work_date"))
     if work_date is not None:
-        oldest = (now - timedelta(days=get_candidate_window_days() - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        oldest = today - timedelta(days=get_candidate_window_days() - 1)
         if work_date < oldest:
             return "outside_window"
+        if work_date > today:
+            return "future_date"
     return ""
 
 
