@@ -1,6 +1,6 @@
 # План доработки failover (помощь коллегам)
 
-Статус: **этапы A–D выполнены в коде (01.10.2026; C выключен до обновления Apps Script), этап E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
+Статус: **этапы A–D выполнены (01.10.2026), этап C включен после развертывания Apps Script версии 2; живая проверка на 144 — после слияния в main; этап E — частично**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
 сейчас), [BATCH_UPLOAD_PLAN.md](BATCH_UPLOAD_PLAN.md) (загрузка KPI).
 
 ## 1. Зачем
@@ -115,7 +115,13 @@
 - `failover_claim_ttl_minutes`: 15 → 30.
 - Тесты policy на истекший/активный захват и окно дат.
 
-### Этап C. Молчащие соседи (P2, P3) ✅ (в коде, выключен)
+### Этап C. Молчащие соседи (P2, P3) ✅
+
+Включен 01.10.2026 (`failover_detect_silent_owners: True`). Проверка развертывания (версия 8 веб-приложения, URL
+прежний) на пробной строке `2099-11-30 / PROBE_SILENT_TEST`, удаленной после проверки: без флага — `row_not_found`;
+с флагом — `created_and_claimed`, в листе одна строка, `work_date` записан датой `30.11.2099` (Python читает
+`2099-11-30`), `request_id`, `attempt_no=1`, `last_error=owner_silent`; повтор другим помощником — `already_claimed`,
+дубля нет. Вызов занимает 4–7 с, два вызова из пяти не уложились в 15 с — `failover_apps_script_timeout_seconds` = 30.
 
 Сделано 01.10.2026: `failover_orchestration.find_silent_owner_rows` / `resolve_silent_owner_targets`, захват с
 `create_if_missing`, Apps Script версии 2 (`storage/INFRASTRUCTURE_failover_apps_script_try_claim.gs`; копия кода из
