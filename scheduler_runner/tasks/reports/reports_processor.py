@@ -36,6 +36,8 @@ from .reports_summary import (
     build_owner_run_summary,
     build_failover_run_summary,
     build_reports_run_summary,
+    build_failed_batch_result,
+    get_batch_successful_dates,
 )
 from .reports_notifications import (
     prepare_notification_data,
@@ -61,6 +63,23 @@ def build_processor_run_id(pvz_id=PVZ_ID, started_at=None):
     """Orchestration-level run ID builder. Used only in main()."""
     started_at = started_at or datetime.now()
     return f"{started_at.strftime('%Y%m%d%H%M%S')}|{pvz_id}"
+
+
+def resolve_failover_pass_skip_reason(*, missing_dates, batch_result, upload_result, owner_state_sync_result):
+    """Причина не помогать коллегам после своего прогона ('' — помогать можно).
+
+    - own_dates_all_failed: ни одна своя дата не собрана — сессия Ozon, скорее всего, мертва, тем же браузером
+      соседу не помочь;
+    - owner_upload_failed: своя загрузка в Google Sheets не прошла;
+    - owner_state_sync_failed: не удалось записать свое состояние в KPI_FAILOVER_STATE.
+    """
+    if missing_dates and not get_batch_successful_dates(batch_result):
+        return "own_dates_all_failed"
+    if missing_dates and not upload_result.get("success", False) and not upload_result.get("no_data", False):
+        return "owner_upload_failed"
+    if owner_state_sync_result.get("success") is False:
+        return "owner_state_sync_failed"
+    return ""
 
 
 # ──────────────────────────────────────────────
@@ -280,43 +299,45 @@ def main():
             }
             if missing_dates:
                 jobs = build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=missing_dates)
-                batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
+                try:
+                    batch_result = invoke_parser_for_pvz(parser_api=args.parser_api, jobs=jobs, logger=parser_logger)
+                except Exception as exc:
+                    # Браузер не запустился, AUTH_REQUIRED и т.п.: даты не собраны, но запуск продолжается —
+                    # владелец должен записать owner_failed и отправить уведомление
+                    processor_logger.error(f"OWNER_PARSE_CRASHED: {exc}", exc_info=True)
+                    batch_result = build_failed_batch_result(missing_dates, f"parser_crashed: {exc}")
                 upload_result = run_upload_batch_microservice(batch_result)
 
                 if should_run_failover_coordination_for_owner:
-                    if upload_result.get("success", False):
-                        owner_state_sync_result["attempted"] = True
-                        try:
-                            owner_state_sync_payload = sync_owner_failover_state_from_batch_result(
-                                owner_object_name=pvz_id,
-                                missing_dates=missing_dates,
-                                batch_result=batch_result,
-                                upload_result=upload_result,
-                                logger=create_failover_state_logger(),
-                                source_run_id=source_run_id,
-                            )
-                            owner_state_sync_result["success"] = True
-                            owner_state_sync_result["payload"] = owner_state_sync_payload
-                            processor_logger.info(
-                                "Owner state sync metrics: "
-                                f"prefetch_keys={owner_state_sync_payload.get('existing_state_prefetch_keys_count', 0)}, "
-                                f"prefetch_rows_found={owner_state_sync_payload.get('existing_state_prefetch_rows_found', 0)}, "
-                                f"persisted_rows={owner_state_sync_payload.get('persisted_rows_count', 0)}, "
-                                f"suppressed_success={len(owner_state_sync_payload.get('suppressed_success_dates', []))}, "
-                                f"upsert_updated={owner_state_sync_payload.get('upsert_diagnostics', {}).get('updated_count', 0)}, "
-                                f"upsert_appended={owner_state_sync_payload.get('upsert_diagnostics', {}).get('appended_count', 0)}, "
-                                f"upsert_prefetch_matches={owner_state_sync_payload.get('upsert_diagnostics', {}).get('prefetch_matches_count', 0)}"
-                            )
-                        except Exception as exc:
-                            owner_state_sync_result["success"] = False
-                            owner_state_sync_result["error"] = str(exc)
-                            create_failover_state_logger().error(
-                                f"Не удалось синхронизировать owner state в KPI_FAILOVER_STATE: {exc}",
-                                exc_info=True,
-                            )
-                    else:
-                        processor_logger.warning(
-                            "Owner state sync skipped because KPI upload failed"
+                    # Состояние пишется при любом исходе: owner_failed по несобранным датам и при сбое загрузки
+                    owner_state_sync_result["attempted"] = True
+                    try:
+                        owner_state_sync_payload = sync_owner_failover_state_from_batch_result(
+                            owner_object_name=pvz_id,
+                            missing_dates=missing_dates,
+                            batch_result=batch_result,
+                            upload_result=upload_result,
+                            logger=create_failover_state_logger(),
+                            source_run_id=source_run_id,
+                        )
+                        owner_state_sync_result["success"] = True
+                        owner_state_sync_result["payload"] = owner_state_sync_payload
+                        processor_logger.info(
+                            "Owner state sync metrics: "
+                            f"prefetch_keys={owner_state_sync_payload.get('existing_state_prefetch_keys_count', 0)}, "
+                            f"prefetch_rows_found={owner_state_sync_payload.get('existing_state_prefetch_rows_found', 0)}, "
+                            f"persisted_rows={owner_state_sync_payload.get('persisted_rows_count', 0)}, "
+                            f"suppressed_success={len(owner_state_sync_payload.get('suppressed_success_dates', []))}, "
+                            f"upsert_updated={owner_state_sync_payload.get('upsert_diagnostics', {}).get('updated_count', 0)}, "
+                            f"upsert_appended={owner_state_sync_payload.get('upsert_diagnostics', {}).get('appended_count', 0)}, "
+                            f"upsert_prefetch_matches={owner_state_sync_payload.get('upsert_diagnostics', {}).get('prefetch_matches_count', 0)}"
+                        )
+                    except Exception as exc:
+                        owner_state_sync_result["success"] = False
+                        owner_state_sync_result["error"] = str(exc)
+                        create_failover_state_logger().error(
+                            f"Не удалось синхронизировать owner state в KPI_FAILOVER_STATE: {exc}",
+                            exc_info=True,
                         )
             elif not should_run_failover_coordination_for_owner:
                 processor_logger.info("Backfill не требуется: отсутствующих дат не найдено")
@@ -333,13 +354,13 @@ def main():
 
             failover_result = {}
             failover_result["owner_state_sync"] = owner_state_sync_result
-            owner_upload_allows_failover = (not missing_dates) or upload_result.get("success", False)
-            can_run_failover_pass = (
-                should_run_failover_coordination_for_owner
-                and owner_upload_allows_failover
-                and owner_state_sync_result.get("success") is not False
+            failover_skip_reason = resolve_failover_pass_skip_reason(
+                missing_dates=missing_dates,
+                batch_result=batch_result,
+                upload_result=upload_result,
+                owner_state_sync_result=owner_state_sync_result,
             )
-            if can_run_failover_pass:
+            if should_run_failover_coordination_for_owner and not failover_skip_reason:
                 failover_result = run_failover_coordination_pass(
                     configured_pvz_id=PVZ_ID,
                     parser_api=args.parser_api,
@@ -348,10 +369,8 @@ def main():
                     source_run_id=source_run_id,
                 )
                 failover_result["owner_state_sync"] = owner_state_sync_result
-            elif should_run_failover_coordination_for_owner and missing_dates and not upload_result.get("success", False):
-                processor_logger.warning(
-                    "Failover coordination pass skipped because owner KPI upload failed"
-                )
+            elif should_run_failover_coordination_for_owner:
+                processor_logger.warning(f"FAILOVER_PASS_SKIPPED reason={failover_skip_reason}")
 
             reports_run_summary = build_reports_run_summary(
                 mode="backfill_single_pvz",

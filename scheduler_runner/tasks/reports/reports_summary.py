@@ -151,6 +151,34 @@ def extract_batch_failures(batch_result=None):
     return failures
 
 
+def get_batch_successful_dates(batch_result=None):
+    """Даты, собранные успешно: из results_by_date и из списка successful_dates (у legacy-пакета там число)."""
+    batch_result = batch_result or {}
+    successful = {
+        execution_date
+        for execution_date, date_result in batch_result.get("results_by_date", {}).items()
+        if date_result.get("success", False)
+    }
+    successful_raw = batch_result.get("successful_dates")
+    if isinstance(successful_raw, (list, tuple)):
+        successful.update(successful_raw)
+    return successful
+
+
+def build_failed_batch_result(execution_dates=None, error="parse_failed"):
+    """Пакет, в котором ни одна дата не собрана (парсер упал до разбора дат: браузер, AUTH_REQUIRED)."""
+    dates = sorted(set(execution_dates or []))
+    return {
+        "success": False,
+        "mode": "batch",
+        "error": error,
+        "total_dates": len(dates),
+        "successful_dates": [],
+        "failed_dates": dates,
+        "results_by_date": {execution_date: {"success": False, "error": error} for execution_date in dates},
+    }
+
+
 def build_filtered_batch_result(batch_result=None, execution_dates=None):
     requested_dates = set(execution_dates or [])
     filtered_results_by_date = {

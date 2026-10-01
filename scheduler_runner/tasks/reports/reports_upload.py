@@ -414,7 +414,8 @@ def run_upload_batch_microservice(batch_parsing_result=None):
 
     if not upload_data_list:
         logger.warning("Для batch upload нет подготовленных записей")
-        return {"success": False, "error": "Нет данных для загрузки", "uploaded_records": 0}
+        # no_data: загружать нечего (все даты не собраны) — это не сбой Google Sheets, итог определяют ошибки парсинга
+        return {"success": False, "no_data": True, "error": "Нет данных для загрузки", "uploaded_records": 0}
 
     wait_upload_start_jitter(logger=logger)
     mode = resolve_kpi_upload_mode()

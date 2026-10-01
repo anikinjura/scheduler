@@ -28,7 +28,7 @@ from .storage.failover_state import (
 from .storage.failover_state_protocol import FailoverStateStore
 
 # Извлечённые helpers из reports_summary (Phase 1.1)
-from .reports_summary import extract_batch_failures
+from .reports_summary import extract_batch_failures, get_batch_successful_dates
 from .config.scripts.reports_processor_config import BACKFILL_CONFIG
 
 # ── Retry helpers for KPI_FAILOVER_STATE reads ──
@@ -233,17 +233,25 @@ def build_owner_final_failover_state_records(
     upload_result_provided = upload_result is not None
     upload_result = upload_result or {}
     failed_by_date = extract_batch_failures(batch_result)
+    parsed_dates = get_batch_successful_dates(batch_result)
+    batch_error = str((batch_result or {}).get("error", "") or "")
     successful_dates = []
     failed_dates = []
     suppressed_success_dates = []
     success_persistence_by_date = {}
     records = []
-    upload_success = (not upload_result_provided) or bool(upload_result.get("success", False))
+    # no_data: загружать было нечего — итог каждой даты определяется парсингом
+    upload_success = (
+        (not upload_result_provided)
+        or bool(upload_result.get("success", False))
+        or bool(upload_result.get("no_data", False))
+    )
     upload_error = str(upload_result.get("error", "") or "upload_failed")
     existing_state_rows_by_date = existing_state_rows_by_date or {}
 
     for execution_date in missing_dates or []:
-        if execution_date in failed_by_date:
+        if execution_date in failed_by_date or execution_date not in parsed_dates:
+            # Дата без результата (пакет прервался) — тоже сбой владельца
             failed_dates.append(execution_date)
             records.append(
                 build_failover_state_record(
@@ -252,7 +260,7 @@ def build_owner_final_failover_state_records(
                     owner_object_name=owner_object_name,
                     status=STATUS_OWNER_FAILED,
                     source_run_id=source_run_id,
-                    last_error=failed_by_date[execution_date],
+                    last_error=failed_by_date.get(execution_date) or batch_error or "parse_result_missing",
                 )
             )
             success_persistence_by_date[execution_date] = {

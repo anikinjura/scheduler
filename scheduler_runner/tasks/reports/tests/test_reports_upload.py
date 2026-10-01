@@ -255,6 +255,20 @@ class TestPrepareUploadDataBatch(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestBatchUploadNoData(unittest.TestCase):
+    @patch("scheduler_runner.tasks.reports.reports_upload.upload_records")
+    @patch("scheduler_runner.tasks.reports.reports_upload.prepare_connection_params", return_value={})
+    def test_nothing_parsed_is_no_data_not_upload_failure(self, _params, mock_upload):
+        """Все даты не собраны — загрузка не вызывается, результат помечен no_data (не сбой Google Sheets)."""
+        from ..reports_upload import run_upload_batch_microservice
+
+        result = run_upload_batch_microservice({"results_by_date": {"2026-09-30": {"success": False, "error": "x"}}})
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["no_data"])
+        mock_upload.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -149,6 +149,50 @@ class TestBuildOwnerFinalFailoverStateRecords(unittest.TestCase):
         self.assertEqual(len(result["records"]), 1)
         self.assertEqual(result["records"][0]["status"], "owner_success")
 
+    def test_nothing_parsed_no_data_upload_marks_parse_errors(self):
+        """Ни одна дата не собрана, загружать нечего (no_data) — owner_failed с ошибкой парсинга, а не загрузки."""
+        result = build_owner_final_failover_state_records(
+            owner_object_name="PVZ1",
+            missing_dates=["2026-09-29", "2026-09-30"],
+            batch_result={
+                "results_by_date": {
+                    "2026-09-29": {"success": False, "error": "PARTIAL_DATE_REJECTED: giveout"},
+                    "2026-09-30": {"success": False, "error": "PVZ_SWITCH_FAILED"},
+                }
+            },
+            upload_result={"success": False, "no_data": True, "error": "Нет данных для загрузки"},
+        )
+        self.assertEqual(result["failed_dates"], ["2026-09-29", "2026-09-30"])
+        self.assertEqual([r["status"] for r in result["records"]], ["owner_failed", "owner_failed"])
+        self.assertEqual([r["last_error"] for r in result["records"]],
+                         ["PARTIAL_DATE_REJECTED: giveout", "PVZ_SWITCH_FAILED"])
+
+    def test_date_without_result_is_owner_failed(self):
+        """Пакет прервался: по дате нет результата — owner_failed с ошибкой пакета."""
+        result = build_owner_final_failover_state_records(
+            owner_object_name="PVZ1",
+            missing_dates=["2026-09-29", "2026-09-30"],
+            batch_result={
+                "error": "AUTH_REQUIRED: session revoked",
+                "results_by_date": {"2026-09-29": {"success": True, "data": {}}},
+            },
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        self.assertEqual(result["successful_dates"], ["2026-09-29"])
+        self.assertEqual(result["failed_dates"], ["2026-09-30"])
+        self.assertEqual(result["records"][0]["last_error"], "AUTH_REQUIRED: session revoked")
+
+    def test_successful_dates_list_counts_as_parsed(self):
+        """Дата из списка successful_dates (без results_by_date) — собрана."""
+        result = build_owner_final_failover_state_records(
+            owner_object_name="PVZ1",
+            missing_dates=["2026-09-30"],
+            batch_result={"successful_dates": ["2026-09-30"], "results_by_date": {}},
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        self.assertEqual(result["successful_dates"], ["2026-09-30"])
+        self.assertEqual(result["records"], [])
+
 
 @patch("scheduler_runner.tasks.reports.storage.failover_state.get_default_store")
 class TestSyncOwnerFailoverStateFromBatchResult(unittest.TestCase):
