@@ -80,7 +80,11 @@ owner_pending → owner_failed / owner_success
         failover_success / failover_failed
 ```
 
-Terminal statuses: `owner_success`, `failover_success`, `claim_expired`
+Terminal statuses: `owner_success`, `failover_success`.
+
+Кандидаты помощника: `owner_failed`, `failover_failed`, `claim_expired` и `failover_claimed` с истекшим
+`claim_expires_at` (брошенный захват: помощник упал или компьютер выключился; Apps Script такой захват
+перехватывает). Действующий захват отсекается (`claim_active`). Срок захвата — `failover_claim_ttl_minutes` (30).
 
 ### Состояние владельца (с 01.10.2026, этап A плана)
 
@@ -109,6 +113,7 @@ Failover-проход (помощь коллегам) после этого пр
 ### Текущая Policy Поддерживает
 
 - reject own target
+- reject active claim (`claim_active`) and dates older than `candidate_window_days` (`outside_window`)
 - reject not accessible target
 - enforce `max_attempts_per_date`
 - explicit `priority_map`

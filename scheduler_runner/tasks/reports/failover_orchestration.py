@@ -11,6 +11,7 @@ from config.base_config import PVZ_ID
 from .config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
 from .storage.failover_state import (
     STATUS_CLAIM_EXPIRED,
+    STATUS_FAILOVER_CLAIMED,
     STATUS_FAILOVER_FAILED,
     STATUS_FAILOVER_SUCCESS,
     STATUS_OWNER_FAILED,
@@ -80,7 +81,8 @@ def collect_claimable_failover_rows(
     """Собирает claimable failover rows и оценивает их по policy."""
     logger = logger or create_failover_state_logger()
     rows = list_candidate_failover_rows_fast(
-        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED],
+        # failover_claimed — чтобы подхватить брошенный захват (срок истек); действующий отсекает policy (claim_active)
+        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED, STATUS_FAILOVER_CLAIMED],
         logger=logger,
         uploader=uploader,
     )

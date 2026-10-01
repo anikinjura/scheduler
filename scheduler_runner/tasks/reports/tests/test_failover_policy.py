@@ -6,6 +6,12 @@ from .. import failover_policy
 
 
 class TestFailoverPolicy(unittest.TestCase):
+    def setUp(self):
+        # Строки этих тестов — март 2026; окно дат проверяется отдельно (TestClaimAndWindow)
+        patcher = patch.dict(failover_policy.FAILOVER_POLICY_CONFIG, {"candidate_window_days": 100000})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_priority_map_contains_expected_pilot_links(self):
         self.assertEqual(failover_policy.get_priority_list("ЧЕБОКСАРЫ_143"), ["ЧЕБОКСАРЫ_144"])
         self.assertEqual(failover_policy.get_priority_list("ЧЕБОКСАРЫ_182"), ["ЧЕБОКСАРЫ_144"])
@@ -420,6 +426,50 @@ class TestFailoverPolicy(unittest.TestCase):
         selected_decisions = [item for item in evaluation["decisions"] if item["selected_for_claim"]]
         self.assertEqual(len(selected_decisions), 1)
         self.assertEqual(selected_decisions[0]["preferred_helper"], "pvz_helper_a")
+
+
+class TestClaimAndWindow(unittest.TestCase):
+    """Этап B failover: брошенные захваты снова доступны, давние строки отсекаются."""
+
+    NOW = datetime(2026, 10, 1, 21, 45, 0)
+
+    def decide(self, **row):
+        state_row = {"work_date": "30.09.2026", "target_object_name": "ЧЕБОКСАРЫ_143", "status": "owner_failed",
+                     "attempt_no": 0, "updated_at": "30.09.2026 21:40:00"}
+        state_row.update(row)
+        with patch.dict(failover_policy.FAILOVER_POLICY_CONFIG, {"candidate_window_days": 7}):
+            return failover_policy.can_attempt_failover_claim(
+                state_row=state_row, configured_pvz_id="ЧЕБОКСАРЫ_144",
+                available_pvz=["ЧЕБОКСАРЫ_143", "ЧЕБОКСАРЫ_144"], now=self.NOW)
+
+    def test_active_claim_rejected(self):
+        result = self.decide(status="failover_claimed", claim_expires_at="01.10.2026 22:00:00")
+        self.assertEqual(result["reason"], "claim_active")
+
+    def test_expired_claim_is_claimable(self):
+        result = self.decide(status="failover_claimed", claim_expires_at="30.09.2026 22:10:00", attempt_no=1)
+        self.assertTrue(result["eligible"])
+
+    def test_first_day_of_window_allowed(self):
+        self.assertTrue(self.decide(work_date="25.09.2026")["eligible"])
+        self.assertTrue(self.decide(work_date="2026-09-25")["eligible"])
+
+    def test_older_than_window_rejected(self):
+        self.assertEqual(self.decide(work_date="24.09.2026")["reason"], "outside_window")
+        self.assertEqual(self.decide(work_date="06.04.2026")["reason"], "outside_window")
+
+    def test_unparsable_date_not_rejected_by_window(self):
+        self.assertTrue(self.decide(work_date="")["eligible"])
+
+    def test_capability_ranked_also_checks_claim_and_window(self):
+        with patch.dict(failover_policy.FAILOVER_POLICY_CONFIG, {
+            "selection_mode": "capability_ranked", "candidate_window_days": 7,
+            "capability_map": {"ЧЕБОКСАРЫ_144": ["ЧЕБОКСАРЫ_143"]},
+        }):
+            result = failover_policy.can_attempt_failover_claim(
+                state_row={"work_date": "06.04.2026", "target_object_name": "ЧЕБОКСАРЫ_143", "status": "owner_failed"},
+                configured_pvz_id="ЧЕБОКСАРЫ_144", available_pvz=["ЧЕБОКСАРЫ_143"], now=self.NOW)
+        self.assertEqual(result["reason"], "outside_window")
 
 
 if __name__ == "__main__":
