@@ -299,7 +299,8 @@ logs/reports_domain/FailoverState/{YYYY-MM-DD}_trace.log
 несохраненных результатов, которые досылаются следующим запуском без повторного парсинга.
 Детальный план — [BATCH_UPLOAD_PLAN.md](BATCH_UPLOAD_PLAN.md).
 Пакетный upsert реализован (этап 2) и включается параметрами `BACKFILL_CONFIG`: `kpi_upload_mode` (`row` | `batch`,
-по умолчанию `row`) и `kpi_upload_mode_by_pvz` (например, `{"ЧЕБОКСАРЫ_144": "batch"}` — сначала на одном ПВЗ).
+с 01.10.2026 по умолчанию `batch` для всех ПВЗ) и `kpi_upload_mode_by_pvz` (временные исключения, например откат
+одного ПВЗ на `row`).
 В режиме `batch` отдельная проверка подключения перед загрузкой не выполняется.
 
 ## Future Considerations
