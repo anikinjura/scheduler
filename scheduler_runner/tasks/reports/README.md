@@ -210,7 +210,13 @@ set_default_store(MyPostgreSQLStore())
 ```powershell
 # All refactored modules tests
 .venv\Scripts\python.exe -m pytest scheduler_runner/tasks/reports/tests/ -q
+# без pytest (машина ПВЗ)
+python -m unittest discover -s scheduler_runner/tasks/reports -t . -p "test_*.py"
 ```
+
+Unit-тесты не ходят в сеть и пишут логи во временный каталог `%TEMP%\scheduler_test_logs`
+(`tests/__init__.py` задает `SCHEDULER_LOGS_DIR`), а не в рабочие `logs/reports_domain`. Smoke-тесты ниже
+работают с настоящими таблицами и логами.
 
 ### Smoke Tests
 
