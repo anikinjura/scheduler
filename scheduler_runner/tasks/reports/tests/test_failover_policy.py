@@ -15,7 +15,7 @@ class TestFailoverPolicy(unittest.TestCase):
     def test_priority_map_contains_expected_pilot_links(self):
         self.assertEqual(failover_policy.get_priority_list("ЧЕБОКСАРЫ_143"), ["ЧЕБОКСАРЫ_144"])
         self.assertEqual(failover_policy.get_priority_list("ЧЕБОКСАРЫ_182"), ["ЧЕБОКСАРЫ_144"])
-        self.assertEqual(failover_policy.get_priority_list("СОСНОВКА_10"), ["ЧЕБОКСАРЫ_144"])
+        self.assertEqual(failover_policy.get_priority_list("СОСНОВКА_10"), [])  # пункт закрыт с 12.09.2026
         self.assertEqual(failover_policy.get_priority_list("ЧЕБОКСАРЫ_340"), [])
 
     def test_pilot_map_allows_cheboksary_144_to_claim_cheboksary_143(self):
