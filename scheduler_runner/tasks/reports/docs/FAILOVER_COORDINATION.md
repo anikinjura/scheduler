@@ -2,6 +2,8 @@
 
 Coordination layer для failover recovery между коллегами через `KPI_FAILOVER_STATE`.
 
+План доработки (молчащие ПВЗ, брошенные захваты, возврат ПВЗ): [FAILOVER_REDESIGN_PLAN.md](FAILOVER_REDESIGN_PLAN.md).
+
 ## Назначение
 
 `KPI` worksheet — конечное хранилище KPI-данных.
@@ -120,10 +122,11 @@ Runtime keys:
 - `failover_claim_ttl_minutes`
 - `failover_max_claims_per_run`
 
-Apps Script URL / secret:
-- `config/reports_paths.py` или env:
-  - `FAILOVER_APPS_SCRIPT_URL`
-  - `FAILOVER_SHARED_SECRET`
+Apps Script URL / secret задаются только в `.env/secrets.env` (читает `config/reports_paths.py`):
+- `FAILOVER_APPS_SCRIPT_URL`, `FAILOVER_SHARED_SECRET` — production;
+- `FAILOVER_APPS_SCRIPT_URL_TEST`, `FAILOVER_SHARED_SECRET_TEST` — `ENV_MODE=test`.
+
+Пустые значения — захват невозможен (`apps_script_url_missing`), failover молча не работает.
 
 ## Dependency Injection
 
