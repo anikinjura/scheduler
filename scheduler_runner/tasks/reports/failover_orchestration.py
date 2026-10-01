@@ -5,7 +5,7 @@ Orchestration всего failover-phase: candidate evaluation, claim path, recov
 
 Извлечено из reports_processor.py (Phase 3 — high-risk extraction).
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config.base_config import PVZ_ID
 from .config.scripts.reports_processor_config import BACKFILL_CONFIG, FAILOVER_POLICY_CONFIG
@@ -21,13 +21,18 @@ from .storage.failover_state import (
     mark_failover_state,
     try_claim_failover,
 )
+from .storage.google_sheets_store import normalize_state_work_date
 from .failover_policy import (
+    SELECTION_MODE_CAPABILITY_RANKED,
     evaluate_claimable_rows_by_policy,
     filter_claimable_rows_by_policy,
+    get_candidate_window_days,
     get_capability_targets_for_helper,
+    get_current_rank,
     get_priority_list,
     get_selection_mode,
     has_explicit_priority_rule,
+    select_preferred_helper_for_target,
 )
 from scheduler_runner.utils.logging import configure_logger
 from scheduler_runner.utils.parser import (
@@ -47,6 +52,7 @@ from .reports_summary import (
 from .reports_upload import (
     create_uploader_logger,
     detect_missing_report_dates,
+    detect_missing_report_dates_by_pvz,
     run_upload_batch_microservice,
 )
 
@@ -69,6 +75,94 @@ from .owner_state_sync import (
 # Candidate collection & policy evaluation
 # ──────────────────────────────────────────────
 
+# failover_claimed — чтобы подхватить брошенный захват (срок истек); действующий отсекает policy (claim_active)
+CANDIDATE_STATUSES = {STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED, STATUS_FAILOVER_CLAIMED}
+# Статус в памяти для даты молчащего ПВЗ: строки в листе нет, Apps Script создаст ее при захвате
+STATUS_OWNER_SILENT = "owner_silent"
+
+
+def resolve_silent_owner_targets(*, configured_pvz_id, available_pvz_ids):
+    """ПВЗ, за которыми помощник следит как за молчащими: [(target, rank)].
+
+    priority_map_legacy — цели, где помощник есть в списке приоритета (rank — место в списке);
+    capability_ranked — цели, где помощник предпочтительный (rank 1). Только доступные учетной записи, кроме своего.
+    """
+    available = {normalize_pvz_id(pvz_id) for pvz_id in (available_pvz_ids or [])}
+    own = normalize_pvz_id(configured_pvz_id)
+    targets = []
+    if get_selection_mode() == SELECTION_MODE_CAPABILITY_RANKED:
+        for target in get_capability_targets_for_helper(configured_pvz_id):
+            preferred = select_preferred_helper_for_target(target, available_pvz_ids)
+            if preferred and normalize_pvz_id(preferred) == own:
+                targets.append((target, 1))
+    else:
+        for target in (FAILOVER_POLICY_CONFIG.get("priority_map", {}) or {}):
+            rank = get_current_rank(target, configured_pvz_id)
+            if rank is not None:
+                targets.append((target, rank))
+    return [(target, rank) for target, rank in targets
+            if normalize_pvz_id(target) != own and normalize_pvz_id(target) in available]
+
+
+def find_silent_owner_rows(*, configured_pvz_id, available_pvz_ids, state_rows, logger=None, now=None):
+    """Даты молчащих ПВЗ: нет данных в KPI и нет строки в KPI_FAILOVER_STATE (ПВЗ не запускался).
+
+    Окно — candidate_window_days, но строго до вчерашнего дня: сегодняшнюю дату сосед, возможно, еще собирает.
+    Помощник ранга r > 1 берет дату только если она старше еще на (r - 1) * failover_silent_rank_lag_days дней —
+    помощнику ранга 1 дается вечер на восстановление. Один batched coverage-check по всем целям.
+    """
+    logger = logger or create_failover_state_logger()
+    now = now or datetime.now()
+    targets = resolve_silent_owner_targets(configured_pvz_id=configured_pvz_id, available_pvz_ids=available_pvz_ids)
+    if not targets:
+        return []
+
+    window_days = get_candidate_window_days()
+    lag_days = max(int(BACKFILL_CONFIG.get("failover_silent_rank_lag_days", 1) or 0), 0)
+    date_to = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    date_from = (now - timedelta(days=window_days - 1)).strftime("%Y-%m-%d")
+    if date_from > date_to:
+        return []
+
+    coverage = detect_missing_report_dates_by_pvz(
+        date_from=date_from,
+        date_to=date_to,
+        pvz_ids=[target for target, _rank in targets],
+        logger=create_uploader_logger(),
+        max_missing_dates=window_days,
+    )
+    if not coverage.get("success", False):
+        raise RuntimeError(f"coverage-check молчащих ПВЗ не выполнен: {coverage.get('error', 'unknown_error')}")
+
+    known_keys = {
+        (normalize_state_work_date(row.get("work_date")), normalize_pvz_id(row.get("target_object_name")))
+        for row in state_rows or []
+    }
+    missing_by_pvz = coverage.get("missing_dates_by_pvz", {})
+    silent_rows = []
+    for target, rank in targets:
+        latest_allowed = (now - timedelta(days=1 + (rank - 1) * lag_days)).strftime("%Y-%m-%d")
+        dates = sorted(
+            date for date in missing_by_pvz.get(target, [])
+            if date <= latest_allowed and (date, normalize_pvz_id(target)) not in known_keys
+        )
+        if not dates:
+            continue
+        logger.warning(f"FAILOVER_SILENT_OWNER_DATES target={target} rank={rank} dates={dates}")
+        silent_rows.extend(
+            {
+                "work_date": date,
+                "target_object_name": target,
+                "owner_object_name": target,
+                "status": STATUS_OWNER_SILENT,
+                "attempt_no": 0,
+                "updated_at": "",
+                "silent": True,
+            }
+            for date in dates
+        )
+    return silent_rows
+
 def collect_claimable_failover_rows(
     *,
     available_pvz_ids,
@@ -78,14 +172,25 @@ def collect_claimable_failover_rows(
     uploader=None,
     return_evaluation=False,
 ):
-    """Собирает claimable failover rows и оценивает их по policy."""
+    """Собирает claimable failover rows и оценивает их по policy.
+
+    Кандидаты — строки KPI_FAILOVER_STATE со статусами сбоя, а при failover_detect_silent_owners еще и даты
+    молчащих ПВЗ (нет ни данных в KPI, ни строки состояния, см. find_silent_owner_rows).
+    """
     logger = logger or create_failover_state_logger()
-    rows = list_candidate_failover_rows_fast(
-        # failover_claimed — чтобы подхватить брошенный захват (срок истек); действующий отсекает policy (claim_active)
-        statuses=[STATUS_OWNER_FAILED, STATUS_CLAIM_EXPIRED, STATUS_FAILOVER_FAILED, STATUS_FAILOVER_CLAIMED],
-        logger=logger,
-        uploader=uploader,
-    )
+    all_state_rows = list_candidate_failover_rows_fast(statuses=None, logger=logger, uploader=uploader)
+    rows = [row for row in all_state_rows if row.get("status") in CANDIDATE_STATUSES]
+    if BACKFILL_CONFIG.get("failover_detect_silent_owners", False):
+        try:
+            rows.extend(find_silent_owner_rows(
+                configured_pvz_id=configured_pvz_id,
+                available_pvz_ids=available_pvz_ids,
+                state_rows=all_state_rows,
+                logger=logger,
+            ))
+        except Exception as exc:
+            # Без молчащих дат проход продолжается по строкам состояния
+            logger.warning(f"FAILOVER_SILENT_SCAN_FAILED: {exc}")
     if not FAILOVER_POLICY_CONFIG.get("enabled", True):
         filtered_rows = []
         decisions = []
@@ -293,6 +398,8 @@ def claim_failover_rows(
     logger = logger or create_failover_state_logger()
     claimed_rows = []
     for row in candidate_rows or []:
+        silent = bool(row.get("silent"))
+        claim_kwargs = {"create_if_missing": True} if silent else {}
         claim_result = try_claim_failover(
             execution_date=row.get("work_date"),
             target_object_name=row.get("target_object_name"),
@@ -302,9 +409,21 @@ def claim_failover_rows(
             source_run_id=source_run_id,
             logger=logger,
             uploader=uploader,
+            **claim_kwargs,
         )
         if claim_result.get("claimed", False):
             claimed_rows.append(row)
+        elif silent and claim_result.get("reason") == "row_not_found":
+            # Старая версия Apps Script не умеет создавать строку
+            logger.warning(
+                "FAILOVER_SILENT_CLAIM_UNSUPPORTED: Apps Script не создал строку для "
+                f"{row.get('target_object_name')} {row.get('work_date')} — нужна версия 2 (create_if_missing)"
+            )
+        else:
+            logger.info(
+                f"Failover claim не получен: {row.get('target_object_name')} {row.get('work_date')}, "
+                f"reason={claim_result.get('reason')}"
+            )
     return claimed_rows
 
 

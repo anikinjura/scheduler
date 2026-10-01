@@ -100,6 +100,19 @@ Failover-проход (помощь коллегам) после этого пр
 - `owner_upload_failed` — своя загрузка в Google Sheets не прошла;
 - `owner_state_sync_failed` — не удалось записать свое состояние.
 
+### Молчащие ПВЗ (этап C, флаг `failover_detect_silent_owners`)
+
+ПВЗ, который не запускался, строк состояния не пишет. Помощник при включенном флаге в том же проходе:
+1. берет цели из `priority_map` (где он в списке; в `capability_ranked` — где он предпочтительный), доступные его учетной записи;
+2. одним batched coverage-check ищет пропуски в `KPI` за окно `candidate_window_days` **до вчерашнего дня**
+   (сегодняшнюю дату сосед, возможно, еще собирает); помощник ранга r > 1 берет только даты старше еще на
+   `(r-1) * failover_silent_rank_lag_days` дней;
+3. отбрасывает даты, по которым уже есть строка в `KPI_FAILOVER_STATE` (их ведет обычный путь);
+4. захватывает с `create_if_missing` — Apps Script версии 2 добавляет строку сразу захваченной
+   (`created_and_claimed`, `last_error=owner_silent`) под той же блокировкой.
+
+Старый Apps Script отвечает `row_not_found` — в лог `FAILOVER_SILENT_CLAIM_UNSUPPORTED`, дата пропускается.
+
 ### Owner Success Suppression
 
 - healthy-new success rows → **suppress** (не пишутся)
@@ -186,6 +199,9 @@ Owner state sync metrics: prefetch_keys=N, prefetch_rows_found=N, persisted_rows
 Failover coordination dry-run: capability_ranked decision=...
 Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...
 FAILOVER_PASS_SKIPPED reason=own_dates_all_failed|owner_upload_failed|owner_state_sync_failed
+FAILOVER_SILENT_OWNER_DATES target=... rank=... dates=[...]
+FAILOVER_SILENT_SCAN_FAILED: <ошибка>   (проход продолжается по строкам состояния)
+FAILOVER_SILENT_CLAIM_UNSUPPORTED: ...  (Apps Script без create_if_missing)
 OWNER_PARSE_CRASHED: <ошибка парсера>
 Retryable error при owner state prefetch: [429] ...; attempt=1/3, retry в N.Ns
 ```

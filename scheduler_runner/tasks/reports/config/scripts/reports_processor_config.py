@@ -21,6 +21,10 @@ BACKFILL_CONFIG = {
     "failover_max_claims_per_run": 3,
     "failover_claim_backend": "apps_script",
     "failover_apps_script_timeout_seconds": 15,
+    # Молчащие ПВЗ (не запускались, строк состояния нет): помощник ищет их пропуски в KPI (до вчерашнего дня) и захватывает
+    # с созданием строки — нужен Apps Script версии 2 (create_if_missing). Помощник ранга r > 1 ждет еще (r-1)*lag дней.
+    "failover_detect_silent_owners": False,
+    "failover_silent_rank_lag_days": 1,
     "owner_state_sync_max_attempts": 3,
     "owner_state_sync_base_delay_seconds": 2.0,
     "owner_state_sync_max_delay_seconds": 8.0,

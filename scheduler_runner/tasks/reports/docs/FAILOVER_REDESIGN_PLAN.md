@@ -1,6 +1,6 @@
 # План доработки failover (помощь коллегам)
 
-Статус: **этапы A–B выполнены (01.10.2026), этапы C–E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
+Статус: **этапы A–C выполнены в коде (01.10.2026; C выключен до обновления Apps Script), этапы D–E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
 сейчас), [BATCH_UPLOAD_PLAN.md](BATCH_UPLOAD_PLAN.md) (загрузка KPI).
 
 ## 1. Зачем
@@ -115,7 +115,15 @@
 - `failover_claim_ttl_minutes`: 15 → 30.
 - Тесты policy на истекший/активный захват и окно дат.
 
-### Этап C. Молчащие соседи (P2, P3)
+### Этап C. Молчащие соседи (P2, P3) ✅ (в коде, выключен)
+
+Сделано 01.10.2026: `failover_orchestration.find_silent_owner_rows` / `resolve_silent_owner_targets`, захват с
+`create_if_missing`, Apps Script версии 2 (`storage/INFRASTRUCTURE_failover_apps_script_try_claim.gs`; копия кода из
+`INFRASTRUCTURE_GOOGLE_SHEETS.md` убрана — инструкция ссылается на файл). Включение: обновить код Apps Script в
+редакторе (развертывание «Новая версия», URL прежний), затем `failover_detect_silent_owners: True`.
+Отличие от плана ниже: ранжирование — по дням, а не по минутам (помощник ранга r > 1 берет дату старше еще на
+`(r-1) * failover_silent_rank_lag_days`): все ПВЗ запускаются одновременно, «задержка от начала прохода» не дает
+ранговому помощнику узнать, справился ли первый.
 
 - **Apps Script** (ручное действие: вставить новую версию кода и обновить развертывание — URL не меняется):
   `try_claim_failover` с флагом `create_if_missing: true` при `row_not_found` под той же блокировкой добавляет строку

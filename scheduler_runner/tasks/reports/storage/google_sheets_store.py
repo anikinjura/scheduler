@@ -608,6 +608,7 @@ def try_claim_failover_via_apps_script(
     ttl_minutes: int = 15,
     source_run_id: str = "",
     logger=None,
+    create_if_missing: bool = False,
 ) -> Dict[str, Any]:
     logger = logger or create_failover_state_logger()
     config = get_failover_apps_script_config()
@@ -630,6 +631,9 @@ def try_claim_failover_via_apps_script(
         "ttl_minutes": ttl_minutes,
         "source_run_id": source_run_id,
     }
+    if create_if_missing:
+        # Молчащий ПВЗ: строки нет, Apps Script (версия 2) добавит ее уже захваченной под LockService
+        payload["create_if_missing"] = True
     request = urllib.request.Request(
         apps_script_url,
         data=json.dumps(payload).encode("utf-8"),
@@ -743,7 +747,12 @@ def try_claim_failover(
     source_run_id: str = "",
     logger=None,
     uploader=None,
+    create_if_missing: bool = False,
 ) -> Dict[str, Any]:
+    """Захват даты для восстановления. create_if_missing — строки еще нет (молчащий ПВЗ).
+
+    Backend sheets создает строку при захвате всегда (upsert); apps_script — только с create_if_missing.
+    """
     claim_backend = get_failover_claim_backend()
     if claim_backend == "apps_script":
         return try_claim_failover_via_apps_script(
@@ -754,6 +763,7 @@ def try_claim_failover(
             ttl_minutes=ttl_minutes,
             source_run_id=source_run_id,
             logger=logger,
+            create_if_missing=create_if_missing,
         )
     return try_claim_failover_via_sheets(
         execution_date=execution_date,
