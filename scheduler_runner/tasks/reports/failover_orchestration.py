@@ -437,8 +437,6 @@ def run_claimed_failover_backfill(
     source_run_id="",
 ):
     """Выполняет recovery parse + upload для claimed rows."""
-    from .storage.failover_state import mark_failover_state
-
     parser_logger = parser_logger or create_parser_logger()
     failover_logger = failover_logger or create_failover_state_logger()
     claimed_dates_by_pvz = {}
@@ -450,6 +448,7 @@ def run_claimed_failover_backfill(
         owner_by_key[(target_object_name, execution_date)] = row.get("owner_object_name") or target_object_name
 
     execution_results = {}
+    pvz_restore_failures = []
     uploaded_records_total = 0
     recovered_dates_total = 0
     failed_recovery_dates_total = 0
@@ -460,7 +459,14 @@ def run_claimed_failover_backfill(
             parser_api=parser_api,
             jobs=jobs,
             logger=parser_logger,
+            restore_pvz=claimer_pvz,  # иначе учетная запись помощника останется в ПВЗ соседа
         )
+        if (batch_result.get("pvz_restore") or {}).get("success") is False:
+            pvz_restore_failures.append(target_object_name)
+            failover_logger.error(
+                f"FAILOVER_PVZ_RESTORE_FAILED: после восстановления {target_object_name} учетная запись не вернулась "
+                f"в {claimer_pvz}"
+            )
         coverage_result = detect_missing_report_dates(
             date_from=min(unique_dates),
             date_to=max(unique_dates),
@@ -524,6 +530,7 @@ def run_claimed_failover_backfill(
         "recovered_dates_count": recovered_dates_total,
         "failed_recovery_dates_count": failed_recovery_dates_total,
         "uploaded_records": uploaded_records_total,
+        "pvz_restore_failures": pvz_restore_failures,
     }
 
 

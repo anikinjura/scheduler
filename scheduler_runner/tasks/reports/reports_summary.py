@@ -6,7 +6,7 @@ reports_summary.py
 Извлечено из reports_processor.py (Phase 1.1 — low-risk extraction).
 """
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,8 @@ class FailoverRunSummary:
     failed_recovery_dates_count: int
     uploaded_records: int
     results_by_pvz: dict
+    # Соседи, после восстановления которых учетная запись не вернулась на свой ПВЗ (этап D failover)
+    pvz_restore_failures: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,7 @@ def build_failover_run_summary(*, enabled=False, failover_result=None):
         failed_recovery_dates_count=int(failover_result.get("failed_recovery_dates_count", 0) or 0),
         uploaded_records=int(failover_result.get("uploaded_records", 0) or 0),
         results_by_pvz=deepcopy(failover_result.get("results_by_pvz", {})),
+        pvz_restore_failures=list(failover_result.get("pvz_restore_failures", []) or []),
     )
 
 

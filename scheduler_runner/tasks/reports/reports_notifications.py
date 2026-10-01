@@ -297,6 +297,11 @@ def format_reports_run_notification_message(summary):
             )
         if failover_details:
             lines.extend(["- детали:"] + failover_details[:5])
+        if summary.failover.pvz_restore_failures:
+            lines.append(
+                "- ВНИМАНИЕ: после помощи соседу учетная запись осталась в чужом ПВЗ — выберите свой ПВЗ "
+                f"в Турбо ПВЗ вручную (соседи: {', '.join(summary.failover.pvz_restore_failures)})"
+            )
 
     return "\n".join(lines)
 

@@ -33,6 +33,15 @@
 
 Эти методы образуют Ozon-specific слой выбора ПВЗ и reuse-ятся как report parser-ом, так и discovery parser-ом.
 
+## Возврат ПВЗ после пакета (`_after_batch_dates`)
+
+Если в конфиге задан `RESTORE_PVZ_AFTER_BATCH` (facade: `invoke_parser_for_pvz(..., restore_pvz=...)`) и он отличается от
+ПВЗ пакета, после всех дат parser переходит на целевую страницу и вызывает `ensure_correct_pvz` для этого ПВЗ (по
+`stores/current` в режиме API, иначе по разметке). Выбранный ПВЗ хранится в серверной сессии: без возврата после
+failover оператор утром откроет Турбо ПВЗ в чужом пункте. Лог: `FAILOVER_PVZ_RESTORE` → `FAILOVER_PVZ_RESTORED` /
+`FAILOVER_PVZ_RESTORE_FAILED` (+ артефакты `pvz_restore_failed`); результат — `pvz_restore_result` и
+`batch_result["pvz_restore"]`.
+
 ## Overlay handling
 
 - `_check_and_close_overlay() -> bool`

@@ -43,7 +43,9 @@
 - `run_batch_parsing_microservice_new_api(execution_dates=None, pvz_id=PVZ_ID, logger=None)`
 - `invoke_parser_for_single_date(execution_date=None, parser_api='legacy', pvz_id=PVZ_ID, logger=None)`
 - `execute_parser_jobs_for_pvz(jobs, parser_api='legacy', logger=None)`
-- `invoke_parser_for_pvz(parser_api='legacy', pvz_id=None, execution_dates=None, jobs=None, logger=None)`
+- `invoke_parser_for_pvz(parser_api='legacy', pvz_id=None, execution_dates=None, jobs=None, logger=None, restore_pvz=None)`
+  - `restore_pvz` — после пакета вернуть учетную запись на этот ПВЗ (`RESTORE_PVZ_AFTER_BATCH`; failover: пакет соседа);
+    результат — `batch_result["pvz_restore"] = {"pvz", "success"}`.
 - `invoke_parser_for_grouped_jobs(grouped_jobs, pvz_ids=None, parser_api='legacy', logger=None)`
 - `invoke_available_pvz_discovery(pvz_id=PVZ_ID, logger=None, save_to_file=False, output_format='json')`
 

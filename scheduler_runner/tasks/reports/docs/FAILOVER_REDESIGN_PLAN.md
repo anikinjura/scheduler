@@ -1,6 +1,6 @@
 # План доработки failover (помощь коллегам)
 
-Статус: **этапы A–C выполнены в коде (01.10.2026; C выключен до обновления Apps Script), этапы D–E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
+Статус: **этапы A–D выполнены в коде (01.10.2026; C выключен до обновления Apps Script), этап E — план**. Связанные документы: [FAILOVER_COORDINATION.md](FAILOVER_COORDINATION.md) (как устроено
 сейчас), [BATCH_UPLOAD_PLAN.md](BATCH_UPLOAD_PLAN.md) (загрузка KPI).
 
 ## 1. Зачем
@@ -139,7 +139,13 @@
 - Совместимость: клиент без нового Apps Script получает `row_not_found` — молчащая дата пропускается с предупреждением
   `FAILOVER_SILENT_CLAIM_UNSUPPORTED`.
 
-### Этап D. Возврат своего ПВЗ после помощи (P6)
+### Этап D. Возврат своего ПВЗ после помощи (P6) ✅
+
+Сделано 01.10.2026: `invoke_parser_for_pvz(..., restore_pvz=claimer_pvz)` в `run_claimed_failover_backfill`; parser в хуке
+`_after_batch_dates` (до logout, в той же сессии) вызывает `ensure_correct_pvz` для своего ПВЗ. Неудача —
+`FAILOVER_PVZ_RESTORE_FAILED` и строка в уведомлении ВК. Возврат делается после каждого соседа (пакеты соседей —
+отдельные сессии браузера). Работает для `parser_api=legacy` (по умолчанию); в job API хук вызывается, но результат
+возврата в `batch_result` не попадает.
 
 - В конце `run_claimed_failover_backfill` (после всех соседей, в той же сессии браузера) — переключение на свой ПВЗ
   (`set_pvz(PVZ_ID)` + проверка по `stores/current` в API-режиме). Неудача — `FAILOVER_PVZ_RESTORE_FAILED` в лог и в

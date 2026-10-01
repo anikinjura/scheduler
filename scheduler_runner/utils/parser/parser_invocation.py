@@ -41,6 +41,15 @@ def apply_pvz_to_parser_config(config, pvz_id):
     return normalized_config
 
 
+def apply_restore_pvz_to_parser_config(config, restore_pvz):
+    """ПВЗ, на который вернуть учетную запись после пакета (failover: пакет соседа). Пусто — не возвращать."""
+    if not restore_pvz:
+        return config
+    normalized_config = deepcopy(config)
+    normalized_config["RESTORE_PVZ_AFTER_BATCH"] = restore_pvz
+    return normalized_config
+
+
 def apply_headless_override_to_parser_config(config, headless_enabled):
     normalized_config = deepcopy(config)
     normalized_config["HEADLESS"] = bool(headless_enabled)
@@ -187,6 +196,7 @@ def execute_parser_internal(
     save_to_file=False,
     output_format="json",
     logger=None,
+    restore_pvz=None,
 ):
     logger = logger or create_parser_logger()
     normalized_dates_source = execution_dates or [job.execution_date for job in (jobs or [])]
@@ -223,7 +233,8 @@ def execute_parser_internal(
 
     if parser_api == "new":
         logger.info(f"Запуск batch-парсинга Ozon через internal executor и job API. Количество дат: {len(normalized_dates)}")
-        parser_config = apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id)
+        parser_config = apply_restore_pvz_to_parser_config(
+            apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id), restore_pvz)
         result = execute_new_batch_once(
             parser_config=parser_config,
             normalized_jobs=normalized_jobs,
@@ -248,7 +259,7 @@ def execute_parser_internal(
         return result
 
     logger.info(f"Запуск batch-парсинга Ozon через internal executor и legacy API. Количество дат: {len(normalized_dates)}")
-    config = apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id)
+    config = apply_restore_pvz_to_parser_config(apply_pvz_to_parser_config(MULTI_STEP_OZON_CONFIG.copy(), pvz_id), restore_pvz)
     result = execute_legacy_batch_once(
         parser_config=config,
         execution_dates=normalized_dates,
@@ -349,7 +360,9 @@ def execute_parser_jobs_for_pvz(jobs, parser_api="legacy", logger=None):
     )
 
 
-def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=None, jobs=None, logger=None):
+def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=None, jobs=None, logger=None,
+                          restore_pvz=None):
+    """Пакет дат одного ПВЗ. restore_pvz — вернуть учетную запись на этот ПВЗ после пакета (failover)."""
     normalized_jobs = jobs or build_jobs_for_pvz(pvz_id=pvz_id, execution_dates=execution_dates or [])
     return execute_parser_internal(
         parser_api=parser_api,
@@ -359,6 +372,7 @@ def invoke_parser_for_pvz(*, parser_api="legacy", pvz_id=None, execution_dates=N
         save_to_file=False,
         output_format="json",
         logger=logger,
+        restore_pvz=restore_pvz,
     )
 
 
