@@ -11,25 +11,26 @@ class TestGoogleSheetsRewardFormulaColumns(unittest.TestCase):
         reporter.worksheet = Mock()
         reporter.worksheet.row_values.return_value = [
             "id",
-            "Дата",
-            "ПВЗ",
-            "Количество выдач",
-            "Прямой поток",
-            "Возвратный поток",
-            "Сумма за Количество выдач",
-            "Сумма за Прямой поток",
-            "Сумма за Возвратный поток",
-            "Итого вознаграждение",
+            "work_date",
+            "object_name",
+            "issued_packages",
+            "direct_flow",
+            "return_flow",
+            "reward_issued_packages",
+            "reward_direct_flow",
+            "reward_return_flow",
+            "total_reward",
             "timestamp",
+            "owner_id",  # колонка другой системы (VK_shift), в конфигурации ее нет
         ]
 
         values = reporter._prepare_row_values(
             data={
-                "Дата": "04.04.2026",
-                "ПВЗ": "ЧЕБОКСАРЫ_144",
-                "Количество выдач": 317,
-                "Прямой поток": 20,
-                "Возвратный поток": 0,
+                "work_date": "04.04.2026",
+                "object_name": "ЧЕБОКСАРЫ_144",
+                "issued_packages": 317,
+                "direct_flow": 20,
+                "return_flow": 0,
                 "timestamp": "2026-04-04 21:33:00",
             },
             config=TABLE_CONFIG,
@@ -43,20 +44,12 @@ class TestGoogleSheetsRewardFormulaColumns(unittest.TestCase):
         self.assertEqual(values[3], 317)
         self.assertEqual(values[4], 20)
         self.assertEqual(values[5], 0)
-        self.assertEqual(
-            values[6],
-            '=GET_REWARD("Количество выдач";D7;$B7;KPI_REWARD_RULES_RANGE)',
-        )
-        self.assertEqual(
-            values[7],
-            '=GET_REWARD("Прямой поток";E7;$B7;KPI_REWARD_RULES_RANGE)',
-        )
-        self.assertEqual(
-            values[8],
-            '=GET_REWARD("Возвратный поток";F7;$B7;KPI_REWARD_RULES_RANGE)',
-        )
+        self.assertEqual(values[6], '=GET_REWARD("issued_packages";D7;$B7;KPI_REWARD_RULES_RANGE)')
+        self.assertEqual(values[7], '=GET_REWARD("direct_flow";E7;$B7;KPI_REWARD_RULES_RANGE)')
+        self.assertEqual(values[8], '=GET_REWARD("return_flow";F7;$B7;KPI_REWARD_RULES_RANGE)')
         self.assertEqual(values[9], "=SUM(G7:I7)")
         self.assertEqual(values[10], "2026-04-04 21:33:00")
+        self.assertIsNone(values[11])  # чужая колонка не записывается
 
 
 if __name__ == "__main__":

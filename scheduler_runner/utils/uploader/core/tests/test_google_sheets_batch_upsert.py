@@ -74,7 +74,6 @@ class TestUpsertRowsBatch(unittest.TestCase):
         self.ws.batch_get.return_value = [
             column(["20.09.2026", "21.09.2026"]),
             column(["ЧЕБОКСАРЫ_144", "ЧЕБОКСАРЫ_144"]),
-            column(["2026-09-20 21:40:00", "2026-09-21 21:40:00"]),
         ]
 
     def assert_no_row_level_reads(self):
@@ -122,8 +121,25 @@ class TestUpsertRowsBatch(unittest.TestCase):
         rows = {c["range"]: c["values"][0] for c in self.ws.batch_update.call_args.args[0]}
         self.assertEqual(rows["A2:K2"][0], "=B2&C2")
         self.assertEqual(rows["A2:K2"][3], 111)
-        self.assertEqual(rows["A2:K2"][10], "2026-09-20 21:40:00")  # timestamp из листа, не из данных
+        self.assertIsNone(rows["A2:K2"][10])  # timestamp не записывается: в листе остается время создания
         self.assertEqual(rows["A3:K3"][3], 222)
+
+    def test_foreign_columns_are_not_written(self):
+        """Колонки листа вне конфигурации (owner_id из VK_shift) — None: Sheets API их не трогает."""
+        headers = HEADERS + ["owner_id"]
+        self.config.build_column_indexes(headers)
+        self.reporter._headers = headers
+        self.ws.append_rows.return_value = {"updates": {"updatedRange": "'KPI'!A4:K4"}}
+
+        result = self.reporter.upsert_rows_batch([record(20, issued=111), record(23)], config=self.config)
+
+        self.assertTrue(result["success"])
+        appended = self.ws.append_rows.call_args.kwargs["values"][0]
+        self.assertEqual(len(appended), 12)
+        self.assertIsNone(appended[11])
+        rows = {c["range"]: c["values"][0] for c in self.ws.batch_update.call_args.args[0]}
+        self.assertIsNone(rows["A2:L2"][11])
+        self.assertEqual(rows["A2:L2"][3], 111)
 
     def test_mixed_batch(self):
         self.ws.append_rows.return_value = {"updates": {"updatedRange": "'KPI'!A4:K4"}}

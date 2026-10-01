@@ -92,6 +92,12 @@ class QuotaBackoffHTTPClient(HTTPClient):
             time.sleep(delay)
 
 
+# Значение ячейки «не записывать»: Sheets API пропускает null в values, содержимое ячейки сохраняется.
+# Используется для колонок листа, которых нет в конфигурации (их ведут другие системы, например owner_id из VK_shift),
+# и для timestamp при обновлении строки.
+SKIP_CELL = None
+
+
 def get_google_sheets_request_stats() -> Dict[str, int]:
     """Снимок суммарной статистики запросов к Google Sheets в текущем процессе."""
     return dict(QuotaBackoffHTTPClient.process_stats)
@@ -1059,12 +1065,11 @@ class GoogleSheetsReporter:
 
         headers = self._get_headers()
 
-        # 3. Одно чтение: какие ключи уже есть в таблице (и timestamp этих строк)
+        # 3. Одно чтение: какие ключи уже есть в таблице
         existing_rows: Dict[tuple, int] = {}
-        timestamps: Dict[int, Any] = {}
         if strategy != "append_only" and key_columns and latest:
             try:
-                existing_rows, timestamps, duplicates = self._read_rows_by_keys(headers, key_columns)
+                existing_rows, duplicates = self._read_rows_by_keys(headers, key_columns)
                 diagnostics["duplicate_sheet_rows"] = duplicates
             except Exception as e:
                 fail(latest.values(), f"Ошибка чтения ключей: {e}", prepared)
@@ -1098,7 +1103,7 @@ class GoogleSheetsReporter:
                     diagnostics["append_range_fallback"] = True
                     self.logger.warning(f"Номера добавленных строк не определены из ответа: {response}; ищем по ключам")
                     try:
-                        found, _, _ = self._read_rows_by_keys(headers, key_columns)
+                        found, _ = self._read_rows_by_keys(headers, key_columns)
                         row_numbers = [found.get(key_of(prepared[i])) for i in to_append]
                     except Exception as e:
                         self.logger.error(f"Поиск добавленных строк по ключам не удался: {e}")
@@ -1111,8 +1116,7 @@ class GoogleSheetsReporter:
         for i, row in to_update:
             update_data.append({
                 "range": f"A{row}:{last_column}{row}",
-                "values": [self._row_values_for_update(headers, use_config, prepared[i], row,
-                                                       formula_row_placeholder, timestamps.get(row, ""))],
+                "values": [self._row_values_for_update(headers, use_config, prepared[i], row, formula_row_placeholder)],
             })
         for i, row in appended_rows.items():
             if row:
@@ -1146,13 +1150,13 @@ class GoogleSheetsReporter:
 
     def _read_rows_by_keys(self, headers: List[str], key_columns: List[str]) -> tuple:
         """
-        Одно чтение (batch_get открытых диапазонов) ключевых колонок и timestamp.
+        Одно чтение (batch_get открытых диапазонов) ключевых колонок.
 
         Returns:
-            (карта нормализованный ключ -> номер первой строки, карта строка -> timestamp, число строк-дублей)
+            (карта нормализованный ключ -> номер первой строки, число строк-дублей)
         """
         header_index = {h.strip(): i for i, h in enumerate(headers)}
-        columns = list(key_columns) + (["timestamp"] if "timestamp" in header_index else [])
+        columns = list(key_columns)
         missing = [c for c in columns if c not in header_index]
         if missing:
             raise ValueError(f"Колонки не найдены в заголовке листа: {missing}")
@@ -1164,9 +1168,8 @@ class GoogleSheetsReporter:
             column_values[column] = [row[0] if isinstance(row, list) and row else "" for row in values]
 
         rows: Dict[tuple, int] = {}
-        timestamps: Dict[int, Any] = {}
         duplicates = 0
-        max_len = max((len(v) for c, v in column_values.items() if c in key_columns), default=0)
+        max_len = max((len(v) for v in column_values.values()), default=0)
         for index in range(max_len):
             raw = [column_values[c][index] if index < len(column_values[c]) else "" for c in key_columns]
             if all(value in ("", None) for value in raw):
@@ -1177,11 +1180,9 @@ class GoogleSheetsReporter:
                 duplicates += 1
                 continue
             rows[key] = row_number
-            ts_values = column_values.get("timestamp", [])
-            timestamps[row_number] = ts_values[index] if index < len(ts_values) else ""
         if duplicates:
             self.logger.warning(f"KPI_BATCH_DUPLICATE_ROWS: в листе {duplicates} строк с повторяющимся ключом {key_columns}, используется первая")
-        return rows, timestamps, duplicates
+        return rows, duplicates
 
     @staticmethod
     def _rows_from_append_response(response: Any, expected_count: int) -> Optional[List[int]]:
@@ -1200,26 +1201,30 @@ class GoogleSheetsReporter:
         return list(range(start, end + 1))
 
     def _row_values_for_append(self, headers: List[str], config: TableConfig, data: Dict[str, Any]) -> List[Any]:
-        """Строка для append_rows: значения данных, формульные колонки пустые (номер строки еще неизвестен)."""
+        """Строка для append_rows: значения данных, формульные колонки пустые (номер строки еще неизвестен).
+
+        Колонки листа, которых нет в конфигурации, не записываются (SKIP_CELL).
+        """
         values = []
         for header in headers:
             col_def = config.get_column(header)
-            if not col_def or (col_def.column_type == ColumnType.FORMULA and col_def.formula_template):
+            if not col_def:
+                values.append(SKIP_CELL)
+            elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
                 values.append("")
             else:
                 values.append(data.get(col_def.name, ""))
         return values
 
     def _row_values_for_update(self, headers: List[str], config: TableConfig, data: Dict[str, Any], row_number: int,
-                               formula_row_placeholder: str, existing_timestamp: Any) -> List[Any]:
-        """Полная строка для обновления — как _update_existing_row: формулы с номером строки, timestamp сохраняется."""
+                               formula_row_placeholder: str) -> List[Any]:
+        """Строка для обновления — как _update_existing_row: формулы с номером строки,
+        timestamp и колонки вне конфигурации не записываются (SKIP_CELL)."""
         values = []
         for header in headers:
             col_def = config.get_column(header)
-            if header == "timestamp":
-                values.append(existing_timestamp or "")
-            elif not col_def:
-                values.append("")
+            if header == "timestamp" or not col_def:
+                values.append(SKIP_CELL)
             elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
                 values.append(col_def.formula_template.replace(formula_row_placeholder, str(row_number)))
             else:
@@ -1840,25 +1845,16 @@ class GoogleSheetsReporter:
             # Получаем заголовки
             headers = self._get_headers()
 
-            # Подготавливаем значения для обновления, исключая timestamp.
-            # timestamp — время создания записи, его нельзя перезаписывать при update.
+            # timestamp — время создания записи, его нельзя перезаписывать при update;
+            # колонки вне конфигурации ведут другие системы. Обе не записываются (SKIP_CELL).
             values = []
             for header in headers:
                 if header == "timestamp":
-                    # Сохраняем существующее значение timestamp
-                    col_letter = config.get_column_letter(header)
-                    if not col_letter:
-                        col_idx = config.get_column_index(header)
-                        col_letter = _index_to_column_letter(col_idx) if col_idx else None
-                    if col_letter:
-                        existing_val = self.worksheet.acell(f"{col_letter}{row_number}").value
-                        values.append(existing_val or "")
-                    else:
-                        values.append("")
+                    values.append(SKIP_CELL)
                 else:
                     col_def = config.get_column(header)
                     if not col_def:
-                        values.append("")
+                        values.append(SKIP_CELL)
                     elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
                         formula = col_def.formula_template.replace(formula_row_placeholder, str(row_number))
                         values.append(formula)
@@ -1917,7 +1913,7 @@ class GoogleSheetsReporter:
         for header in headers:
             col_def = config.get_column(header)
             if not col_def:
-                values.append("")
+                values.append(SKIP_CELL)
                 continue
 
             if col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
@@ -1959,7 +1955,7 @@ class GoogleSheetsReporter:
             for col_idx, header in enumerate(headers):
                 col_def = config.get_column(header)
                 if not col_def:
-                    values_no_formulas.append("")
+                    values_no_formulas.append(SKIP_CELL)
                 elif col_def.column_type == ColumnType.FORMULA and col_def.formula_template:
                     formula_col_indices.append(col_idx)
                     values_no_formulas.append("")  # placeholder
