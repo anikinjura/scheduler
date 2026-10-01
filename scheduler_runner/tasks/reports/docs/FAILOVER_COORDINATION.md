@@ -202,6 +202,7 @@ FAILOVER_PASS_SKIPPED reason=own_dates_all_failed|owner_upload_failed|owner_stat
 FAILOVER_SILENT_OWNER_DATES target=... rank=... dates=[...]
 FAILOVER_SILENT_SCAN_FAILED: <ошибка>   (проход продолжается по строкам состояния)
 FAILOVER_SILENT_CLAIM_UNSUPPORTED: ...  (Apps Script без create_if_missing)
+FAILOVER_PVZ_RESTORE → FAILOVER_PVZ_RESTORED / FAILOVER_PVZ_RESTORE_FAILED   (возврат своего ПВЗ после пакета соседа)
 OWNER_PARSE_CRASHED: <ошибка парсера>
 Retryable error при owner state prefetch: [429] ...; attempt=1/3, retry в N.Ns
 ```

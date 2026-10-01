@@ -383,6 +383,36 @@ class OzonReportParser(BaseReportParser):
                 self.logger.error(f"Полный стек трейса: {traceback.format_exc()}")
             return False
 
+    def _after_batch_dates(self) -> None:
+        """После пакета соседнего ПВЗ (failover) — вернуть учетную запись на свой ПВЗ (RESTORE_PVZ_AFTER_BATCH).
+
+        Выбранный ПВЗ хранится на сервере в сессии: без возврата утром оператор откроет Турбо ПВЗ в чужом пункте.
+        Переключение и проверка — тем же ensure_correct_pvz (по stores/current в режиме API, иначе по разметке).
+        """
+        restore_pvz = str(self.config.get("RESTORE_PVZ_AFTER_BATCH") or "").strip()
+        if not restore_pvz:
+            return
+        additional_params = self.config.setdefault("additional_params", {})
+        batch_pvz = additional_params.get("location_id", "")
+        if batch_pvz == restore_pvz:
+            return
+        if self.logger:
+            self.logger.info(f"FAILOVER_PVZ_RESTORE: пакет {batch_pvz} завершен, возвращаем ПВЗ {restore_pvz}")
+        additional_params["location_id"] = restore_pvz
+        try:
+            restored = BaseReportParser.navigate_to_target(self) and self.ensure_correct_pvz()
+        finally:
+            additional_params["location_id"] = batch_pvz
+        if self.logger:
+            if restored:
+                self.logger.info(f"FAILOVER_PVZ_RESTORED: учетная запись снова в ПВЗ {restore_pvz}")
+            else:
+                self.logger.error(f"FAILOVER_PVZ_RESTORE_FAILED: ПВЗ {restore_pvz} не возвращен — оператору нужно "
+                                  f"выбрать его в Турбо ПВЗ вручную")
+        if not restored:
+            self.dump_debug_artifacts("pvz_restore_failed")
+        self.pvz_restore_result = {"pvz": restore_pvz, "success": bool(restored)}
+
     def ensure_correct_pvz(self) -> bool:
         """
         Проверяет, что выбран правильный ПВЗ, и при необходимости переключает его.

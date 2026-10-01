@@ -303,6 +303,16 @@ class BaseReportParser(BaseParser, ABC):
                 finally:
                     self._close_parser_session()
 
+    def _after_batch_dates(self) -> None:
+        """Хук: все даты пакета обработаны, сессия браузера еще открыта (до logout). Ошибки не прерывают пакет."""
+
+    def _run_after_batch_dates(self) -> None:
+        try:
+            self._after_batch_dates()
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Ошибка завершающего шага пакета: {e}")
+
     def run_jobs_for_pvz(self, *, jobs, definition: ReportDefinition, runtime: ParserRuntimeContext):
         """Выполняет пачку job-ов одного PVZ в рамках одной browser session."""
         if not jobs:
@@ -337,6 +347,8 @@ class BaseReportParser(BaseParser, ABC):
                 if not job_result.success and not runtime.continue_on_job_error:
                     break
 
+            if not any(result.error_code == "AUTH_REQUIRED" for result in results):
+                self._run_after_batch_dates()
             if not self.logout() and self.logger:
                 self.logger.warning("Не удалось корректно выйти из системы после batch-run по PVZ")
         finally:
@@ -476,6 +488,7 @@ class BaseReportParser(BaseParser, ABC):
                     if error_text.startswith("AUTH_REQUIRED:"):
                         raise
 
+            self._run_after_batch_dates()
             if not self.logout() and self.logger:
                 self.logger.warning("Не удалось корректно выйти из системы после batch-run")
 
@@ -490,7 +503,7 @@ class BaseReportParser(BaseParser, ABC):
         successful_dates = sum(1 for item in results_by_date.values() if item.get("success"))
         failed_dates = len(results_by_date) - successful_dates
 
-        return {
+        batch_result = {
             "success": failed_dates == 0,
             "mode": "batch",
             "total_dates": len(normalized_dates),
@@ -498,6 +511,10 @@ class BaseReportParser(BaseParser, ABC):
             "failed_dates": failed_dates,
             "results_by_date": results_by_date,
         }
+        pvz_restore_result = getattr(self, "pvz_restore_result", None)
+        if pvz_restore_result is not None:
+            batch_result["pvz_restore"] = pvz_restore_result
+        return batch_result
 
 
     def format_report_output(self,
