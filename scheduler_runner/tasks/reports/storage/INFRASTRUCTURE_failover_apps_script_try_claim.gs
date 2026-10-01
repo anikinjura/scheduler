@@ -1,3 +1,6 @@
+// Версия 2 (01.10.2026): create_if_missing — захват даты молчащего ПВЗ, по которой в листе еще нет строки.
+// После замены кода: Развертывание → Управление развертываниями → (карандаш) → Версия: «Новая версия» → Развернуть.
+// URL веб-приложения при этом не меняется.
 const FAILOVER_SHEET_NAME = 'KPI_FAILOVER_STATE';
 const CLAIM_STATUSES = {
   OWNER_SUCCESS: 'owner_success',
@@ -61,14 +64,20 @@ function tryClaimFailover_(payload) {
     }
 
     const headers = getHeaders_(sheet);
+    const now = new Date();
     const rowInfo = findFailoverRow_(sheet, headers, payload.execution_date, payload.target_object_name);
     if (!rowInfo) {
-      return { success: false, claimed: false, reason: 'row_not_found' };
+      if (payload.create_if_missing !== true) {
+        return { success: false, claimed: false, reason: 'row_not_found' };
+      }
+      // Молчащий ПВЗ: строки нет. Поиск и добавление — под одной блокировкой, второй помощник получит already_claimed.
+      const createdState = buildCreatedClaimState_(payload, ttlMinutes, now);
+      appendRowObject_(sheet, headers, createdState);
+      return { success: true, claimed: true, reason: 'created_and_claimed', state: normalizeStateForResponse_(createdState) };
     }
 
     const state = rowToObject_(headers, rowInfo.values);
     const currentStatus = String(state.status || '').trim();
-    const now = new Date();
 
     if ([CLAIM_STATUSES.OWNER_SUCCESS, CLAIM_STATUSES.FAILOVER_SUCCESS].includes(currentStatus)) {
       return { success: true, claimed: false, reason: 'already_completed', state: normalizeStateForResponse_(state) };
@@ -168,6 +177,35 @@ function writeRowObject_(sheet, headers, rowNumber, rowObject) {
     return rowObject[header];
   });
   sheet.getRange(rowNumber, 1, 1, headers.length).setValues([rowValues]);
+}
+
+function buildCreatedClaimState_(payload, ttlMinutes, now) {
+  const [yyyy, mm, dd] = String(payload.execution_date).split('-').map(Number);
+  return {
+    request_id: buildRequestId_(payload.execution_date, payload.target_object_name),
+    work_date: new Date(yyyy, mm - 1, dd),
+    target_object_name: payload.target_object_name,
+    owner_object_name: payload.owner_object_name,
+    status: CLAIM_STATUSES.FAILOVER_CLAIMED,
+    claimed_by: payload.claimer_pvz,
+    claim_expires_at: formatSheetTimestamp_(new Date(now.getTime() + ttlMinutes * 60000)),
+    attempt_no: 1,
+    last_error: String(payload.last_error || 'owner_silent'),
+    source_run_id: payload.source_run_id,
+    updated_at: formatSheetTimestamp_(now),
+    timestamp: formatSheetTimestamp_(now),
+  };
+}
+
+function appendRowObject_(sheet, headers, rowObject) {
+  const rowNumber = sheet.getLastRow() + 1;
+  const rowValues = headers.map((header) => (header in rowObject ? rowObject[header] : ''));
+  sheet.getRange(rowNumber, 1, 1, headers.length).setValues([rowValues]);
+  const dateIndex = headers.indexOf('work_date');
+  if (dateIndex >= 0) {
+    // Дата без времени, как у строк, записанных из Python (иначе ячейка покажет 0:00:00)
+    sheet.getRange(rowNumber, dateIndex + 1).setNumberFormat('dd.MM.yyyy');
+  }
 }
 
 function buildRequestId_(executionDate, targetObjectName) {
