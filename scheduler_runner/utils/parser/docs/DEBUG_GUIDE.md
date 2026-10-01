@@ -88,6 +88,7 @@ grep -a "API_" logs/reports_domain/Parser/*.log                      # исто�
 #   API_SHADOW_MATCH / API_SHADOW_MISMATCH / API_SHADOW_ERROR
 grep -a "Результат извлечения: 0" logs/reports_domain/Parser/*_debug.log  # DOM: счетчик пустой -> 0 (проверить сеть)
 grep -a -E "NOTIFICATION_DISMISSED|CLICK_INTERCEPTED|OVERLAY_NOT_CLOSED" logs/reports_domain/Parser/*.log  # перекрытия
+grep -a -E "API_PVZ_(OK|SWITCH|SWITCHED|SWITCH_FAILED|UNAVAILABLE)|PVZ_SWITCH_REJECTED" logs/reports_domain/Parser/*.log  # ПВЗ по API
 grep -a "PARTIAL_DATE_REJECTED" logs/reports_domain/Parser/*.log     # дата с ошибкой шага не выгружена (повтор завтра)
 ```
 
@@ -156,6 +157,40 @@ grep -a "PARTIAL_DATE_REJECTED" logs/reports_domain/Parser/*.log     # дата 
 4. `logs/reports_domain/Parser/*_debug.log`: `DevToolsActivePort` → шаг 5; `СТРАНИЦУ ЛОГИНА` → сессия (шаг 7, повторный вход
    сотрудника в Турбо ПВЗ); `НЕ НАЙДЕНА опция` / `Найдено опций: 0` / пустые значения → селекторы (шаги 4, 6).
 5. Селекторы проверять скриптами `debug/browser_*.js` в обычном Edge, затем smoke за дату с известными значениями.
+
+---
+
+## JavaScript в парсере
+
+Парсер выполняет короткие JavaScript-фрагменты **внутри Edge** — на открытой странице, движком самого браузера.
+Отдельных файлов нет: фрагменты записаны строками в Python-коде и передаются через Selenium
+(`driver.execute_script`) или CDP (`driver.execute_cdp_cmd`). **Node.js не нужен** — Node это JavaScript вне браузера.
+Скрипты в `docs/debug/browser_*.js` к работе парсера не относятся: их вручную вставляют в консоль Edge для диагностики.
+
+| Где | Что делает | Когда |
+|---|---|---|
+| `BaseParser._js_click` | клик по элементу; для SVG (нет метода `click()`) — событие клика | клик перехвачен перекрытием; крестики уведомлений и окон |
+| `BaseParser._is_element_covered` | что лежит в центре элемента: он сам или что-то поверх (`elementFromPoint`) | перед кликом по пункту списка ПВЗ |
+| `BaseParser._click_element` → `_js_click` | повтор перехваченного клика (`CLICK_INTERCEPTED`) | `ElementClickInterceptedException` |
+| `OzonReportParser._click_close_button` → `_js_click` | клик по кнопке окна, если обычный не прошел | закрытие окон |
+| `OzonReportParser._dismiss_notifications` → `_js_click` | крестики всплывающих уведомлений (`NOTIFICATION_DISMISSED`) | перед каждой проверкой окон |
+| `ApiResponseCapture.install` (CDP `Page.addScriptToEvaluateOnNewDocument`) | перехватчик `fetch`/XHR: запоминает URL, статус, тело ответа (без заголовков) | после старта браузера, если `DATA_SOURCE_MODE` ≠ `dom` |
+| `ApiResponseCapture.records` | чтение перехваченных ответов страницы (`window.__apiCapture`) | извлечение значений и ПВЗ из API |
+
+### Почему JS-клик — запасной путь, а не основной
+
+1. **Он не похож на действие пользователя.** Обычный клик Selenium проходит путь человека: наведение, нажатие,
+   отпускание, фокус. JS-клик отправляет одно событие `click`; элементы, реагирующие на нажатие (`mousedown`/`pointerdown`),
+   на него могут не сработать — без ошибки.
+2. **Он скрывает проблемы.** Обычный клик при перекрытии выдает `element click intercepted` — так 30.09.2026 нашлось
+   уведомление, перекрывавшее выбор ПВЗ. JS-клик нажал бы кнопку под окном, и причина осталась бы неизвестной.
+3. **Он заметнее для защиты от ботов**: у событий из скрипта `isTrusted = false`.
+
+Поэтому порядок такой: обычный клик → при перехвате JS-клик с записью `CLICK_INTERCEPTED` в лог. Частые
+`CLICK_INTERCEPTED` в логе — повод разобраться, что перекрывает страницу (`docs/debug/browser_overlay_probe.js`).
+
+Настоящая устойчивость — не в JS-кликах, а в режиме API: данные читаются из ответов сервера без кликов, интерфейс
+нужен только для переключения ПВЗ, и то лишь когда выбран не тот ПВЗ (этап 3, `API_PVZ_SWITCH`).
 
 ---
 

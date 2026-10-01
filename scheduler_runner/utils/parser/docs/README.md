@@ -90,8 +90,9 @@ Edge запрещает Selenium на профиле по умолчанию, п
 
 ## Источник данных (`DATA_SOURCE_MODE`)
 
-Параметр в `configs/base_configs/ozon_report_config.py`: `dom` (по умолчанию — числа из разметки страницы) |
-`shadow` | `api_with_dom_fallback` | `api`. В режимах кроме `dom` после старта браузера в страницу встраивается
+Параметр в `configs/base_configs/ozon_report_config.py`: `dom` (числа из разметки страницы) |
+`shadow` | `api_with_dom_fallback` | `api`. Режим для всех ПВЗ — `DEFAULT_DATA_SOURCE_MODE`; `DATA_SOURCE_MODE_OVERRIDES` —
+только временные исключения по `PVZ_ID` на время обкатки (имя ПВЗ задается в `C:\tools\pvz_config.ini`). В режимах кроме `dom` после старта браузера в страницу встраивается
 перехватчик ответов API (`core/api_response_capture.py`, в логе `API_CAPTURE_INSTALLED`). Извлечение чисел шагов из API —
 этап 2 плана [MODERNIZATION_PLAN.md](/C:/tools/scheduler/scheduler_runner/utils/parser/docs/MODERNIZATION_PLAN.md).
 

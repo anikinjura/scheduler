@@ -49,9 +49,14 @@ __version__ = '0.0.1'
 # Импортируем PVZ_ID из базовой конфигурации
 from config.base_config import PVZ_ID
 
-# Источник данных парсера по ПВЗ машины (docs/MODERNIZATION_PLAN.md, этап 4 — обкатка на проде).
+# === ИСТОЧНИК ДАННЫХ ПАРСЕРА (docs/MODERNIZATION_PLAN.md) ===
+# Режим для всех ПВЗ. Новый ПВЗ (его PVZ_ID задается только в C:\tools\pvz_config.ini) получает его автоматически.
+DEFAULT_DATA_SOURCE_MODE = "dom"
+
+# Временные исключения на время обкатки (этап 4). Когда режим проверен — меняется DEFAULT_DATA_SOURCE_MODE,
+# а исключения удаляются; список ПВЗ здесь вести не нужно.
 # 30.09.2026: ЧЕБОКСАРЫ_144 — "api": в разметке ноль выдач неотличим от незагрузившейся страницы, в API — явный totalCount.
-DATA_SOURCE_MODE_BY_PVZ = {
+DATA_SOURCE_MODE_OVERRIDES = {
     "ЧЕБОКСАРЫ_144": "api",
 }
 from .base_report_config import BASE_REPORT_CONFIG
@@ -70,8 +75,14 @@ OZON_BASE_CONFIG = {
     # dom — числа из разметки страницы (текущее поведение); shadow — из разметки, плюс сравнение со значением из API
     # в логе; api_with_dom_fallback — из API, при сбое из разметки; api — только из API, при сбое явная ошибка.
     # В режимах кроме dom после старта браузера ставится перехватчик ответов API (API_CAPTURE_INSTALLED).
-    # Режим задается по ПВЗ машины (PVZ_ID из pvz_config.ini) через DATA_SOURCE_MODE_BY_PVZ, остальные — "dom".
-    "DATA_SOURCE_MODE": DATA_SOURCE_MODE_BY_PVZ.get(PVZ_ID, "dom"),
+    # Режим этой машины: исключение для ее PVZ_ID, иначе DEFAULT_DATA_SOURCE_MODE.
+    "DATA_SOURCE_MODE": DATA_SOURCE_MODE_OVERRIDES.get(PVZ_ID, DEFAULT_DATA_SOURCE_MODE),
+    # Эндпоинты API Турбо ПВЗ для контекста ПВЗ (этап 3): текущий ПВЗ берется из ответа, который страница
+    # запрашивает при каждой загрузке; переключение — по-прежнему кликом в списке (токены сохраняет фронтенд).
+    "api_endpoints": {
+        "current_store": {"path": "/api2/stores/current", "value_path": "store.name", "wait_timeout": 15},
+        "select_store": {"path": "/api2/stores/select-v2"},
+    },
     # wait_timeout: ожидание ответа API после загрузки страницы; при отсутствии ответа страница перезагружается один раз
     # (API_RETRY_RELOAD). 30.09.2026 при нестабильной сети первая страница сессии получала данные дольше 15 с.
     "api_capture": {"wait_timeout": 30, "poll_interval": 0.5, "max_records": 500, "max_body_chars": 2_000_000},

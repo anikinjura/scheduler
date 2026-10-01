@@ -406,6 +406,64 @@ class TestOzonReportParser(unittest.TestCase):
         self.assertFalse(self.parser._click_close_button("//button"))
 
     # Тесты для метода ensure_correct_pvz
+    # Этап 3: контекст ПВЗ по API (stores/current)
+    def _api_pvz_setup(self, *store_names):
+        from scheduler_runner.utils.parser.core.api_response_capture import ApiResponseCapture
+        self.parser.config["additional_params"] = {"location_id": "ЧЕБОКСАРЫ_144"}
+        self.parser.driver = Mock()
+        self.parser.api_capture = Mock()
+        self.parser.api_capture.matches.side_effect = ApiResponseCapture.matches
+        self.parser.api_capture.records.return_value = []
+        self.parser.api_capture.wait_for.side_effect = [{"store": {"name": n}} for n in store_names]
+        self.parser._check_and_close_overlay = Mock(return_value=True)
+        self.parser.get_current_pvz = Mock(return_value="Unknown")
+        self.parser.set_pvz = Mock(return_value=True)
+
+    def test_api_pvz_correct_skips_overlays_and_dom(self):
+        self._api_pvz_setup("ЧЕБОКСАРЫ_144")
+        self.assertTrue(self.parser.ensure_correct_pvz())
+        self.parser._check_and_close_overlay.assert_not_called()
+        self.parser.get_current_pvz.assert_not_called()
+        self.parser.set_pvz.assert_not_called()
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.BaseReportParser.navigate_to_target", return_value=True)
+    def test_api_pvz_switch_verified_by_fresh_stores_current(self, mock_navigate):
+        self._api_pvz_setup("ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_144")
+        self.assertTrue(self.parser.ensure_correct_pvz())
+        self.parser.set_pvz.assert_called_once_with("ЧЕБОКСАРЫ_144")
+        mock_navigate.assert_called_once()
+        self.parser.get_current_pvz.assert_not_called()
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.BaseReportParser.navigate_to_target", return_value=True)
+    def test_api_pvz_switch_not_applied_is_failure(self, mock_navigate):
+        self._api_pvz_setup("ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_182")
+        self.parser.dump_debug_artifacts = Mock()
+        self.assertFalse(self.parser.ensure_correct_pvz())
+
+    @patch("scheduler_runner.utils.parser.core.ozon_report_parser.BaseReportParser.navigate_to_target", return_value=True)
+    def test_api_pvz_rejected_switch_is_logged(self, mock_navigate):
+        self._api_pvz_setup("ЧЕБОКСАРЫ_182", "ЧЕБОКСАРЫ_182")
+        self.parser.api_capture.records.return_value = [
+            {"url": "https://turbo-pvz.ozon.ru/api2/stores/select-v2", "status": 401, "body": "{}"}]
+        self.parser.logger = MagicMock()
+        self.assertFalse(self.parser.ensure_correct_pvz())
+        errors = " ".join(str(c.args[0]) for c in self.parser.logger.error.call_args_list)
+        self.assertIn("PVZ_SWITCH_REJECTED", errors)
+
+    def test_api_pvz_unavailable_falls_back_to_dom(self):
+        from scheduler_runner.utils.parser.core.api_response_capture import ApiResponseNotFound
+        self._api_pvz_setup()
+        self.parser.api_capture.wait_for.side_effect = ApiResponseNotFound("нет stores/current")
+        self.parser._ensure_correct_pvz_dom = Mock(return_value=True)
+        self.assertTrue(self.parser.ensure_correct_pvz())
+        self.parser._ensure_correct_pvz_dom.assert_called_once()
+
+    def test_dom_mode_uses_dom_path(self):
+        self.parser.api_capture = None
+        self.parser._ensure_correct_pvz_dom = Mock(return_value=True)
+        self.assertTrue(self.parser.ensure_correct_pvz())
+        self.parser._ensure_correct_pvz_dom.assert_called_once()
+
     def test_ensure_correct_pvz_with_matching_pvz(self):
         """Тест ensure_correct_pvz когда требуемый ПВЗ уже установлен"""
         # Мокаем методы

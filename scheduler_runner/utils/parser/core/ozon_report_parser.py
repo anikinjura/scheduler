@@ -48,6 +48,7 @@
 __version__ = '0.0.1'
 
 from .base_report_parser import BaseReportParser
+from .api_response_capture import ApiCaptureError, resolve_path
 from ..configs.base_configs.ozon_report_config import OZON_BASE_CONFIG
 from typing import Dict, Any
 import time
@@ -384,7 +385,98 @@ class OzonReportParser(BaseReportParser):
 
     def ensure_correct_pvz(self) -> bool:
         """
-        Проверяет, что на странице выбран правильный ПВЗ и при необходимости устанавливает нужный
+        Проверяет, что выбран правильный ПВЗ, и при необходимости переключает его.
+
+        Если установлен перехватчик ответов API (DATA_SOURCE_MODE != "dom"), текущий ПВЗ берется из ответа
+        stores/current, и окна/интерфейс не трогаются, пока ПВЗ правильный (этап 3 docs/MODERNIZATION_PLAN.md).
+        Если API недоступен — прежняя проверка по разметке (_ensure_correct_pvz_dom).
+        """
+        if getattr(self, "api_capture", None) is not None:
+            return self._ensure_correct_pvz_via_api()
+        return self._ensure_correct_pvz_dom()
+
+    def _current_pvz_from_api(self):
+        """Имя текущего ПВЗ из ответа stores/current этой страницы или None, если ответа нет."""
+        endpoint = (self.config.get("api_endpoints") or {}).get("current_store") or {}
+        try:
+            data = self.api_capture.wait_for(
+                self.driver,
+                endpoint.get("path", "/api2/stores/current"),
+                timeout=endpoint.get("wait_timeout", 15),
+            )
+            return str(resolve_path(data, endpoint.get("value_path", "store.name"))).strip()
+        except ApiCaptureError as e:
+            if self.logger:
+                self.logger.warning(f"API_PVZ_UNAVAILABLE: текущий ПВЗ из API не получен ({e}), проверка по разметке")
+            return None
+
+    def _log_rejected_store_switch(self) -> None:
+        """PVZ_SWITCH_REJECTED, если сервер отклонил переключение (select-v2 не 2xx) — признак отозванной сессии."""
+        endpoint = (self.config.get("api_endpoints") or {}).get("select_store") or {}
+        path = endpoint.get("path", "/api2/stores/select-v2")
+        try:
+            for record in self.api_capture.records(self.driver):
+                status = record.get("status")
+                if self.api_capture.matches(record, path) and isinstance(status, int) and not 200 <= status < 300:
+                    if self.logger:
+                        self.logger.error(f"PVZ_SWITCH_REJECTED: сервер отклонил переключение ПВЗ (статус {status}) — "
+                                          f"вероятно, сессия Ozon отозвана")
+                    return
+        except Exception:
+            return
+
+    def _ensure_correct_pvz_via_api(self) -> bool:
+        """
+        Контекст ПВЗ по API: окна закрываются и интерфейс используется только при переключении.
+
+        1. Текущий ПВЗ — из stores/current (страница запрашивает его при каждой загрузке).
+        2. Совпадает с требуемым — сразу True, без проверки окон и чтения разметки.
+        3. Не совпадает — set_pvz (сам закрывает уведомления и окна перед кликом), затем повторная навигация
+           на целевую страницу и проверка по свежему stores/current нового документа.
+        """
+        required_pvz = self.config.get("additional_params", {}).get("location_id", "")
+        if not required_pvz:
+            if self.logger:
+                self.logger.error("Не указан требуемый ПВЗ в конфигурации")
+            return False
+
+        current_pvz = self._current_pvz_from_api()
+        if current_pvz is None:
+            return self._ensure_correct_pvz_dom()
+        self._remember_current_pvz(current_pvz)
+        if current_pvz == required_pvz:
+            if self.logger:
+                self.logger.debug(f"API_PVZ_OK: текущий ПВЗ {current_pvz}")
+            return True
+
+        if self.logger:
+            self.logger.info(f"API_PVZ_SWITCH: текущий ПВЗ '{current_pvz}', требуется '{required_pvz}' — переключаем")
+        if not self.set_pvz(required_pvz):
+            if self.logger:
+                self.logger.error(f"Не удалось установить требуемый ПВЗ: {required_pvz}")
+            self.dump_debug_artifacts("pvz_set_failed")
+            return False
+        self._log_rejected_store_switch()
+
+        # Переключение может перезагрузить страницу или увести на другую — возвращаемся на целевую страницу.
+        # Новый документ запрашивает stores/current заново: это и есть проверка результата.
+        if not BaseReportParser.navigate_to_target(self):
+            if self.logger:
+                self.logger.error("Не удалось вернуться на целевую страницу после переключения ПВЗ")
+            return False
+        final_pvz = self._current_pvz_from_api()
+        if final_pvz == required_pvz:
+            self._remember_current_pvz(final_pvz)
+            if self.logger:
+                self.logger.info(f"API_PVZ_SWITCHED: ПВЗ установлен: {required_pvz}")
+            return True
+        if self.logger:
+            self.logger.error(f"API_PVZ_SWITCH_FAILED: после переключения текущий ПВЗ '{final_pvz}', требуется '{required_pvz}'")
+        return False
+
+    def _ensure_correct_pvz_dom(self) -> bool:
+        """
+        Проверяет, что на странице выбран правильный ПВЗ и при необходимости устанавливает нужный (по разметке)
 
         Returns:
             bool: True, если правильный ПВЗ выбран или успешно установлен
@@ -550,9 +642,10 @@ class OzonReportParser(BaseReportParser):
                 self.logger.error("Не удалось установить правильный ПВЗ после навигации")
             return False
 
-        # После установки правильного ПВЗ добавляем задержку, чтобы дать странице время обновиться
+        # После установки правильного ПВЗ добавляем задержку, чтобы дать странице время обновиться.
+        # В режиме API не нужна: значения ждет wait_for по ответу сервера, а не по отрисовке страницы.
         import time
-        page_load_delay = self.config.get('PAGE_LOAD_DELAY', 3)
+        page_load_delay = 0 if getattr(self, "api_capture", None) is not None else self.config.get('PAGE_LOAD_DELAY', 3)
         if page_load_delay > 0:
             if self.logger:
                 self.logger.debug(f"Ожидание загрузки страницы: {page_load_delay} секунд")
@@ -946,7 +1039,7 @@ class OzonReportParser(BaseReportParser):
                 element.click()
             except Exception:
                 # Перекрыт анимацией/фоном — клик через JS по тому же элементу
-                self.driver.execute_script("arguments[0].click();", element)
+                self._js_click(element)
             if self.logger:
                 self.logger.info(f"Клик по кнопке закрытия оверлея выполнен: {selector}")
             time.sleep(0.5)
