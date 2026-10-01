@@ -82,6 +82,20 @@ owner_pending → owner_failed / owner_success
 
 Terminal statuses: `owner_success`, `failover_success`, `claim_expired`
 
+### Состояние владельца (с 01.10.2026, этап A плана)
+
+После своего парсинга владелец **при любом исходе** записывает итог по своим missing dates (если включена
+coordination): `owner_failed` с причиной — по датам, которые не собраны (ошибка даты, нет результата по дате,
+падение парсера) или не загружены (сбой Google Sheets). «Нет данных для загрузки» (`no_data`, ни одна дата не собрана)
+сбоем загрузки не считается — причиной в `last_error` остается ошибка парсинга. Падение парсера (браузер не
+запустился, `AUTH_REQUIRED`) не прерывает запуск: `OWNER_PARSE_CRASHED` в логе, все даты — `owner_failed`, уведомление
+отправляется.
+
+Failover-проход (помощь коллегам) после этого пропускается с `FAILOVER_PASS_SKIPPED reason=...`:
+- `own_dates_all_failed` — ни одна своя дата не собрана (сессия Ozon, скорее всего, мертва);
+- `owner_upload_failed` — своя загрузка в Google Sheets не прошла;
+- `owner_state_sync_failed` — не удалось записать свое состояние.
+
 ### Owner Success Suppression
 
 - healthy-new success rows → **suppress** (не пишутся)
@@ -166,6 +180,8 @@ set_default_store(MyPostgreSQLStore())
 Owner state sync metrics: prefetch_keys=N, prefetch_rows_found=N, persisted_rows=N, suppressed_success=N, upsert_updated=N, upsert_appended=N, upsert_prefetch_matches=N
 Failover coordination dry-run: capability_ranked decision=...
 Failover coordination arbitration: mode=..., eligible=..., selected=..., rejected=..., rejected_reasons=...
+FAILOVER_PASS_SKIPPED reason=own_dates_all_failed|owner_upload_failed|owner_state_sync_failed
+OWNER_PARSE_CRASHED: <ошибка парсера>
 Retryable error при owner state prefetch: [429] ...; attempt=1/3, retry в N.Ns
 ```
 

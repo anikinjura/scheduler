@@ -241,7 +241,7 @@ class TestOrchestratorMainBackfillSinglePvz(unittest.TestCase):
     @patch("scheduler_runner.tasks.reports.reports_processor.should_run_automatic_failover_coordination")
     @patch("scheduler_runner.tasks.reports.reports_processor.resolve_accessible_pvz_ids")
     @patch("argparse.ArgumentParser.parse_args")
-    def test_main_backfill_upload_failure_skips_owner_sync_and_failover(
+    def test_main_backfill_upload_failure_syncs_owner_state_and_skips_failover(
         self,
         mock_parse_args,
         mock_resolve_accessible_pvz_ids,
@@ -293,8 +293,9 @@ class TestOrchestratorMainBackfillSinglePvz(unittest.TestCase):
 
         # Upload happened
         mock_run_upload.assert_called_once()
-        # But owner sync and failover were skipped
-        mock_sync_owner.assert_not_called()
+        # Owner state is synced anyway (owner_failed), failover pass is skipped
+        mock_sync_owner.assert_called_once()
+        self.assertEqual(mock_sync_owner.call_args.kwargs["upload_result"], {"success": False, "error": "upload_failed"})
         mock_run_failover.assert_not_called()
         # Notification still sent with partial status
         mock_send_notification.assert_called_once()
@@ -367,6 +368,99 @@ class TestOrchestratorMainBackfillSinglePvz(unittest.TestCase):
         mock_sync_owner.assert_called_once()
         mock_run_failover.assert_not_called()
         mock_send_notification.assert_called_once()
+
+
+class TestOrchestratorOwnerFailureReporting(unittest.TestCase):
+    """Этап A failover: владелец сообщает о сбое при любом исходе."""
+
+    def run_main(self, *, parser_result=None, parser_error=None, upload_result=None):
+        target = "scheduler_runner.tasks.reports.reports_processor"
+        args = Namespace(
+            execution_date=None, date_from="2026-09-24", date_to="2026-09-30", backfill_days=7, mode="backfill",
+            max_missing_dates=7, parser_api="legacy", pvz=None, detailed_logs=False, enable_failover_coordination=True,
+        )
+        names = ["resolve_accessible_pvz_ids", "should_run_automatic_failover_coordination", "detect_missing_report_dates",
+                 "build_jobs_for_pvz", "invoke_parser_for_pvz", "run_upload_batch_microservice",
+                 "sync_owner_failover_state_from_batch_result", "run_failover_coordination_pass",
+                 "build_failover_run_summary", "build_owner_run_summary", "build_reports_run_summary",
+                 "format_reports_run_notification_message", "send_notification_microservice"]
+        patchers = [patch("argparse.ArgumentParser.parse_args", return_value=args)]
+        patchers += [patch(f"{target}.{name}") for name in names]
+        mocks = {}
+        for name, patcher in zip(["parse_args"] + names, patchers):
+            mocks[name] = patcher.start()
+            self.addCleanup(patcher.stop)
+        mocks["resolve_accessible_pvz_ids"].return_value = {
+            "accessible_pvz_ids": [reports_processor.PVZ_ID], "skipped_pvz_ids": [], "discovery_scope": None}
+        mocks["should_run_automatic_failover_coordination"].return_value = True
+        mocks["detect_missing_report_dates"].return_value = {"success": True, "missing_dates": ["2026-09-29", "2026-09-30"]}
+        if parser_error:
+            mocks["invoke_parser_for_pvz"].side_effect = parser_error
+        else:
+            mocks["invoke_parser_for_pvz"].return_value = parser_result
+        mocks["run_upload_batch_microservice"].return_value = upload_result
+        mocks["sync_owner_failover_state_from_batch_result"].return_value = {}
+        mocks["build_reports_run_summary"].return_value = MagicMock(final_status="failed")
+        reports_processor.main()
+        return mocks
+
+    def test_parser_crash_writes_owner_failed_for_all_dates_and_notifies(self):
+        mocks = self.run_main(parser_error=RuntimeError("AUTH_REQUIRED: session revoked"),
+                              upload_result={"success": False, "no_data": True, "error": "Нет данных для загрузки"})
+
+        batch_result = mocks["sync_owner_failover_state_from_batch_result"].call_args.kwargs["batch_result"]
+        self.assertEqual(batch_result["failed_dates"], ["2026-09-29", "2026-09-30"])
+        self.assertIn("AUTH_REQUIRED", batch_result["results_by_date"]["2026-09-30"]["error"])
+        mocks["run_failover_coordination_pass"].assert_not_called()
+        mocks["send_notification_microservice"].assert_called_once()
+
+    def test_all_dates_rejected_writes_owner_state_and_skips_failover(self):
+        """Случай 30.09.2026: все даты отклонены, загружать нечего — состояние пишется, помощь пропускается."""
+        mocks = self.run_main(
+            parser_result={"success": False, "successful_dates": 0, "failed_dates": 2, "results_by_date": {
+                "2026-09-29": {"success": False, "error": "PARTIAL_DATE_REJECTED"},
+                "2026-09-30": {"success": False, "error": "PARTIAL_DATE_REJECTED"}}},
+            upload_result={"success": False, "no_data": True, "error": "Нет данных для загрузки"},
+        )
+        mocks["sync_owner_failover_state_from_batch_result"].assert_called_once()
+        mocks["run_failover_coordination_pass"].assert_not_called()
+
+    def test_partial_success_runs_failover_pass(self):
+        mocks = self.run_main(
+            parser_result={"success": False, "successful_dates": 1, "failed_dates": 1, "results_by_date": {
+                "2026-09-29": {"success": True, "data": {}},
+                "2026-09-30": {"success": False, "error": "PARTIAL_DATE_REJECTED"}}},
+            upload_result={"success": True, "uploaded_records": 1},
+        )
+        mocks["sync_owner_failover_state_from_batch_result"].assert_called_once()
+        mocks["run_failover_coordination_pass"].assert_called_once()
+
+
+class TestResolveFailoverPassSkipReason(unittest.TestCase):
+    def reason(self, *, missing=("2026-09-30",), batch=None, upload=None, sync=None):
+        return reports_processor.resolve_failover_pass_skip_reason(
+            missing_dates=list(missing), batch_result=batch or {}, upload_result=upload or {},
+            owner_state_sync_result=sync or {})
+
+    def test_no_own_missing_dates_allows(self):
+        self.assertEqual(self.reason(missing=()), "")
+
+    def test_all_own_dates_failed(self):
+        batch = {"results_by_date": {"2026-09-30": {"success": False}}}
+        self.assertEqual(self.reason(batch=batch, upload={"success": False, "no_data": True}), "own_dates_all_failed")
+
+    def test_upload_failed(self):
+        batch = {"results_by_date": {"2026-09-30": {"success": True}}}
+        self.assertEqual(self.reason(batch=batch, upload={"success": False}), "owner_upload_failed")
+
+    def test_state_sync_failed(self):
+        batch = {"results_by_date": {"2026-09-30": {"success": True}}}
+        self.assertEqual(self.reason(batch=batch, upload={"success": True}, sync={"success": False}),
+                         "owner_state_sync_failed")
+
+    def test_ok(self):
+        batch = {"results_by_date": {"2026-09-30": {"success": True}}}
+        self.assertEqual(self.reason(batch=batch, upload={"success": True}, sync={"success": True}), "")
 
 
 class TestOrchestratorMainBackfillMultiPvz(unittest.TestCase):
