@@ -15,6 +15,7 @@
 На **своем** компьютере (Windows 10/11 — клиент `ssh` встроен):
 
 ```powershell
+New-Item -ItemType Directory -Force $HOME\.ssh | Out-Null   # без папки ssh-keygen: "No such file or directory"
 ssh-keygen -t ed25519 -f $HOME\.ssh\pvz_admin -C "admin@my-pc"
 # фраза-пароль — по желанию (защищает ключ, если компьютер украдут)
 Get-Content $HOME\.ssh\pvz_admin.pub     # эту строку передаем на ПВЗ
