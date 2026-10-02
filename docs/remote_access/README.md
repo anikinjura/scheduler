@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File C:\tools\scheduler\docs\remote_access\s
 1. ставит «OpenSSH Server», включает автозапуск службы `sshd`;
 2. кладет ключ в `C:\ProgramData\ssh\administrators_authorized_keys` (права — только SYSTEM и Администраторы);
 3. в `C:\ProgramData\ssh\sshd_config`: вход **только по ключу** (пароль выключен), только `-AllowUser`, туннели
-   разрешены, 3 попытки, 30 с на вход;
+   разрешены, 3 попытки, 60 с на вход;
 4. оболочка по умолчанию — PowerShell; правило брандмауэра `scheduler-remote-access-sshd`;
 5. проверяет конфигурацию (`sshd -t`), перезапускает службу и печатает адрес компьютера в сети ПВЗ.
 

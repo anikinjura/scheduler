@@ -77,7 +77,7 @@ $settings = [ordered]@{
     'AllowUsers'             = $AllowUser
     'AllowTcpForwarding'     = 'yes'   # туннель к роутеру и камерам: ssh -L
     'MaxAuthTries'           = '3'
-    'LoginGraceTime'         = '30'
+    'LoginGraceTime'         = '60'    # 30 с не хватало на сверку отпечатка сервера и ввод фразы-пароля ключа
 }
 # Глобальные параметры должны стоять до первого блока Match
 $matchIndex = ($config | Select-String -Pattern '^\s*Match\s' | Select-Object -First 1).LineNumber
