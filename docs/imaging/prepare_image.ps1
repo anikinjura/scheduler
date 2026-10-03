@@ -28,7 +28,9 @@ param(
     [string]$PvzConfigPath = 'C:\tools\pvz_config.ini',
     [string[]]$TaskNames = @('\Задачи operator', '\Задачи camera', '\Задачи system'),
     [switch]$ClearSchedulerLogs,
-    [string]$SchedulerLogsPath = 'C:\tools\scheduler\logs'
+    [string]$SchedulerLogsPath = 'C:\tools\scheduler\logs',
+    # Сохраненные конфигурации AnyDesk по ПВЗ (восстанавливает after_deploy.ps1) — в образ попадают, закрываются правами
+    [string]$AnyDeskConfigRoot = 'C:\tools\AnyDesk_conf'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,8 +118,18 @@ if (-not $anyDeskService -and -not (Test-Path $anyDeskConf)) {
     }
     if ((Test-Path $anyDeskConf) -and $PSCmdlet.ShouldProcess($anyDeskConf, 'удалить')) {
         Remove-Item $anyDeskConf -Force
-        Done "ID AnyDesk удален ($anyDeskConf); пароль неконтролируемого доступа, если был, задать заново после разворачивания"
+        Done "ID AnyDesk удален ($anyDeskConf); на ПВЗ с сохраненной конфигурацией after_deploy.ps1 вернет прежний ID"
     }
+}
+if (Test-Path $AnyDeskConfigRoot) {
+    $saved = @(Get-ChildItem -Path $AnyDeskConfigRoot -Directory | Where-Object {
+        Test-Path (Join-Path $_.FullName 'service.conf') })
+    if ($PSCmdlet.ShouldProcess($AnyDeskConfigRoot, 'права: только Администраторы и SYSTEM')) {
+        icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /T /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { Warn "icacls: права на $AnyDeskConfigRoot не выставлены" }
+    }
+    Done ("сохраненные конфигурации AnyDesk в образе ({0}): {1}" -f $AnyDeskConfigRoot,
+        $(if ($saved) { $saved.Name -join ', ' } else { 'нет ни одной с service.conf' }))
 }
 
 # --- 5. Логи scheduler

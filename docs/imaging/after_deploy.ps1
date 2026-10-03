@@ -6,7 +6,10 @@
     Обратное к prepare_image.ps1:
       1. записывает PVZ_ID в C:\tools\pvz_config.ini (UTF-8 без BOM);
       2. SSH: запускает sshd, при необходимости создает ключи хоста, печатает отпечаток — сверить при первом входе;
-      3. AnyDesk: запускает службу и печатает новый ID этого компьютера;
+      3. AnyDesk: если есть C:\tools\AnyDesk_conf\<PvzId>\*.conf (снятые с этого ПВЗ раньше) — при остановленной
+         службе кладет их в C:\ProgramData\AnyDesk: прежние ID и пароль неконтролируемого доступа; иначе новый ID.
+         Печатает ID. Папку закрывает правами (только Администраторы и SYSTEM) и удаляет из нее папки других ПВЗ
+         (-KeepAllAnyDeskConfigs — оставить все, для эталона);
       4. включает задачи планировщика scheduler (\Задачи operator, \Задачи camera, \Задачи system);
       5. показывает активацию Windows и сетевые адреса (для резервирования IP на роутере);
       6. напоминает, что сделать вручную.
@@ -23,7 +26,11 @@ param(
     [string]$PvzConfigPath = 'C:\tools\pvz_config.ini',
     [string[]]$TaskNames = @('\Задачи operator', '\Задачи camera', '\Задачи system'),
     # Не включать задачи (например, если ПВЗ еще не вошел в Турбо ПВЗ) — включить потом повторным запуском
-    [switch]$SkipTasks
+    [switch]$SkipTasks,
+    # Сохраненные конфигурации AnyDesk по ПВЗ: <корень>\<PvzId>\service.conf (ID и пароль), system.conf (настройки)
+    [string]$AnyDeskConfigRoot = 'C:\tools\AnyDesk_conf',
+    # Не удалять папки других ПВЗ (на эталоне, с которого снова будет сниматься образ)
+    [switch]$KeepAllAnyDeskConfigs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,11 +92,29 @@ if (-not $sshdService) {
 }
 
 # --- 3. AnyDesk
-Step 'AnyDesk: новый ID'
+Step 'AnyDesk: ID этого ПВЗ'
+if (Test-Path $AnyDeskConfigRoot) {
+    # Файлы всех ПВЗ (ID и хэши паролей) — только Администраторы и SYSTEM, сотрудники под «Оператором» не читают
+    icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { Warn "icacls: права на $AnyDeskConfigRoot не выставлены" }
+}
 $anyDeskService = Get-Service -Name 'AnyDesk' -ErrorAction SilentlyContinue
+$savedConfigDir = Join-Path $AnyDeskConfigRoot $PvzId
+$savedConfigs = @(Get-ChildItem -Path $savedConfigDir -Filter '*.conf' -File -ErrorAction SilentlyContinue)
 if (-not $anyDeskService) {
     Done 'AnyDesk не установлен'
 } else {
+    if ($savedConfigs) {
+        # Прежние ID и пароль неконтролируемого доступа этого ПВЗ: подменить файлы при остановленной службе
+        Stop-Service -Name 'AnyDesk' -Force
+        Get-Process -Name 'AnyDesk' -ErrorAction SilentlyContinue | Stop-Process -Force
+        $anyDeskData = Join-Path $env:ProgramData 'AnyDesk'
+        New-Item -ItemType Directory -Path $anyDeskData -Force | Out-Null
+        $savedConfigs | Copy-Item -Destination $anyDeskData -Force
+        Done ("конфигурация AnyDesk восстановлена из {0}: {1}" -f $savedConfigDir, ($savedConfigs.Name -join ', '))
+    } else {
+        Done "сохраненной конфигурации нет ($savedConfigDir) — AnyDesk создаст новый ID"
+    }
     Start-Service -Name 'AnyDesk'
     $anyDeskExe = @("${env:ProgramFiles(x86)}\AnyDesk\AnyDesk.exe", "$env:ProgramFiles\AnyDesk\AnyDesk.exe") |
         Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -102,9 +127,17 @@ if (-not $anyDeskService) {
         }
     }
     if ($anyDeskId -match '^\d+$') {
-        Done "ID AnyDesk этого компьютера: $anyDeskId"
+        Done ("ID AnyDesk этого компьютера: {0}{1}" -f $anyDeskId, $(if ($savedConfigs) { ' (должен совпасть с прежним ID этого ПВЗ)' } else { '' }))
     } else {
         Warn 'ID AnyDesk не получен — открыть AnyDesk и посмотреть ID в окне (нужен интернет)'
+    }
+}
+if ((Test-Path $AnyDeskConfigRoot) -and -not $KeepAllAnyDeskConfigs) {
+    # На ПВЗ нужны только свои файлы; чужие (ID и хэши паролей других ПВЗ) не держать
+    $others = @(Get-ChildItem -Path $AnyDeskConfigRoot -Directory | Where-Object { $_.Name -ne $PvzId })
+    if ($others) {
+        $others | Remove-Item -Recurse -Force
+        Done ("из {0} удалены папки других ПВЗ: {1}" -f $AnyDeskConfigRoot, ($others.Name -join ', '))
     }
 }
 

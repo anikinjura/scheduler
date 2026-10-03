@@ -12,7 +12,7 @@
 | `PVZ_ID` в `C:\tools\pvz_config.ini` | заглушка `НЕ_НАСТРОЕН` | номер этого ПВЗ |
 | Задачи планировщика `\Задачи operator`, `\Задачи camera`, `\Задачи system` | выключены — клон не парсит и не грузит данные под чужим ПВЗ | включены |
 | Ключи хоста SSH `C:\ProgramData\ssh\ssh_host_*` | удалены | создаются службой `sshd` при первой загрузке |
-| ID AnyDesk (`C:\ProgramData\AnyDesk\service.conf`) | удален | создается при первом запуске |
+| ID AnyDesk (`C:\ProgramData\AnyDesk\service.conf`) | удален | прежний — из `C:\tools\AnyDesk_conf\<PVZ_ID>\` (раздел 5), иначе новый при первом запуске |
 | Закрытые ключи администратора (`C:\Users\*\.ssh`) | удалены (ключ хранится только у администратора) | — |
 | Вход в Турбо ПВЗ (профиль Edge «Оператора») | остается сессия эталона | выйти и войти под учетной записью этого ПВЗ |
 
@@ -46,10 +46,10 @@ Python и пакеты, права NTFS, пользователи.
 Загрузить Windows и вернуть ему его настройки:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\tools\scheduler\docs\imaging\after_deploy.ps1 -PvzId ЧЕБОКСАРЫ_144
+powershell -ExecutionPolicy Bypass -File C:\tools\scheduler\docs\imaging\after_deploy.ps1 -PvzId ЧЕБОКСАРЫ_144 -KeepAllAnyDeskConfigs
 ```
 
-У эталона будут **новые** ключи хоста SSH и новый ID AnyDesk. На своем компьютере удалить старый отпечаток:
+(`-KeepAllAnyDeskConfigs` — не удалять сохраненные конфигурации AnyDesk других ПВЗ, раздел 5.) У эталона будут **новые** ключи хоста SSH и новый ID AnyDesk. На своем компьютере удалить старый отпечаток:
 `ssh-keygen -R "[<белый_IP>]:22144"` и при входе принять новый.
 
 ## 4. Новый ПВЗ: разворачивание
@@ -78,6 +78,33 @@ powershell -ExecutionPolicy Bypass -File C:\tools\scheduler\docs\imaging\after_d
      активируется сама).
 5. Первый вечер: проверить логи (`logs\reports_domain\Processor`, `Uploader`: `KPI_UPLOAD_STATS mode=batch`,
    `API_EXTRACTED`) и строку ПВЗ в листе `KPI`.
+
+## 5. Прежние ID AnyDesk на переустановленных ПВЗ
+
+ID AnyDesk и пароль неконтролируемого доступа хранятся в `C:\ProgramData\AnyDesk\service.conf` (настройки — в
+`system.conf`). Если эти файлы, снятые с ПВЗ до переустановки, вернуть на тот же ПВЗ, он сохранит свой ID и пароль —
+подключаться к нему можно, как раньше.
+
+1. **С живых ПВЗ, до переустановки** (от администратора — папка доступна только ему):
+
+   ```powershell
+   $pvz = 'ЧЕБОКСАРЫ_143'
+   New-Item -ItemType Directory -Force "C:\tools\AnyDesk_conf\$pvz" | Out-Null      # на эталоне
+   Copy-Item C:\ProgramData\AnyDesk\service.conf, C:\ProgramData\AnyDesk\system.conf "<флешка>\AnyDesk_conf\$pvz\"   # на ПВЗ
+   ```
+
+   Собрать на эталоне: `C:\tools\AnyDesk_conf\ЧЕБОКСАРЫ_143\service.conf`, `...\ЧЕБОКСАРЫ_182\service.conf` и т.д.
+   Имя папки — точно как `PVZ_ID` (`-PvzId` скрипта).
+2. `prepare_image.ps1` закрывает папку правами (только Администраторы и SYSTEM) и показывает, какие ПВЗ попадут в образ.
+3. `after_deploy.ps1 -PvzId <ПВЗ>`: при остановленной службе кладет `<ПВЗ>\*.conf` в `C:\ProgramData\AnyDesk`, печатает ID
+   (сверить с прежним) и **удаляет папки других ПВЗ** — на ПВЗ остаются только свои файлы. На эталоне, с которого образ
+   будет сниматься снова, — `-KeepAllAnyDeskConfigs`.
+
+Правила:
+- **Не в репозиторий.** `C:\tools` вне репозитория (`C:\tools\scheduler`), а `service.conf` — это ID и хэш пароля:
+  в публичном GitHub их может взять любой. Резервная копия — там же, где закрытый ключ SSH (свое облако/флешка).
+- **Каждый файл — только на свой ПВЗ.** Один `service.conf` на двух компьютерах — один ID на двоих, подключения путаются.
+- Нового ПВЗ (AnyDesk там не было) в папке нет — он получит новый ID.
 
 ## Если скрипт не запустить
 
