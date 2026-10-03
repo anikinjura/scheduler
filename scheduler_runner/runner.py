@@ -188,8 +188,9 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
         current_time: фиктивное время для проверки расписания (если не указано, используется datetime.now())
 
     Returns:
-        bool: True если задача выполнена успешно, False в случае ошибки
-        
+        bool | None: True — задача выполнена успешно, False — ошибка,
+        None — задача пропущена: сейчас не ее время по расписанию (это не ошибка)
+
     Raises:
         ValueError: если конфигурация расписания задачи некорректна
         
@@ -226,7 +227,9 @@ def execute_task(task: Dict[str, Any], logger, force_run: bool = False, detailed
             return False
         if not should_run:
             logger.info(f"Задача '{task_name}' не должна запускаться сейчас по расписанию")
-            return False # TODO: возможно, стоит вернуть True, если задача уже выполнена
+            # Пропуск — не ошибка: иначе runner почти каждый час завершается с кодом 1, и в Планировщике Windows
+            # реальный сбой не отличить от «не время» (у пользователя обычно одна задача в час из нескольких)
+            return None
         # логируем старт
         logger.info(f"Старт задачи '{task_name}' (force_run={force_run})")
     
@@ -362,10 +365,11 @@ def main() -> None:
         task_count = len(tasks_to_run)
         print(f"Найдено {task_count} задач(и) для выполнения")
 
-        # Инициализируем счетчики успешных и неудачных выполнений
+        # Инициализируем счетчики успешных, пропущенных по расписанию и неудачных выполнений
         successful_tasks = 0
-        failed_tasks = 0       
-        
+        skipped_tasks = 0
+        failed_tasks = 0
+
         # Выполняем каждую задачу
         for task in tasks_to_run:
             # Настраиваем индивидуальный логгер для каждой задачи
@@ -382,7 +386,10 @@ def main() -> None:
             
             try:
                 # Выполняем задачу с возможностью передачи фиктивного времени
-                if execute_task(task, logger, force_run=bool(args.task), detailed_logs=args.detailed_logs, current_time=current_time):
+                result = execute_task(task, logger, force_run=bool(args.task), detailed_logs=args.detailed_logs, current_time=current_time)
+                if result is None:
+                    skipped_tasks += 1
+                elif result:
                     successful_tasks += 1
                 else:
                     failed_tasks += 1
@@ -393,9 +400,10 @@ def main() -> None:
                 failed_tasks += 1
         
         # Выводим итоговую статистику
-        print(f"Выполнение завершено: {successful_tasks} успешно, {failed_tasks} с ошибками")
-        
-        # Устанавливаем код завершения в зависимости от результатов
+        print(f"Выполнение завершено: {successful_tasks} успешно, {skipped_tasks} пропущено по расписанию, "
+              f"{failed_tasks} с ошибками")
+
+        # Код завершения: 1 — только при реальных ошибках (пропуск по расписанию ошибкой не считается)
         if failed_tasks > 0:
             sys.exit(1)
         sys.exit(0)
