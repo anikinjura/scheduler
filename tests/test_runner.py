@@ -154,14 +154,14 @@ def test_execute_task_should_run_now_false(dummy_schedule):
     Когда задача не должна запускаться по расписанию:
     - should_run_now возвращает False
     Ожидаем:
-    - return False
+    - return None (пропуск по расписанию — не ошибка)
     - лог: "Задача 'TaskB' не должна запускаться сейчас по расписанию"
     """
     logger = mock.Mock()
     runner.should_run_now = lambda task, now: False
     task = runner.SCHEDULE[1]  # TaskB
     result = runner.execute_task(task, logger, force_run=False)
-    assert result is False
+    assert result is None
     logger.info.assert_any_call("Задача 'TaskB' не должна запускаться сейчас по расписанию")
 
 
@@ -213,7 +213,7 @@ def test_main_no_tasks(dummy_schedule):
     - main должен вызвать SystemExit(2)
     """
     runner.filter_tasks = lambda *args, **kwargs: []
-    runner.parse_arguments = lambda: mock.Mock(user="nouser", task=None, detailed=False)
+    runner.parse_arguments = lambda: mock.Mock(user="nouser", task=None, detailed_logs=False, current_time=None)
     runner.configure_logger = lambda *args, **kwargs: mock.Mock()
     with pytest.raises(SystemExit) as e:
         runner.main()
@@ -228,7 +228,7 @@ def test_main_success(dummy_schedule):
     - main завершится SystemExit(0)
     """
     runner.filter_tasks = lambda *args, **kwargs: [runner.SCHEDULE[0]]
-    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed=False)
+    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed_logs=False, current_time=None)
     logger = mock.Mock()
     runner.configure_logger = lambda *args, **kwargs: logger
     runner.execute_task = lambda *args, **kwargs: True
@@ -243,10 +243,39 @@ def test_main_fail(dummy_schedule):
     - main завершится SystemExit(1)
     """
     runner.filter_tasks = lambda *args, **kwargs: [runner.SCHEDULE[0]]
-    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed=False)
+    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed_logs=False, current_time=None)
     logger = mock.Mock()
     runner.configure_logger = lambda *args, **kwargs: logger
     runner.execute_task = lambda *args, **kwargs: False
+    with pytest.raises(SystemExit) as e:
+        runner.main()
+    assert e.value.code == 1
+
+
+def test_main_skipped_only_is_success(dummy_schedule):
+    """
+    Все задачи пропущены по расписанию (execute_task -> None):
+    - это не ошибка, main завершится SystemExit(0)
+    """
+    runner.filter_tasks = lambda *args, **kwargs: [runner.SCHEDULE[0], runner.SCHEDULE[1]]
+    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed_logs=False, current_time=None)
+    runner.configure_logger = lambda *args, **kwargs: mock.Mock()
+    runner.execute_task = lambda *args, **kwargs: None
+    with pytest.raises(SystemExit) as e:
+        runner.main()
+    assert e.value.code == 0
+
+
+def test_main_skipped_and_failed_is_error(dummy_schedule):
+    """
+    Одна задача пропущена по расписанию, другая упала:
+    - main завершится SystemExit(1)
+    """
+    results = iter([None, False])
+    runner.filter_tasks = lambda *args, **kwargs: [runner.SCHEDULE[0], runner.SCHEDULE[1]]
+    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed_logs=False, current_time=None)
+    runner.configure_logger = lambda *args, **kwargs: mock.Mock()
+    runner.execute_task = lambda *args, **kwargs: next(results)
     with pytest.raises(SystemExit) as e:
         runner.main()
     assert e.value.code == 1
@@ -258,7 +287,7 @@ def test_main_exception(dummy_schedule):
     - main должен перехватить его и вызвать SystemExit(3)
     """
     runner.filter_tasks = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("oops"))
-    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed=False)
+    runner.parse_arguments = lambda: mock.Mock(user="operator", task=None, detailed_logs=False, current_time=None)
     logger = mock.Mock()
     runner.configure_logger = lambda *args, **kwargs: logger
     with pytest.raises(SystemExit) as e:
