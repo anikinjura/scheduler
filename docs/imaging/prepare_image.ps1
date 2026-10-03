@@ -9,6 +9,8 @@
       2. PVZ_ID в C:\tools\pvz_config.ini -> НЕ_НАСТРОЕН (UTF-8 без BOM, иначе configparser не прочитает файл);
       3. очищает папки .ssh во всех профилях (закрытые ключи администратора не должны попасть на ПВЗ);
       4. AnyDesk: останавливает службу и удаляет service.conf (в нем ID) — каждая машина получит свой ID;
+         записи камер (D:\camera, E:\camera, F:\camera — только файлы, папки и права остаются; -KeepCameraRecords —
+         не трогать) и Корзины всех пользователей на всех дисках (-KeepRecycleBins — не трогать);
       5. (-ClearSchedulerLogs) очищает C:\tools\scheduler\logs;
       6. предупреждает о WireGuard и BitLocker (сам не меняет);
       7. ПОСЛЕДНИМ: останавливает sshd и удаляет ключи хоста C:\ProgramData\ssh\ssh_host_* — каждая машина создаст свои.
@@ -30,7 +32,12 @@ param(
     [switch]$ClearSchedulerLogs,
     [string]$SchedulerLogsPath = 'C:\tools\scheduler\logs',
     # Сохраненные конфигурации AnyDesk по ПВЗ (восстанавливает after_deploy.ps1) — в образ попадают, закрываются правами
-    [string]$AnyDeskConfigRoot = 'C:\tools\AnyDesk_conf'
+    [string]$AnyDeskConfigRoot = 'C:\tools\AnyDesk_conf',
+    # Локальные записи камер (cameras_paths.py: local_1..3) — в образ не нужны; удаляются файлы, папки и права остаются
+    [string[]]$CameraDirs = @('D:\camera', 'E:\camera', 'F:\camera'),
+    [switch]$KeepCameraRecords,
+    # Корзины всех пользователей на всех локальных дисках (удаленные вручную записи — гигабайты в образе)
+    [switch]$KeepRecycleBins
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,6 +137,41 @@ if (Test-Path $AnyDeskConfigRoot) {
     }
     Done ("сохраненные конфигурации AnyDesk в образе ({0}): {1}" -f $AnyDeskConfigRoot,
         $(if ($saved) { $saved.Name -join ', ' } else { 'нет ни одной с service.conf' }))
+}
+
+# --- 4а. Записи камер и Корзины
+if (-not $KeepCameraRecords) {
+    Step 'Записи камер: удалить файлы (папки и права остаются)'
+    foreach ($dir in $CameraDirs) {
+        if (-not (Test-Path $dir)) { continue }
+        $files = @(Get-ChildItem -Path $dir -Recurse -File -Force -ErrorAction SilentlyContinue)
+        if (-not $files) { Done "$dir пуста"; continue }
+        $sizeGb = [math]::Round((($files | Measure-Object Length -Sum).Sum) / 1GB, 2)
+        if ($PSCmdlet.ShouldProcess($dir, "удалить $($files.Count) файлов ($sizeGb ГБ)")) {
+            $files | Remove-Item -Force -ErrorAction SilentlyContinue
+            $left = @(Get-ChildItem -Path $dir -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+            if ($left) { Warn "${dir}: не удалено файлов: $left (заняты? запущена программа записи?)" }
+            Done "${dir}: удалено $($files.Count - $left) файлов, $sizeGb ГБ"
+        }
+    }
+}
+if (-not $KeepRecycleBins) {
+    Step 'Корзины всех пользователей: очистить'
+    $drives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' } | ForEach-Object { "$($_.DriveLetter):" }
+    foreach ($drive in $drives) {
+        $bin = Join-Path $drive '$RECYCLE.BIN'
+        if (-not (Test-Path -LiteralPath $bin)) { continue }
+        # Содержимое папок пользователей (по SID); сами папки и desktop.ini Windows пересоздаст
+        $items = @(Get-ChildItem -LiteralPath $bin -Force -Directory | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Force })
+        if (-not $items) { continue }
+        $sizeGb = [math]::Round(((($items | ForEach-Object {
+            if ($_.PSIsContainer) { (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum } else { $_.Length }
+        }) | Measure-Object -Sum).Sum) / 1GB, 2)
+        if ($PSCmdlet.ShouldProcess($bin, "очистить ($sizeGb ГБ)")) {
+            $items | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            Done "Корзина $drive очищена ($sizeGb ГБ)"
+        }
+    }
 }
 
 # --- 5. Логи scheduler
