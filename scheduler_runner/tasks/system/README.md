@@ -19,12 +19,16 @@
 ```
 tasks/system/
 ├── UpdaterScript.py             # Скрипт обновления проекта
+├── HealthMonitorScript.py       # Ежедневный сбор состояния компьютера (docs/HEALTH_MONITOR_PLAN.md)
+├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
 │   └── scripts/                 # Конфиги отдельных скриптов
-│       └── updater_config.py
+│       ├── updater_config.py
+│       └── health_monitor_config.py
 └── tests/                       # Юнит-тесты
-    └── test_updater_script.py
+    ├── test_updater_script.py
+    └── test_health_monitor.py
 ```
 
 ---
