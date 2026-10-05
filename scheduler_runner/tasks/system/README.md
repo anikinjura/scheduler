@@ -21,6 +21,7 @@ tasks/system/
 ├── UpdaterScript.py             # Скрипт обновления проекта
 ├── HealthMonitorScript.py       # Ежедневный сбор состояния компьютера (docs/HEALTH_MONITOR_PLAN.md)
 ├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
+├── health_alerts.py             # Правила тревог HealthMonitorScript и решение, о чем сообщать в ВК
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
 │   ├── health_sheets_config.py  # Листы PVZ_HEALTH / PVZ_DISK_HEALTH
@@ -29,7 +30,8 @@ tasks/system/
 │       └── health_monitor_config.py
 └── tests/                       # Юнит-тесты
     ├── test_updater_script.py
-    └── test_health_monitor.py
+    ├── test_health_monitor.py
+    └── test_health_alerts.py
 ```
 
 ---

@@ -34,6 +34,19 @@ SCRIPT_CONFIG = {
     # Сравнение версии кода с удаленной веткой (git ls-remote — только чтение, без fetch)
     "MAIN_BRANCH": "main",
     "GIT_TIMEOUT_SECONDS": 30,
+    # Тревоги (health_alerts.py): снимок прошлого сбора и активные тревоги — на компьютере ПВЗ (reports/ вне git)
+    "STATE_FILE": str(BASE_DIR / "reports" / "health_state.json"),
+    # Стартовые пороги (план, раздел 4) — уточнить по первым неделям данных
+    "ALERTS": {
+        "LOW_SPACE_WARNING_PCT": 15,
+        "LOW_SPACE_WARNING_GB": 10,
+        "LOW_SPACE_CRITICAL_PCT": 5,
+        "DISK_HOT_C": 50,
+        "SHUTDOWNS_CRITICAL": 3,
+        "CODE_OUTDATED_HOURS": 24,
+        "REPORTS_STALE_HOURS": 36,   # ReportsProcessor ~21:30, сбор 13:10 следующего дня — ~16 ч в норме
+        "REMINDER_DAYS": 7,          # повтор неустраненной критической тревоги
+    },
 }
 
 # Сбор — раз в день в 13:10 (runner задач system срабатывает в :10). Компьютер включен, нет пересечения

@@ -11,7 +11,10 @@ HealthMonitorScript.py
 
 - Пишет строки в листы Google-таблицы (книга KPI) пакетным upsert-ом; недостающие листы создает с заголовками.
 
-Лог: HEALTH_SUMMARY, HEALTH_DISK, HEALTH_UPLOAD. Уведомления — этап 3 плана.
+- Оценивает тревоги (health_alerts.py) по сравнению с прошлым сбором и сообщает в ВК только изменения: новое,
+  ухудшение, повтор неустраненной критической раз в неделю, устранение. Итог — в колонках status / alerts.
+
+Лог: HEALTH_SUMMARY, HEALTH_DISK, HEALTH_ALERTS, HEALTH_UPLOAD, HEALTH_NOTIFY.
 
 Аргументы командной строки:
     --hours <N>              окно подсчета событий журнала (по умолчанию из конфига, 24)
@@ -19,6 +22,8 @@ HealthMonitorScript.py
     --no-upload              только собрать и записать в лог, без Google-таблицы
     --spreadsheet-id <id>    писать в другую книгу (например, тестовую) вместо книги KPI
     --no-jitter              без случайной паузы перед записью (ручной запуск)
+    --no-notify              не отправлять уведомление в ВК (состояние тревог при этом не меняется)
+    --state-file <path>      файл состояния тревог вместо конфига (проверки)
     --detailed_logs          детальные логи (DEBUG)
 
 Author: anikinjura
@@ -70,6 +75,8 @@ def parse_arguments():
     parser.add_argument("--no-upload", action="store_true", help="Не писать в Google-таблицу")
     parser.add_argument("--spreadsheet-id", type=str, default=None, help="Книга для записи вместо книги KPI")
     parser.add_argument("--no-jitter", action="store_true", help="Без случайной паузы перед записью")
+    parser.add_argument("--no-notify", action="store_true", help="Не отправлять уведомление в ВК")
+    parser.add_argument("--state-file", type=str, default=None, help="Файл состояния тревог вместо конфига")
     parser.add_argument("--detailed_logs", action="store_true", help="Включить детализированные логи (DEBUG)")
     return parser.parse_args()
 
@@ -356,6 +363,39 @@ def upload_health(health_row: Dict[str, Any], disk_rows: List[Dict[str, Any]], s
     return ok
 
 
+def load_state(path: str, logger) -> Dict[str, Any]:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        # Испорченный файл: начать заново (тревоги придут как новые), но не падать
+        logger.warning(f"HEALTH_STATE_UNREADABLE: {path}: {e}")
+        return {}
+
+
+def save_state(path: str, state: Dict[str, Any]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(".tmp")
+    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(target)
+
+
+def send_alert_message(message: str, logger) -> Dict[str, Any]:
+    """ВК — тот же чат и параметры, что у уведомлений отчетов (план, раздел 8)."""
+    from scheduler_runner.tasks.reports.config.reports_paths import REPORTS_PATHS
+    from scheduler_runner.utils.notifications import send_notification
+
+    connection_params = REPORTS_PATHS.get("NOTIFICATION_CONNECTION_PARAMS") or {}
+    if not connection_params:
+        return {"success": False, "error": "нет параметров подключения уведомлений"}
+    try:
+        return send_notification(message=message, connection_params=connection_params, logger=logger) or {}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def collect(config: Dict[str, Any], hours: int, pvz_id: str, now: Optional[datetime] = None) -> Tuple[Dict, List, Dict]:
     now = now or datetime.now()
     probe = run_probe(config["PROBE_SCRIPT"], hours, config["SCHEDULED_TASKS"], config["PROBE_TIMEOUT_SECONDS"])
@@ -367,7 +407,31 @@ def collect(config: Dict[str, Any], hours: int, pvz_id: str, now: Optional[datet
     return health_row, disk_rows, probe
 
 
+def notify_and_save(result, health_row: Dict[str, Any], state_file: str, pvz_id: str, notify: bool, logger) -> None:
+    """Сообщение в ВК только при изменениях; состояние сохраняется, если сообщать нечего или отправка удалась —
+    иначе изменение будет сообщено при следующем сборе."""
+    from scheduler_runner.tasks.system.health_alerts import format_message
+
+    if not result.has_news:
+        logger.info("HEALTH_NOTIFY: изменений нет, уведомление не нужно")
+        save_state(state_file, result.state)
+        return
+    message = format_message(pvz_id, health_row, result)
+    if not notify:
+        logger.info("HEALTH_NOTIFY пропущено (--no-notify или PVZ_ID не задан), состояние не изменено. Текст:\n"
+                    + message)
+        return
+    sent = send_alert_message(message, logger)
+    if sent.get("success"):
+        logger.info("HEALTH_NOTIFY: уведомление отправлено")
+        save_state(state_file, result.state)
+    else:
+        logger.error(f"HEALTH_NOTIFY_FAILED: {sent.get('error', sent)}")
+
+
 def main() -> None:
+    from scheduler_runner.tasks.system.health_alerts import evaluate
+
     args = parse_arguments()
     logger = configure_logger(user=SCRIPT_CONFIG["USER"], task_name=SCRIPT_CONFIG["TASK_NAME"],
                               detailed=args.detailed_logs)
@@ -377,9 +441,15 @@ def main() -> None:
         logger.error(f"HEALTH_PROBE_FAILED: {e}")
         sys.exit(1)
 
+    state_file = args.state_file or SCRIPT_CONFIG["STATE_FILE"]
+    result = evaluate(health_row, disk_rows, load_state(state_file, logger), datetime.now(), SCRIPT_CONFIG["ALERTS"])
+    health_row["status"], health_row["alerts"] = result.status, result.codes
+
     logger.info(format_summary(health_row))
     for disk_row in disk_rows:
         logger.info(format_disk(disk_row))
+    logger.info(f"HEALTH_ALERTS status={result.status} codes={result.codes or '-'} new={len(result.new)} "
+                f"worsened={len(result.worsened)} reminders={len(result.reminders)} resolved={len(result.resolved)}")
     if health_row["probe_limited"]:
         # Без повышенных прав нет SMART и части журналов: задаче system нужны «наивысшие права» (план, раздел 3.3)
         logger.warning(f"HEALTH_PROBE_LIMITED: {health_row['probe_limited']}")
@@ -390,22 +460,26 @@ def main() -> None:
         )
         logger.info(f"Результат сохранен: {args.output}")
 
+    configured = is_configured_pvz(PVZ_ID)
+    uploaded = True
     if args.no_upload:
         logger.info("HEALTH_UPLOAD пропущена (--no-upload)")
-        return
-    if not is_configured_pvz(PVZ_ID) and not args.spreadsheet_id:
+    elif not configured and not args.spreadsheet_id:
         # Эталон образа / клон до after_deploy.ps1: в общую книгу не писать (явно указанную тестовую — можно)
         logger.warning(f"HEALTH_UPLOAD пропущена: PVZ_ID не задан ({PVZ_ID})")
-        return
-    from scheduler_runner.tasks.system.config.health_sheets_config import HEALTH_SHEETS_CONFIG
+    else:
+        from scheduler_runner.tasks.system.config.health_sheets_config import HEALTH_SHEETS_CONFIG
 
-    spreadsheet_id = args.spreadsheet_id or HEALTH_SHEETS_CONFIG["SPREADSHEET_ID"]
-    try:
-        uploaded = upload_health(health_row, disk_rows, HEALTH_SHEETS_CONFIG, spreadsheet_id, logger,
-                                 jitter=not args.no_jitter)
-    except Exception as e:
-        logger.error(f"HEALTH_UPLOAD_FAILED: {e}", exc_info=True)
-        uploaded = False
+        spreadsheet_id = args.spreadsheet_id or HEALTH_SHEETS_CONFIG["SPREADSHEET_ID"]
+        try:
+            uploaded = upload_health(health_row, disk_rows, HEALTH_SHEETS_CONFIG, spreadsheet_id, logger,
+                                     jitter=not args.no_jitter)
+        except Exception as e:
+            logger.error(f"HEALTH_UPLOAD_FAILED: {e}", exc_info=True)
+            uploaded = False
+
+    # Уведомление не зависит от записи в таблицу: о проблеме диска важнее сообщить, даже если Google недоступен
+    notify_and_save(result, health_row, state_file, PVZ_ID, notify=configured and not args.no_notify, logger=logger)
     if not uploaded:
         sys.exit(1)
 
