@@ -138,11 +138,25 @@ def test_collect_scheduler_state_takes_newest_of_several_tasks(tmp_path):
                ["2026-10-05 09:10:05 INFO [system.UpdaterScript_morning] Задача 'UpdaterScript_morning' успешно завершена"])
     _write_log(tmp_path, "system", "UpdaterScript_evening", "2026-10-04",
                ["2026-10-04 18:10:07 INFO [system.UpdaterScript_evening] Задача 'UpdaterScript_evening' успешно завершена"])
-    config = {"LOGS_ROOT": str(tmp_path), "TASK_LOG_LOOKBACK_DAYS": 14, "TRACKED_TASK_LOGS": {
+    config = {"LOGS_ROOT": str(tmp_path), "TASK_LOG_LOOKBACK_DAYS": 14, "KPI_UPLOAD_LOG": ("reports_domain", "Uploader"),
+              "TRACKED_TASK_LOGS": {
         "updater_last_success": [("system", "UpdaterScript_morning"), ("system", "UpdaterScript_evening")],
         "copy_last_success": [("operator", "CopyScript")]}}
     state = hm.collect_scheduler_state(config, date(2026, 10, 5))
-    assert state == {"updater_last_success": "2026-10-05 09:10:05", "copy_last_success": ""}
+    assert state == {"reports_last_success": "", "updater_last_success": "2026-10-05 09:10:05", "copy_last_success": ""}
+
+
+def test_reports_success_is_a_real_kpi_upload_not_task_completion(tmp_path):
+    """144, 04–05.10.2026: ReportsProcessor «успешно завершена», но AUTH_REQUIRED и ничего не загружено."""
+    _write_log(tmp_path, "operator", "ReportsProcessor", "2026-10-05",
+               ["2026-10-05 21:32:56 INFO [operator.ReportsProcessor] Задача 'ReportsProcessor' успешно завершена"])
+    _write_log(tmp_path, "reports_domain", "Uploader", "2026-10-02",
+               ["2026-10-02 21:32:12 INFO [reports_domain.Uploader] KPI_UPLOAD_STATS mode=batch rows=1 appended=1 updated=0 failed=0 reads=4 writes=2"])
+    _write_log(tmp_path, "reports_domain", "Uploader", "2026-10-05",
+               ["2026-10-05 21:32:40 INFO [reports_domain.Uploader] KPI_UPLOAD_STATS mode=batch rows=2 appended=0 updated=0 failed=2 reads=4 writes=0"])
+    config = {"LOGS_ROOT": str(tmp_path), "TASK_LOG_LOOKBACK_DAYS": 14, "KPI_UPLOAD_LOG": ("reports_domain", "Uploader"),
+              "TRACKED_TASK_LOGS": {}}
+    assert hm.collect_scheduler_state(config, date(2026, 10, 5))["reports_last_success"] == "2026-10-02 21:32:12"
 
 
 def test_collect_code_state(monkeypatch):

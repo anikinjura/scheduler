@@ -26,11 +26,14 @@ SCRIPT_CONFIG = {
     "SCHEDULED_TASKS": ["\\Задачи operator", "\\Задачи camera", "\\Задачи system"],
     # Последний успешный запуск задач scheduler — по их логам: (пользователь, имя задачи в логах)
     "TRACKED_TASK_LOGS": {
-        "reports_last_success": [("operator", "ReportsProcessor")],
         "copy_last_success": [("operator", "CopyScript")],
         "updater_last_success": [("system", "UpdaterScript_morning"), ("system", "UpdaterScript_evening")],
     },
     "TASK_LOG_LOOKBACK_DAYS": 14,
+    # Последний успешный сбор отчетов — по реальной загрузке KPI (KPI_UPLOAD_STATS без ошибок, rows > 0), а не по
+    # завершению задачи ReportsProcessor: при отозванной сессии Турбо ПВЗ (AUTH_REQUIRED) задача завершается
+    # «успешно», но ничего не собирает (144, 04–05.10.2026)
+    "KPI_UPLOAD_LOG": ("reports_domain", "Uploader"),
     # Сравнение версии кода с удаленной веткой (git ls-remote — только чтение, без fetch)
     "MAIN_BRANCH": "main",
     "GIT_TIMEOUT_SECONDS": 30,

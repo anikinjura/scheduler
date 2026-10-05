@@ -34,6 +34,7 @@ __version__ = '0.0.1'
 import argparse
 import json
 import random
+import re
 import subprocess
 import sys
 import time
@@ -152,8 +153,31 @@ def find_last_task_success(logs_root: str, user: str, task_name: str, lookback_d
     return None
 
 
+KPI_UPLOAD_PATTERN = re.compile(r"KPI_UPLOAD_STATS .*?\brows=(\d+).*?\bfailed=(\d+)")
+
+
+def find_last_kpi_upload(logs_root: str, user: str, task_name: str, lookback_days: int, today: date) -> Optional[str]:
+    """Время последней загрузки KPI без ошибок и хотя бы с одной строкой (лог Uploader)."""
+    log_dir = Path(logs_root) / user / task_name
+    for offset in range(lookback_days):
+        log_file = log_dir / f"{(today - timedelta(days=offset)).isoformat()}.log"
+        if not log_file.exists():
+            continue
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            match = KPI_UPLOAD_PATTERN.search(line)
+            if match and int(match.group(1)) > 0 and int(match.group(2)) == 0:
+                return line[:19]
+    return None
+
+
 def collect_scheduler_state(config: Dict[str, Any], today: date) -> Dict[str, Optional[str]]:
-    state = {}
+    user, task_name = config["KPI_UPLOAD_LOG"]
+    state = {"reports_last_success": find_last_kpi_upload(config["LOGS_ROOT"], user, task_name,
+                                                          config["TASK_LOG_LOOKBACK_DAYS"], today) or ""}
     for field, tasks in config["TRACKED_TASK_LOGS"].items():
         found = [find_last_task_success(config["LOGS_ROOT"], user, name, config["TASK_LOG_LOOKBACK_DAYS"], today)
                  for user, name in tasks]
@@ -240,7 +264,7 @@ def build_health_row(probe: Dict[str, Any], code_state: Dict[str, Any], schedule
         "alerts": "",
     }
     # Состав колонок листа не должен зависеть от того, нашлись ли логи задач
-    for field in SCRIPT_CONFIG["TRACKED_TASK_LOGS"]:
+    for field in ["reports_last_success", *SCRIPT_CONFIG["TRACKED_TASK_LOGS"]]:
         row[field] = row.get(field) or ""
     for field in TASK_RESULT_FIELDS.values():
         row[field] = None

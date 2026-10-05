@@ -22,6 +22,7 @@ tasks/system/
 ├── HealthMonitorScript.py       # Ежедневный сбор состояния компьютера (docs/HEALTH_MONITOR_PLAN.md)
 ├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
 ├── health_alerts.py             # Правила тревог HealthMonitorScript и решение, о чем сообщать в ВК
+├── apps_script/health_watchdog.gs  # Apps Script книги: кто из ПВЗ молчит (вне компьютеров ПВЗ)
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
 │   ├── health_sheets_config.py  # Листы PVZ_HEALTH / PVZ_DISK_HEALTH
