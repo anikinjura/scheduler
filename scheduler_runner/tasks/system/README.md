@@ -100,3 +100,9 @@ pythonw -m scheduler_runner.runner --user system
 ```bash
 pythonw -m scheduler_runner.runner --user system --task UpdaterScript
 ```
+
+## Планы развития
+
+- [docs/HEALTH_MONITOR_PLAN.md](docs/HEALTH_MONITOR_PLAN.md) — ежедневный мониторинг состояния компьютеров ПВЗ
+  (диски/SMART, место, журналы Windows, состояние scheduler) в Google-таблицу, тревоги в ВК, проверка «кто молчит»,
+  дашборд в Looker Studio.
