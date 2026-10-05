@@ -23,6 +23,7 @@ tasks/system/
 ├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
+│   ├── health_sheets_config.py  # Листы PVZ_HEALTH / PVZ_DISK_HEALTH
 │   └── scripts/                 # Конфиги отдельных скриптов
 │       ├── updater_config.py
 │       └── health_monitor_config.py
@@ -107,6 +108,7 @@ pythonw -m scheduler_runner.runner --user system --task UpdaterScript
 
 ## Планы развития
 
+- [docs/BACKLOG.md](docs/BACKLOG.md) — согласованные, но не начатые задачи домена.
 - [docs/HEALTH_MONITOR_PLAN.md](docs/HEALTH_MONITOR_PLAN.md) — ежедневный мониторинг состояния компьютеров ПВЗ
   (диски/SMART, место, журналы Windows, состояние scheduler) в Google-таблицу, тревоги в ВК, проверка «кто молчит»,
   дашборд в Looker Studio.

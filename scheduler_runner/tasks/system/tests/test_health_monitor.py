@@ -156,3 +156,106 @@ def test_collect_code_state(monkeypatch):
 def test_schedule_is_daily_system_task():
     from scheduler_runner.tasks.system.config.scripts.health_monitor_config import SCHEDULE
     assert SCHEDULE[0]["user"] == "system" and SCHEDULE[0]["schedule"] == "daily" and SCHEDULE[0]["time"] == "13:10"
+
+
+# ---------- Этап 2: листы и запись ----------
+
+from unittest.mock import MagicMock
+
+from scheduler_runner.tasks.system.config import health_sheets_config as sheets
+
+
+def test_sheet_columns_match_built_rows():
+    probe = probe_sample()
+    disk_rows = hm.build_disk_rows(probe, "ЧЕБОКСАРЫ_144", "2026-10-05")
+    row = hm.build_health_row(probe, {"code_version": "", "main_version": "", "code_up_to_date": None}, {},
+                              disk_rows, "ЧЕБОКСАРЫ_144", "2026-10-05")
+    assert set(sheets.HEALTH_COLUMNS) == set(row)
+    assert set(sheets.DISK_COLUMNS) == set(disk_rows[0])
+    assert len(sheets.HEALTH_COLUMNS) == len(set(sheets.HEALTH_COLUMNS))
+    assert sheets.HEALTH_TABLE_CONFIG.unique_key_columns == ["work_date", "pvz_id"]
+    assert sheets.DISK_TABLE_CONFIG.unique_key_columns == ["work_date", "pvz_id", "disk_serial"]
+
+
+def test_rows_for_sheet_drops_none_and_formats_time():
+    rows = hm.rows_for_sheet([{"work_date": "2026-10-05", "collected_at": "2026-10-05T13:10:05", "cpu": None,
+                               "extra": 1}], ["work_date", "collected_at", "cpu"])
+    assert rows == [{"work_date": "2026-10-05", "collected_at": "2026-10-05 13:10:05"}]
+
+
+def _fake_spreadsheet(existing_titles, headers_by_title=None):
+    headers_by_title = headers_by_title or {}
+    spreadsheet = MagicMock()
+    worksheets = {}
+
+    def make_ws(title):
+        ws = MagicMock(title=title)
+        ws.row_values.return_value = headers_by_title.get(title, [])
+        worksheets[title] = ws
+        return ws
+
+    for title in existing_titles:
+        make_ws(title)
+    spreadsheet.worksheets.side_effect = lambda: list(worksheets.values())
+    spreadsheet.add_worksheet.side_effect = lambda title, rows, cols: make_ws(title)
+    return spreadsheet, worksheets
+
+
+def test_ensure_worksheets_creates_missing_with_headers(monkeypatch):
+    spreadsheet, worksheets = _fake_spreadsheet(
+        ["KPI", "PVZ_HEALTH"], {"PVZ_HEALTH": list(sheets.HEALTH_COLUMNS)})
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    import gspread
+    monkeypatch.setattr(gspread, "service_account", lambda filename: client)
+    logger = MagicMock()
+
+    hm.ensure_worksheets("creds.json", "sheet-id", [sheets.HEALTH_TABLE_CONFIG, sheets.DISK_TABLE_CONFIG], logger)
+
+    spreadsheet.add_worksheet.assert_called_once()
+    assert spreadsheet.add_worksheet.call_args.kwargs["title"] == "PVZ_DISK_HEALTH"
+    worksheets["PVZ_DISK_HEALTH"].update.assert_called_once_with(range_name="A1", values=[list(sheets.DISK_COLUMNS)])
+    worksheets["PVZ_HEALTH"].update.assert_not_called()  # существующий лист с верным заголовком не трогаем
+    logger.warning.assert_not_called()
+
+
+def test_ensure_worksheets_warns_on_header_mismatch(monkeypatch):
+    spreadsheet, worksheets = _fake_spreadsheet(
+        ["PVZ_HEALTH", "PVZ_DISK_HEALTH"], {"PVZ_HEALTH": ["work_date", "other"], "PVZ_DISK_HEALTH": list(sheets.DISK_COLUMNS)})
+    client = MagicMock()
+    client.open_by_key.return_value = spreadsheet
+    import gspread
+    monkeypatch.setattr(gspread, "service_account", lambda filename: client)
+    logger = MagicMock()
+
+    hm.ensure_worksheets("creds.json", "sheet-id", [sheets.HEALTH_TABLE_CONFIG, sheets.DISK_TABLE_CONFIG], logger)
+
+    worksheets["PVZ_HEALTH"].update.assert_not_called()
+    assert "HEALTH_SHEET_HEADER_MISMATCH" in logger.warning.call_args.args[0]
+
+
+def test_upload_rows_uses_batch_upsert(monkeypatch):
+    import scheduler_runner.utils.uploader as uploader
+    captured = {}
+
+    def fake_upload(data_list, connection_params, logger, **kwargs):
+        captured.update(data_list=data_list, params=connection_params, kwargs=kwargs)
+        return {"success": True, "uploaded_records": len(data_list)}
+
+    monkeypatch.setattr(uploader, "upload_batch_data", fake_upload)
+    rows = [{"work_date": "2026-10-05", "pvz_id": "ЧЕБОКСАРЫ_144", "disk_serial": "9VMGFAQH", "smart_5_reallocated": 4095,
+             "temperature_c": None}]
+    result = hm.upload_rows(rows, sheets.DISK_TABLE_CONFIG, "creds.json", "sheet-id", MagicMock())
+
+    assert result["success"] is True
+    assert captured["kwargs"] == {"strategy": "update_or_append", "UPLOAD_MODE": "batch"}
+    assert captured["params"]["WORKSHEET_NAME"] == "PVZ_DISK_HEALTH"
+    assert captured["params"]["TABLE_CONFIG"] is not sheets.DISK_TABLE_CONFIG  # копия: загрузчик меняет индексы
+    assert captured["data_list"] == [{"work_date": "2026-10-05", "pvz_id": "ЧЕБОКСАРЫ_144", "disk_serial": "9VMGFAQH",
+                                      "smart_5_reallocated": 4095}]
+    assert hm.upload_rows([], sheets.DISK_TABLE_CONFIG, "c", "s", MagicMock()) == {"success": True, "uploaded_records": 0}
+
+
+@pytest.mark.parametrize("pvz,expected", [("ЧЕБОКСАРЫ_144", True), ("НЕ_НАСТРОЕН", False), ("UNKNOWN", False), ("", False)])
+def test_is_configured_pvz(pvz, expected):
+    assert hm.is_configured_pvz(pvz) is expected

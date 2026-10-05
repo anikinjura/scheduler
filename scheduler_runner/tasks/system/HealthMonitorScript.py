@@ -9,13 +9,17 @@ HealthMonitorScript.py
   запусков задач scheduler по их логам.
 - Формирует строки листов PVZ_HEALTH (ПВЗ/день) и PVZ_DISK_HEALTH (диск/день).
 
-Этап 1: результат пишется в лог (HEALTH_SUMMARY, HEALTH_DISK) и, по --output, в JSON-файл. Запись в Google-таблицу
-и уведомления — следующие этапы плана.
+- Пишет строки в листы Google-таблицы (книга KPI) пакетным upsert-ом; недостающие листы создает с заголовками.
+
+Лог: HEALTH_SUMMARY, HEALTH_DISK, HEALTH_UPLOAD. Уведомления — этап 3 плана.
 
 Аргументы командной строки:
-    --hours <N>        окно подсчета событий журнала (по умолчанию из конфига, 24)
-    --output <path>    сохранить собранное (строки и сырой результат сбора) в JSON
-    --detailed_logs    детальные логи (DEBUG)
+    --hours <N>              окно подсчета событий журнала (по умолчанию из конфига, 24)
+    --output <path>          сохранить собранное (строки и сырой результат сбора) в JSON
+    --no-upload              только собрать и записать в лог, без Google-таблицы
+    --spreadsheet-id <id>    писать в другую книгу (например, тестовую) вместо книги KPI
+    --no-jitter              без случайной паузы перед записью (ручной запуск)
+    --detailed_logs          детальные логи (DEBUG)
 
 Author: anikinjura
 """
@@ -24,8 +28,11 @@ __version__ = '0.0.1'
 
 import argparse
 import json
+import random
 import subprocess
 import sys
+import time
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -60,6 +67,9 @@ def parse_arguments():
     parser.add_argument("--hours", type=int, default=SCRIPT_CONFIG["EVENTS_WINDOW_HOURS"],
                         help="Окно подсчета событий журнала System, часов")
     parser.add_argument("--output", type=str, default=None, help="Сохранить собранное в JSON-файл")
+    parser.add_argument("--no-upload", action="store_true", help="Не писать в Google-таблицу")
+    parser.add_argument("--spreadsheet-id", type=str, default=None, help="Книга для записи вместо книги KPI")
+    parser.add_argument("--no-jitter", action="store_true", help="Без случайной паузы перед записью")
     parser.add_argument("--detailed_logs", action="store_true", help="Включить детализированные логи (DEBUG)")
     return parser.parse_args()
 
@@ -258,6 +268,94 @@ def format_disk(row: Dict[str, Any]) -> str:
     )
 
 
+def is_configured_pvz(pvz_id: str) -> bool:
+    """PVZ_ID задан: не заглушка эталона (docs/imaging, НЕ_НАСТРОЕН) и не значение по умолчанию base_config."""
+    return bool(pvz_id) and pvz_id not in ("НЕ_НАСТРОЕН", "UNKNOWN")
+
+
+def sheet_value(value: Any) -> Any:
+    """Значение для ячейки: ISO-время -> 'YYYY-MM-DD HH:MM:SS' (Google распознает как дату-время)."""
+    if isinstance(value, str) and len(value) == 19 and value[10] == "T":
+        return value.replace("T", " ")
+    return value
+
+
+def rows_for_sheet(rows: List[Dict[str, Any]], columns: List[str]) -> List[Dict[str, Any]]:
+    """Только колонки листа; None не передается (загрузчик оставляет такие ячейки пустыми)."""
+    return [{name: sheet_value(row[name]) for name in columns if row.get(name) is not None} for row in rows]
+
+
+def ensure_worksheets(credentials_path: str, spreadsheet_id: str, table_configs: List[Any], logger) -> None:
+    """Создает недостающие листы с заголовками (загрузчик работает только с существующим листом).
+
+    Существующий лист не меняется: несовпадение заголовка — предупреждение HEALTH_SHEET_HEADER_MISMATCH.
+    """
+    import gspread
+
+    spreadsheet = gspread.service_account(filename=credentials_path).open_by_key(spreadsheet_id)
+    existing = {ws.title: ws for ws in spreadsheet.worksheets()}
+    for table in table_configs:
+        headers = [column.name for column in table.columns]
+        worksheet = existing.get(table.worksheet_name)
+        if worksheet is None:
+            try:
+                worksheet = spreadsheet.add_worksheet(title=table.worksheet_name, rows=1000, cols=len(headers))
+            except gspread.exceptions.APIError as e:
+                # Другой ПВЗ создал лист одновременно (все собирают в 13:10)
+                if "already exists" not in str(e).lower():
+                    raise
+                worksheet = spreadsheet.worksheet(table.worksheet_name)
+            logger.info(f"HEALTH_SHEET_CREATED: лист {table.worksheet_name}")
+        current = worksheet.row_values(1)
+        if not current:
+            worksheet.update(range_name="A1", values=[headers])
+            worksheet.freeze(rows=1)
+        elif current[:len(headers)] != headers:
+            logger.warning(f"HEALTH_SHEET_HEADER_MISMATCH: лист {table.worksheet_name}, заголовок {current}")
+
+
+def upload_rows(rows: List[Dict[str, Any]], table_config: Any, credentials_path: str, spreadsheet_id: str,
+                logger) -> Dict[str, Any]:
+    """Пакетный upsert строк (как KPI в режиме batch): ключ — unique_key_columns конфигурации листа."""
+    from scheduler_runner.utils.uploader import upload_batch_data
+
+    if not rows:
+        return {"success": True, "uploaded_records": 0}
+    columns = [column.name for column in table_config.columns]
+    connection_params = {
+        "CREDENTIALS_PATH": credentials_path,
+        "SPREADSHEET_ID": spreadsheet_id,
+        "WORKSHEET_NAME": table_config.worksheet_name,
+        "TABLE_CONFIG": deepcopy(table_config),
+        "REQUIRED_CONNECTION_PARAMS": ["CREDENTIALS_PATH", "SPREADSHEET_ID", "WORKSHEET_NAME", "TABLE_CONFIG"],
+    }
+    return upload_batch_data(
+        data_list=rows_for_sheet(rows, columns),
+        connection_params=connection_params,
+        logger=logger,
+        strategy="update_or_append",
+        UPLOAD_MODE="batch",
+    ) or {"success": False, "error": "пустой результат загрузчика"}
+
+
+def upload_health(health_row: Dict[str, Any], disk_rows: List[Dict[str, Any]], sheets_config: Dict[str, Any],
+                  spreadsheet_id: str, logger, jitter: bool = True) -> bool:
+    if jitter and sheets_config.get("UPLOAD_START_JITTER_SECONDS"):
+        time.sleep(random.uniform(0, float(sheets_config["UPLOAD_START_JITTER_SECONDS"])))
+    health_table, disk_table = sheets_config["TABLES"]
+    credentials = sheets_config["CREDENTIALS_PATH"]
+    ensure_worksheets(credentials, spreadsheet_id, sheets_config["TABLES"], logger)
+    ok = True
+    for table, rows in ((health_table, [health_row]), (disk_table, disk_rows)):
+        result = upload_rows(rows, table, credentials, spreadsheet_id, logger)
+        success = bool(result.get("success"))
+        ok = ok and success
+        logger.log(20 if success else 40,
+                   f"HEALTH_UPLOAD sheet={table.worksheet_name} rows={len(rows)} success={success} "
+                   f"error={result.get('error', '')}")
+    return ok
+
+
 def collect(config: Dict[str, Any], hours: int, pvz_id: str, now: Optional[datetime] = None) -> Tuple[Dict, List, Dict]:
     now = now or datetime.now()
     probe = run_probe(config["PROBE_SCRIPT"], hours, config["SCHEDULED_TASKS"], config["PROBE_TIMEOUT_SECONDS"])
@@ -291,6 +389,25 @@ def main() -> None:
             encoding="utf-8",
         )
         logger.info(f"Результат сохранен: {args.output}")
+
+    if args.no_upload:
+        logger.info("HEALTH_UPLOAD пропущена (--no-upload)")
+        return
+    if not is_configured_pvz(PVZ_ID) and not args.spreadsheet_id:
+        # Эталон образа / клон до after_deploy.ps1: в общую книгу не писать (явно указанную тестовую — можно)
+        logger.warning(f"HEALTH_UPLOAD пропущена: PVZ_ID не задан ({PVZ_ID})")
+        return
+    from scheduler_runner.tasks.system.config.health_sheets_config import HEALTH_SHEETS_CONFIG
+
+    spreadsheet_id = args.spreadsheet_id or HEALTH_SHEETS_CONFIG["SPREADSHEET_ID"]
+    try:
+        uploaded = upload_health(health_row, disk_rows, HEALTH_SHEETS_CONFIG, spreadsheet_id, logger,
+                                 jitter=not args.no_jitter)
+    except Exception as e:
+        logger.error(f"HEALTH_UPLOAD_FAILED: {e}", exc_info=True)
+        uploaded = False
+    if not uploaded:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
