@@ -19,12 +19,20 @@
 ```
 tasks/system/
 ├── UpdaterScript.py             # Скрипт обновления проекта
+├── HealthMonitorScript.py       # Ежедневный сбор состояния компьютера (docs/HEALTH_MONITOR_PLAN.md)
+├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
+├── health_alerts.py             # Правила тревог HealthMonitorScript и решение, о чем сообщать в ВК
+├── apps_script/health_watchdog.gs  # Apps Script книги: кто из ПВЗ молчит (вне компьютеров ПВЗ)
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
+│   ├── health_sheets_config.py  # Листы PVZ_HEALTH / PVZ_DISK_HEALTH
 │   └── scripts/                 # Конфиги отдельных скриптов
-│       └── updater_config.py
+│       ├── updater_config.py
+│       └── health_monitor_config.py
 └── tests/                       # Юнит-тесты
-    └── test_updater_script.py
+    ├── test_updater_script.py
+    ├── test_health_monitor.py
+    └── test_health_alerts.py
 ```
 
 ---
@@ -100,3 +108,10 @@ pythonw -m scheduler_runner.runner --user system
 ```bash
 pythonw -m scheduler_runner.runner --user system --task UpdaterScript
 ```
+
+## Планы развития
+
+- [docs/BACKLOG.md](docs/BACKLOG.md) — согласованные, но не начатые задачи домена.
+- [docs/HEALTH_MONITOR_PLAN.md](docs/HEALTH_MONITOR_PLAN.md) — ежедневный мониторинг состояния компьютеров ПВЗ
+  (диски/SMART, место, журналы Windows, состояние scheduler) в Google-таблицу, тревоги в ВК, проверка «кто молчит»,
+  дашборд в Looker Studio.
