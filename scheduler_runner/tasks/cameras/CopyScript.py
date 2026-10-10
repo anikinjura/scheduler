@@ -130,6 +130,7 @@ def main() -> None:
     shutdown_enabled = SCRIPT_CONFIG.get("SHUTDOWN_ENABLED", True)
     dest_timeout = SCRIPT_CONFIG.get("DEST_CHECK_TIMEOUT_SECONDS", 60)
     failure = None
+    should_shutdown = False
 
     try:
         source_dirs = []
@@ -175,14 +176,12 @@ def main() -> None:
 
             logger.info("Файлов скопировано: %d, пропущено: %d, ошибок: %d", copied_files, skipped_files, errors)
             should_shutdown = shutdown_enabled and ((copied_files > 0 or skipped_files > 0) or shutdown_if_no_files)
-
-        if args.shutdown and should_shutdown:
-            shutdown_computer(args, logger)
-        elif args.shutdown and not should_shutdown:
-            if not shutdown_enabled:
-                logger.info("Выключение компьютера отключено в конфигурации")
-            else:
-                logger.info("Выключение компьютера не требуется")
+            # Ошибки по отдельным файлам — тоже сбой: 144, 10.10.2026 «Диск-О:» отключился посреди копирования,
+            # 12139 из 14715 файлов не скопированы, а задача считалась успешной и молчала
+            if errors:
+                failure = (f"не скопировано {errors} из {files_to_copy} файлов (скопировано {copied_files}, "
+                           f"уже были {skipped_files}) — хранилище недоступно или отключилось во время копирования")
+                logger.error("Копирование выполнено с ошибками: %s", failure)
 
     except CopyFailure as e:
         logger.critical("Копирование не выполнено: %s", e)
@@ -191,11 +190,19 @@ def main() -> None:
         logger.critical("Критическая ошибка: %s", str(e), exc_info=True)
         failure = f"ошибка {type(e).__name__}: {e}"
 
+    # Сначала уведомление, потом выключение (пауза перед ним — минуты)
     if failure:
         send_failure_notification(failure, logger)
-        if args.shutdown and shutdown_enabled and SCRIPT_CONFIG.get("SHUTDOWN_ON_FAILURE", True):
+        if shutdown_enabled and SCRIPT_CONFIG.get("SHUTDOWN_ON_FAILURE", True) and not should_shutdown:
             logger.info("Выключение компьютера несмотря на сбой копирования (SHUTDOWN_ON_FAILURE)")
-            shutdown_computer(args, logger)
+            should_shutdown = True
+    if args.shutdown and should_shutdown:
+        shutdown_computer(args, logger)
+    elif args.shutdown:
+        if not shutdown_enabled:
+            logger.info("Выключение компьютера отключено в конфигурации")
+        else:
+            logger.info("Выключение компьютера не требуется")
     logger.info("Процедура копирования завершена")
     if failure:
         sys.exit(1)
