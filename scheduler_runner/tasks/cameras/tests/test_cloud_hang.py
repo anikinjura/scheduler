@@ -153,3 +153,32 @@ def test_copy_failure_without_shutdown_flag_does_not_shut_down(monkeypatch):
     assert exit_info.value.code == 1
     assert len(reasons) == 1 and "исходная директория" in reasons[0]
     assert shutdowns == []
+
+
+def test_copy_partial_errors_notify_exit_1_and_shut_down_once(monkeypatch):
+    # 144, 10.10.2026: «Диск-О:» отключился посреди копирования — 12139 из 14715 файлов с ошибкой, задача «успешна»
+    root = make_temp_dir("copy_partial")
+    try:
+        src, dst = root / "src", root / "dst"
+        src.mkdir()
+        dst.mkdir()
+        config = dict(copy_script.SCRIPT_CONFIG)
+        config.update({"PVZ_ID": "ЧЕБОКСАРЫ_144", "INPUT_DIRS": [str(src)], "OUTPUT_DIR": str(dst),
+                       "SHUTDOWN_ENABLED": True, "SHUTDOWN_ON_FAILURE": True})
+        monkeypatch.setattr(copy_script, "SCRIPT_CONFIG", config)
+        monkeypatch.setattr(copy_script, "configure_logger", lambda **kwargs: DummyLogger())
+        monkeypatch.setattr(copy_script, "count_files_within_days", lambda directory, days: 14715)
+        monkeypatch.setattr(copy_script, "copy_recent_files", lambda **kwargs: {
+            "CopiedFiles": 2576, "SkippedFiles": 0, "FileCopyingErrors": 12139})
+        reasons, shutdowns = [], []
+        monkeypatch.setattr(copy_script, "send_failure_notification", lambda reason, logger: reasons.append(reason) or True)
+        monkeypatch.setattr(copy_script.SystemUtils, "shutdown_computer",
+                            staticmethod(lambda logger=None, force=False: shutdowns.append(force) or True))
+        monkeypatch.setattr(sys, "argv", ["CopyScript.py", "--shutdown", "1", "--no-shutdown-delay"])
+        with pytest.raises(SystemExit) as exit_info:
+            copy_script.main()
+        assert exit_info.value.code == 1
+        assert len(reasons) == 1 and "12139 из 14715" in reasons[0]
+        assert shutdowns == [False]
+    finally:
+        cleanup_dir(root)
