@@ -100,6 +100,7 @@ SMART (`root\wmi`, `Get-StorageReliabilityCounter`) и часть журнало
 | `DISK_IO_ERRORS` | ошибки disk/NTFS за 24 ч | warning |
 | `CODE_OUTDATED` | `code_behind_main` > 0 больше суток (обновление не проходит) | warning |
 | `REPORTS_STALE` | `ReportsProcessor` не завершался успешно > 1 дня | warning |
+| `COPY_STALE` | `CopyScript` не завершался успешно > 36 ч или успехов нет в логах (хранятся 5 дней) — записи камер не уходят в облако (144, 05–10.10.2026) | critical |
 | `TASK_FAILED` | результат задачи планировщика ≠ 0 (после исправления runner 04.10.2026 это реальная ошибка) | warning |
 
 Текст — одно сообщение на ПВЗ: что случилось, значения «было → стало», что сделать (например «заменить диск,

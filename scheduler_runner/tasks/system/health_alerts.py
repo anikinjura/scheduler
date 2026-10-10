@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
     "SHUTDOWNS_CRITICAL": 3,
     "CODE_OUTDATED_HOURS": 24,
     "REPORTS_STALE_HOURS": 36,
+    "COPY_STALE_HOURS": 36,
     "REMINDER_DAYS": 7,
 }
 
@@ -186,6 +187,14 @@ def _system_alerts(row: Dict[str, Any], now: datetime, conditions: Dict[str, str
         alerts.append(Alert("REPORTS_STALE", LEVEL_WARNING, "reports",
                             f"сбор отчетов не завершался успешно с {row.get('reports_last_success') or '— (нет в логах)'}",
                             "смотреть логи ReportsProcessor; вход «Оператора» в Windows и Турбо ПВЗ"))
+    # Записи камер не уходят в облако: ни уведомлений CopyScript, ни CloudMonitor может не быть, если задачи зависают
+    # или не запускаются (144, 05–10.10.2026) — эта проверка раз в день от них не зависит
+    copy_ok = _parse_time(row.get("copy_last_success"))
+    if copy_ok is None or now - copy_ok > timedelta(hours=settings["COPY_STALE_HOURS"]):
+        alerts.append(Alert("COPY_STALE", LEVEL_CRITICAL, "copy",
+                            f"записи камер не копировались в облако с "
+                            f"{row.get('copy_last_success') or '— (нет в логах за срок их хранения)'}",
+                            "смотреть логи CopyScript и «Диск-О:» (диск O:); компьютер мог не выключаться вечером"))
     for field_name in ("task_operator_result", "task_camera_result", "task_system_result"):
         result = row.get(field_name)
         if result is not None and int(result) not in TASK_RESULTS_OK:

@@ -4,18 +4,23 @@ CopyScript.py
 Копирование видеофайлов в целевое хранилище:
 - поддерживает несколько входных директорий (`INPUT_DIRS`) для объектов с несколькими локальными дисками;
 - сохраняет обратную совместимость с `INPUT_DIR`;
-- позволяет явно задать одиночный источник через `--source_dir`.
+- позволяет явно задать одиночный источник через `--source_dir`;
+- проверка целевого хранилища — не дольше DEST_CHECK_TIMEOUT_SECONDS (зависший «Диск-О:» не держит задачу часами);
+- если копирование не выполнено — уведомление (ВК/Telegram) и, при SHUTDOWN_ON_FAILURE, выключение компьютера как
+  обычно: раньше ошибка молча оставляла компьютер включенным (144 не выключался 05–10.10.2026, и никто не знал).
 """
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
 
 from scheduler_runner.tasks.cameras.config.scripts.copy_config import SCRIPT_CONFIG, SCHEDULE
-from scheduler_runner.utils.filesystem import FileSystemUtils, copy_recent_files
-from scheduler_runner.utils.logging import configure_logger
+from scheduler_runner.utils.filesystem import FileSystemUtils, call_with_timeout, copy_recent_files
+from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
+from scheduler_runner.utils.notifications import send_notification
 from scheduler_runner.utils.system import SystemUtils
 
 
@@ -60,6 +65,49 @@ def count_files_within_days(directory: Path, days: int) -> int:
     return count
 
 
+class CopyFailure(Exception):
+    """Копирование не выполнено по понятной причине; текст — для уведомления."""
+
+
+def send_failure_notification(reason: str, logger: logging.Logger) -> bool:
+    """Уведомление о невыполненном копировании — через тот же транспорт, что у мониторинга камер."""
+    connection_params = dict(SCRIPT_CONFIG.get("NOTIFICATION_CONNECTION_PARAMS") or {})
+    if not connection_params:
+        logger.warning("Параметры уведомлений не заданы, уведомление о сбое копирования не отправлено")
+        return False
+    notification_logger = configure_logger(
+        user="cameras_domain",
+        task_name="Notification",
+        log_levels=[TRACE_LEVEL, logging.DEBUG],
+        single_file_for_levels=False,
+    )
+    message = (
+        f"🔴 ПВЗ: {SCRIPT_CONFIG.get('PVZ_ID', '-')}, записи камер не скопированы в облако: {reason}. "
+        f"Записи остаются на компьютере. Проверьте «Диск-О:» (диск O:)."
+    )
+    result = send_notification(message=message, connection_params=connection_params, logger=notification_logger)
+    if result.get("success", False):
+        logger.info("Уведомление о сбое копирования отправлено")
+        return True
+    logger.error("Ошибка при отправке уведомления о сбое копирования: %s", result.get("error", "Неизвестная ошибка"))
+    return False
+
+
+def shutdown_computer(args: argparse.Namespace, logger: logging.Logger) -> None:
+    if isinstance(args.shutdown, int):
+        if not args.no_shutdown_delay:
+            logger.info("Пауза перед выключением: %d минут", args.shutdown)
+            time.sleep(args.shutdown * 60)
+        else:
+            logger.info("Пауза перед выключением отключена (--no-shutdown-delay)")
+    logger.info("Проверка условий для выключения компьютера...")
+    success = SystemUtils.shutdown_computer(logger=logger, force=False)
+    if success:
+        logger.info("Компьютер будет выключен через 60 секунд")
+    else:
+        logger.warning("Не удалось инициировать выключение компьютера")
+
+
 def main() -> None:
     args = parse_arguments()
 
@@ -79,26 +127,29 @@ def main() -> None:
         detailed=detailed_logs,
     )
 
+    shutdown_enabled = SCRIPT_CONFIG.get("SHUTDOWN_ENABLED", True)
+    dest_timeout = SCRIPT_CONFIG.get("DEST_CHECK_TIMEOUT_SECONDS", 60)
+    failure = None
+
     try:
         source_dirs = []
         for input_dir in input_dirs:
             validated = FileSystemUtils.validate_readable_path(Path(input_dir))
             if not validated:
-                logger.critical("Исходная директория недоступна для чтения: %s", input_dir)
-                sys.exit(1)
+                raise CopyFailure(f"исходная директория недоступна для чтения: {input_dir}")
             source_dirs.append(validated)
 
-        dest_dir = FileSystemUtils.validate_writable_path(Path(output_dir))
+        finished, dest_dir = call_with_timeout(FileSystemUtils.validate_writable_path, dest_timeout, Path(output_dir))
+        if not finished:
+            raise CopyFailure(f"хранилище {output_dir} не отвечает дольше {dest_timeout} с (зависло)")
         if not dest_dir:
-            logger.critical("Целевая директория недоступна для записи: %s", output_dir)
-            sys.exit(1)
+            raise CopyFailure(f"целевая директория недоступна для записи: {output_dir}")
 
         logger.info("Старт копирования: %s -> %s (порог: %s дней)", ", ".join([str(p) for p in source_dirs]), dest_dir, max_age_days)
 
         files_to_copy = sum(count_files_within_days(source_dir, max_age_days) for source_dir in source_dirs)
         logger.info("Обнаружено %s файлов, подходящих под критерии копирования", files_to_copy)
 
-        shutdown_enabled = SCRIPT_CONFIG.get("SHUTDOWN_ENABLED", True)
         shutdown_if_no_files = SCRIPT_CONFIG.get("SHUTDOWN_IF_NO_FILES", False)
 
         copied_files = 0
@@ -126,29 +177,28 @@ def main() -> None:
             should_shutdown = shutdown_enabled and ((copied_files > 0 or skipped_files > 0) or shutdown_if_no_files)
 
         if args.shutdown and should_shutdown:
-            if isinstance(args.shutdown, int):
-                if not args.no_shutdown_delay:
-                    logger.info("Пауза перед выключением: %d минут", args.shutdown)
-                    time.sleep(args.shutdown * 60)
-                else:
-                    logger.info("Пауза перед выключением отключена (--no-shutdown-delay)")
-            logger.info("Проверка условий для выключения компьютера...")
-            success = SystemUtils.shutdown_computer(logger=logger, force=False)
-            if success:
-                logger.info("Компьютер будет выключен через 60 секунд")
-            else:
-                logger.warning("Не удалось инициировать выключение компьютера")
+            shutdown_computer(args, logger)
         elif args.shutdown and not should_shutdown:
             if not shutdown_enabled:
                 logger.info("Выключение компьютера отключено в конфигурации")
             else:
                 logger.info("Выключение компьютера не требуется")
 
+    except CopyFailure as e:
+        logger.critical("Копирование не выполнено: %s", e)
+        failure = str(e)
     except Exception as e:
         logger.critical("Критическая ошибка: %s", str(e), exc_info=True)
+        failure = f"ошибка {type(e).__name__}: {e}"
+
+    if failure:
+        send_failure_notification(failure, logger)
+        if args.shutdown and shutdown_enabled and SCRIPT_CONFIG.get("SHUTDOWN_ON_FAILURE", True):
+            logger.info("Выключение компьютера несмотря на сбой копирования (SHUTDOWN_ON_FAILURE)")
+            shutdown_computer(args, logger)
+    logger.info("Процедура копирования завершена")
+    if failure:
         sys.exit(1)
-    finally:
-        logger.info("Процедура копирования завершена")
 
 
 if __name__ == "__main__":

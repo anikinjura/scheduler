@@ -56,10 +56,13 @@ def test_copy_recent_files_invalid_conflict_mode():
 
 
 def test_main_with_invalid_dirs(monkeypatch):
+    sent = []
+    monkeypatch.setattr(CopyScript, "send_failure_notification", lambda reason, logger: sent.append(reason) or True)
     monkeypatch.setattr(sys, "argv", ["CopyScript.py", "--source_dir", "Z:/not_exists", "--dest_dir", "Z:/not_exists2"])
     with pytest.raises(SystemExit) as e:
         CopyScript.main()
     assert e.value.code == 1
+    assert len(sent) == 1
 
 
 def test_main_multi_input_dirs(monkeypatch):
