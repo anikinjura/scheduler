@@ -26,6 +26,9 @@ filesystem.py
     - FileSystemUtils.validate_writable_path(path: Path) -> bool
         Проверяет, существует ли путь и доступен ли для записи.
 
+    - call_with_timeout(func, timeout, *args, **kwargs) -> Tuple[bool, Any]
+        Выполняет func не дольше timeout секунд (для сетевых дисков, которые могут зависнуть).
+
 Примеры использования:
     from scheduler_runner.utils.filesystem import remove_old_files, ensure_directory_exists
 
@@ -40,8 +43,9 @@ __version__ = '0.0.1'
 import os
 import shutil
 import datetime
+import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 import logging
 
 def remove_old_files(target_folder: Path, days_threshold: int, logger: logging.Logger) -> Dict[str, int]:
@@ -123,7 +127,7 @@ def copy_recent_files(
                     # Обработка конфликтов
                     if dst_file.exists():
                         if conflict_mode == "skip":
-                            logger.info(f"Файл пропущен (уже существует): {dst_file}")  # Теперь INFO
+                            logger.debug(f"Файл пропущен (уже существует): {dst_file}")  # итог — одной строкой в конце
                             skipped_files += 1
                             continue
                         elif conflict_mode == "rename":
@@ -190,3 +194,31 @@ class FileSystemUtils:
         if path.exists() and os.access(path, os.W_OK):
             return path
         return None
+
+
+def call_with_timeout(func: Callable[..., Any], timeout: float, *args, **kwargs) -> Tuple[bool, Any]:
+    """
+    Выполняет func(*args, **kwargs) в фоновом потоке и ждет не дольше timeout секунд.
+
+    Нужна для обращений к сетевому/облачному диску: зависший «Диск-О:» не возвращает даже os.stat, и задача висит до
+    таймаута runner, который убивает ее раньше, чем она успеет отправить уведомление (144, 05–10.10.2026).
+
+    Возвращает (True, результат), если func успела, и (False, None), если нет; исключение func пробрасывается.
+    Зависший вызов остается в потоке-демоне и не мешает завершению процесса.
+    """
+    box: Dict[str, Any] = {}
+
+    def target():
+        try:
+            box["result"] = func(*args, **kwargs)
+        except BaseException as exc:  # noqa: B036 — передаем вызывающему как есть
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, name=f"timeout:{getattr(func, '__name__', 'call')}", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return False, None
+    if "error" in box:
+        raise box["error"]
+    return True, box.get("result")

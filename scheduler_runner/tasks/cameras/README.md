@@ -46,7 +46,27 @@
 - `config/scripts/openingmonitor_config.py`
   - `SEARCH_DIRS` (fallback: `SEARCH_DIR`).
 - `config/scripts/cloudmonitor_config.py`
-  - `CHECK_DIR=CAMERAS_NETWORK`.
+  - `CHECK_DIR=CAMERAS_NETWORK`, `PROBE_TIMEOUT_SECONDS`, `REMIND_HOURS`, `STATE_FILE`.
+
+## Зависание целевого архива («Диск-О:»)
+
+Облачный диск `O:` может не пропасть, а зависнуть: любое обращение к нему (даже проверка существования папки) не
+возвращается. Так было на ЧЕБОКСАРЫ_144 05–10.10.2026: задачи молча убивал таймаут runner (60 с) раньше, чем они
+отправляли уведомление; CopyScript падал, компьютер не выключался, а записи 5 дней не уходили в облако — и никто не знал.
+
+Теперь все обращения к целевому архиву ограничены по времени (`call_with_timeout` в `utils/filesystem.py`):
+- `CloudMonitorScript` (каждый час 09–21): попытка — не дольше `PROBE_TIMEOUT_SECONDS` (15 с), зависшее хранилище не
+  повторяет. Уведомление — при первом сбое, затем раз в `REMIND_HOURS` (3 ч), и «снова доступно» после восстановления;
+  состояние — `reports/cloud_monitor_state.json` (вне git).
+- `VideoMonitorScript`: вся проверка — не дольше `SCAN_TIMEOUT_SECONDS` (40 с), иначе уведомление «хранилище не отвечает».
+- `CopyScript`: проверка `OUTPUT_DIR` — не дольше `DEST_CHECK_TIMEOUT_SECONDS` (60 с). Любой сбой копирования —
+  уведомление и, при `SHUTDOWN_ON_FAILURE`, выключение компьютера как обычно.
+- Страховка от всего остального — тревога `COPY_STALE` мониторинга (`tasks/system`, `HealthMonitorScript`): копирование не
+  проходило успешно дольше 36 ч.
+
+Что делать по уведомлению: перезапустить «Диск-О:» под «Оператором» (или перезагрузить компьютер) и проверить, что
+диск `O:` открывается. CopyScript копирует только последние `MAX_AGE_DAYS` (3) дня — более старые записи за время
+простоя докопировать вручную (`CopyScript --max_age_days N`, без `--shutdown`).
 
 ## Запуск скриптов вручную
 
@@ -58,7 +78,7 @@
 .venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CopyScript --max_age_days 3 --conflict_mode skip
 .venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario local
 .venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CleanupScript --input_dir_scenario network
-.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 4 --delay 10
+.venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.CloudMonitorScript --retries 3 --delay 5
 .venv\Scripts\python.exe -m scheduler_runner.tasks.cameras.OpeningMonitorScript --detailed_logs
 ```
 

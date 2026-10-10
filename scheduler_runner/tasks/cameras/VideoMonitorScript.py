@@ -8,6 +8,8 @@ VideoMonitorScript.py
   Для камеры может быть задан индивидуальный корень через `camera.root_key` -> `LOCAL_ROOTS`.
 - Облачная проверка: по каждому uid камеры ищет записи за последние N часов (N задаётся в конфиге) в облачной директории.
 - Если для какой-либо камеры не найдено нужного количества файлов ни в одном из последних N часов — формируется уведомление.
+- Вся проверка — не дольше SCAN_TIMEOUT_SECONDS: если хранилище (облако «Диск-О:») зависло, отправляется уведомление
+  «хранилище не отвечает» вместо тишины (раньше задачу молча убивал таймаут runner — 144, 05–10.10.2026).
 - Уведомления отправляются через scheduler_runner.utils.notifications (Telegram).
 
 Архитектура:
@@ -21,7 +23,7 @@ VideoMonitorScript.py
 
 Author: anikinjura
 """
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 from typing import Callable
 import argparse
@@ -31,6 +33,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from scheduler_runner.tasks.cameras.config.scripts.videomonitor_config import SCRIPT_CONFIG
+from scheduler_runner.utils.filesystem import call_with_timeout
 from scheduler_runner.utils.logging import configure_logger, TRACE_LEVEL
 from scheduler_runner.utils.notifications import send_notification
 
@@ -202,6 +205,34 @@ def send_telegram_notification(message: str, main_logger=None) -> bool:
 
     return notification_result.get("success", False)
 
+def find_missing_records(cameras, scenario: str, default_root_dir: Path, local_roots, min_files: int,
+                         max_lookback_hours: int, logger: logging.Logger, current_time: datetime = None) -> list:
+    """Обходит все камеры и возвращает список «камера (зона)», для которых не найдено записей."""
+    missing_records = []
+    for area, cam_list in cameras.items():
+        for cam in cam_list:
+            uid = cam["uid"]
+            cam_id = cam["id"]
+            root_dir = default_root_dir
+            if scenario == "local":
+                camera_root_key = cam.get("root_key", "default")
+                resolved_root = local_roots.get(camera_root_key)
+                if resolved_root is None:
+                    logger.warning(
+                        "root_key '%s' not found for camera %s, fallback to %s",
+                        camera_root_key, cam_id, default_root_dir
+                    )
+                else:
+                    root_dir = Path(resolved_root)
+            # Для UNV-камер используем unv_path_builder, для Xiaomi — xiaomi_path_builder
+            if cam_id.startswith("unv"):
+                if not has_recent_records(root_dir, uid, min_files, max_lookback_hours, unv_path_builder, logger, "UNV", current_time):
+                    missing_records.append(f"{cam_id} ({area})")
+            elif cam_id.startswith("xiaomi"):
+                if not has_recent_records(root_dir, uid, min_files, max_lookback_hours, xiaomi_path_builder, logger, "Xiaomi", current_time):
+                    missing_records.append(f"{cam_id} ({area})")
+    return missing_records
+
 def main() -> None:
     """
     Основная функция скрипта мониторинга видеозаписей.
@@ -254,35 +285,26 @@ def main() -> None:
 
     default_root_dir = Path(scenario_config["CHECK_DIR"])
     local_roots = scenario_config.get("LOCAL_ROOTS", {"default": default_root_dir})
-    missing_records = []
+    check_type_str = "на компьютере" if scenario == "local" else "в облаке"
+    scan_timeout = scenario_config.get("SCAN_TIMEOUT_SECONDS", 40)
 
-    # Основной цикл по всем камерам
-    for area, cam_list in cameras.items():
-        for cam in cam_list:
-            uid = cam["uid"]
-            cam_id = cam["id"]
-            root_dir = default_root_dir
-            if scenario == "local":
-                camera_root_key = cam.get("root_key", "default")
-                resolved_root = local_roots.get(camera_root_key)
-                if resolved_root is None:
-                    logger.warning(
-                        "root_key '%s' not found for camera %s, fallback to %s",
-                        camera_root_key, cam_id, default_root_dir
-                    )
-                else:
-                    root_dir = Path(resolved_root)
-            # Для UNV-камер используем unv_path_builder, для Xiaomi — xiaomi_path_builder
-            if cam_id.startswith("unv"):
-                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, unv_path_builder, logger, "UNV", current_time):
-                    missing_records.append(f"{cam_id} ({area})")
-            elif cam_id.startswith("xiaomi"):
-                if not has_recent_records(root_dir, uid, args.min_files, max_lookback_hours, xiaomi_path_builder, logger, "Xiaomi", current_time):
-                    missing_records.append(f"{cam_id} ({area})")
+    finished, missing_records = call_with_timeout(
+        find_missing_records, scan_timeout,
+        cameras, scenario, default_root_dir, local_roots, args.min_files, max_lookback_hours, logger, current_time,
+    )
+    if not finished:
+        message = (
+            f"🔴 ПВЗ: {SCRIPT_CONFIG.get('PVZ_ID', '-')}, не удалось проверить записи камер {check_type_str}: "
+            f"хранилище {default_root_dir} не отвечает дольше {scan_timeout} с (зависло)."
+        )
+        if scenario == "network":
+            message += " Перезапустите «Диск-О:» (или перезагрузите компьютер) и проверьте, открывается ли диск O:."
+        logger.error(message)
+        send_telegram_notification(message, logger)
+        sys.exit(1)
 
     # Если есть камеры без записей — отправляем уведомление
     if missing_records:
-        check_type_str = "на компьютере" if scenario == "local" else "в облаке"
         message = f"ПВЗ: {SCRIPT_CONFIG.get('PVZ_ID', '-')}, {check_type_str} отсутствуют записи для камер: {', '.join(missing_records)}"
         send_telegram_notification(message, logger)
         logger.warning(message)

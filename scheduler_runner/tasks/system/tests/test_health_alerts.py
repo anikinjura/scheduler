@@ -11,12 +11,13 @@ NOW = datetime(2026, 10, 6, 13, 10, 0)
 
 
 def health(at=NOW, **overrides):
-    """Строка сбора на момент at: последний успешный сбор отчетов — накануне в 21:10 (как в жизни)."""
+    """Строка сбора на момент at: последний сбор отчетов — накануне в 21:10, копирование — в 23:10 (как в жизни)."""
     row = {
         "pvz_id": "ЧЕБОКСАРЫ_144", "c_free_gb": 66.1, "c_free_pct": 55.9, "disks_warning": 0,
         "unexpected_shutdowns": 0, "bugchecks": 0, "whea_errors": 0, "disk_errors": 0, "ntfs_errors": 0,
         "events_window_hours": 24, "code_version": "8eb0481", "main_version": "8eb0481", "code_up_to_date": True,
         "reports_last_success": (at - timedelta(hours=16)).strftime("%Y-%m-%d %H:%M:%S"),
+        "copy_last_success": (at - timedelta(hours=14)).strftime("%Y-%m-%d %H:%M:%S"),
         "task_operator_result": 0, "task_camera_result": 0, "task_system_result": 0,
     }
     row.update(overrides)
@@ -115,6 +116,16 @@ def test_reports_stale_and_task_results():
     assert codes(result.alerts) == ["REPORTS_STALE", "TASK_FAILED"]
     assert next(a for a in result.alerts if a.code == "TASK_FAILED").subject == "camera"
     assert codes(ha.evaluate(health(reports_last_success=""), [], {}, NOW).alerts) == ["REPORTS_STALE"]
+
+
+def test_copy_stale_is_critical_when_copy_missing_or_old():
+    # 144, 10.10.2026: CopyScript падал на зависшем O: с 05.10, в логах (хранятся 5 дней) успехов нет
+    missing = ha.evaluate(health(copy_last_success=""), [], {}, NOW)
+    assert codes(missing.alerts) == ["COPY_STALE"] and missing.status == "critical"
+    assert "нет в логах" in missing.alerts[0].text
+    old = ha.evaluate(health(copy_last_success="2026-10-04 22:32:50"), [], {}, NOW)
+    assert codes(old.alerts) == ["COPY_STALE"] and "2026-10-04 22:32:50" in old.alerts[0].text
+    assert ha.evaluate(health(), [], {}, NOW).alerts == []
 
 
 def test_shutdowns_whea_and_hot_disk_levels():

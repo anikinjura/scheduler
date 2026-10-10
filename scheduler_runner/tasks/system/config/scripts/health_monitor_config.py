@@ -48,6 +48,7 @@ SCRIPT_CONFIG = {
         "SHUTDOWNS_CRITICAL": 3,
         "CODE_OUTDATED_HOURS": 24,
         "REPORTS_STALE_HOURS": 36,   # ReportsProcessor ~21:30, сбор 13:10 следующего дня — ~16 ч в норме
+        "COPY_STALE_HOURS": 36,      # CopyScript ~22:30–23:30, сбор 13:10 следующего дня — ~14 ч в норме
         "REMINDER_DAYS": 7,          # повтор неустраненной критической тревоги
     },
 }

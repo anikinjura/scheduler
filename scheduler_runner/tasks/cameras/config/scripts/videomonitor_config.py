@@ -4,7 +4,7 @@ videomonitor_config.py
 - local: проверка локальных записей по одному или нескольким корням (`LOCAL_ROOTS`).
 - network: проверка целевого архива (`CAMERAS_NETWORK`).
 """
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 from config.base_config import PVZ_ID
 from scheduler_runner.tasks.cameras.config.cameras_list import CAMERAS_BY_PVZ
@@ -23,6 +23,7 @@ SCRIPT_CONFIG = {
         "CHECK_DIR": CAMERAS_PATHS["CAMERAS_LOCAL"],
         "LOCAL_ROOTS": CAMERAS_PATHS.get("LOCAL_ROOTS", {"default": CAMERAS_PATHS["CAMERAS_LOCAL"]}),
         "MAX_LOOKBACK_HOURS": 2,
+        "SCAN_TIMEOUT_SECONDS": 40,     # вся проверка не дольше — иначе «хранилище не отвечает» (меньше таймаута задачи)
         "DETAILED_LOGS": False,
         "USER": "operator",
         "TASK_NAME": "VideoMonitorScript_local",
@@ -30,6 +31,7 @@ SCRIPT_CONFIG = {
     "network": {
         "CHECK_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],
         "MAX_LOOKBACK_HOURS": 24,
+        "SCAN_TIMEOUT_SECONDS": 40,     # зависший «Диск-О:» — уведомление, а не тихое убийство задачи по таймауту
         "DETAILED_LOGS": False,
         "USER": "operator",
         "TASK_NAME": "VideoMonitorScript_network",
@@ -44,6 +46,7 @@ SCHEDULE = [
         "schedule": "hourly",
         "time_window": "09:00-21:00",
         "user": SCRIPT_CONFIG["local"]["USER"],
+        "timeout": 120,
     },
     {
         "name": SCRIPT_CONFIG["network"]["TASK_NAME"],
@@ -52,5 +55,6 @@ SCHEDULE = [
         "schedule": "daily",
         "time": "12:00",
         "user": SCRIPT_CONFIG["network"]["USER"],
+        "timeout": 120,
     },
 ]
