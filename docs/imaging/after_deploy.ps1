@@ -45,7 +45,8 @@ $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Нужен PowerShell от имени администратора'
 }
-$PvzId = $PvzId.Trim()
+# Регистр не важен: -PvzId чебоксары_143 == ЧЕБОКСАРЫ_143 (на клавиатуре клона заглавные могут не набираться)
+$PvzId = $PvzId.Trim().ToUpper()
 if ($PvzId -eq $Placeholder -or $PvzId -notmatch '^[\p{Lu}0-9_]+_\d+$') {
     throw "PvzId '$PvzId' не похож на идентификатор ПВЗ (пример: ЧЕБОКСАРЫ_143, СОСНОВКА_10)"
 }
