@@ -123,11 +123,18 @@ if (-not $anyDeskService) {
         Where-Object { Test-Path $_ } | Select-Object -First 1
     $anyDeskId = ''
     if ($anyDeskExe) {
-        foreach ($attempt in 1..10) {
-            $anyDeskId = ((& $anyDeskExe --get-id) | Out-String).Trim()
+        # После перезапуска служба регистрируется в сети AnyDesk не сразу — ждем до минуты
+        foreach ($attempt in 1..20) {
+            $anyDeskId = ((& $anyDeskExe --get-id 2>&1) | Out-String).Trim()
             if ($anyDeskId -match '^\d+$') { break }
             Start-Sleep -Seconds 3
         }
+    }
+    if ($anyDeskId -notmatch '^\d+$') {
+        # Запасной путь: ID записан в service.conf (ad.anynet.id) — для восстановленной конфигурации это прежний ID
+        $idLine = Select-String -Path (Join-Path $env:ProgramData 'AnyDesk\service.conf') -Pattern '^ad\.anynet\.id=(\d+)' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($idLine) { $anyDeskId = $idLine.Matches[0].Groups[1].Value }
     }
     if ($anyDeskId -match '^\d+$') {
         Done ("ID AnyDesk этого компьютера: {0}{1}" -f $anyDeskId, $(if ($savedConfigs) { ' (должен совпасть с прежним ID этого ПВЗ)' } else { '' }))
@@ -171,6 +178,12 @@ if ($license -and $license.LicenseStatus -eq 1) {
 }
 Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } | ForEach-Object {
     $mac = (Get-NetAdapter -InterfaceIndex $_.InterfaceIndex).MacAddress
+    if (-not $mac) {
+        # Туннели (WireGuard и т.п.) без MAC — не сетевая карта ПВЗ; туннель с эталона на клоне — конфликт ключей
+        Warn ("туннель {0} ({1}) — перенесен с эталона? удалить, если не нужен на этом ПВЗ" -f
+            $_.InterfaceAlias, ($_.IPv4Address.IPAddress -join ', '))
+        return
+    }
     Done ("сеть {0}: IP {1}, шлюз {2}, MAC {3} (для резервирования IP на роутере)" -f
         $_.InterfaceAlias, ($_.IPv4Address.IPAddress -join ', '), ($_.IPv4DefaultGateway.NextHop -join ', '), $mac)
 }
