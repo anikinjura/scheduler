@@ -132,7 +132,9 @@ if (Test-Path $AnyDeskConfigRoot) {
     $saved = @(Get-ChildItem -Path $AnyDeskConfigRoot -Directory | Where-Object {
         Test-Path (Join-Path $_.FullName 'service.conf') })
     if ($PSCmdlet.ShouldProcess($AnyDeskConfigRoot, 'права: только Администраторы и SYSTEM')) {
-        icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /T /Q | Out-Null
+        icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /Q | Out-Null
+        # Права с наследованием — только на саму папку (у файлов флагов (OI)(CI) нет: /T оставлял файлы без прав)
+        if ($LASTEXITCODE -eq 0) { icacls (Join-Path $AnyDeskConfigRoot '*') /reset /T /Q | Out-Null }
         if ($LASTEXITCODE -ne 0) { Warn "icacls: права на $AnyDeskConfigRoot не выставлены" }
     }
     Done ("сохраненные конфигурации AnyDesk в образе ({0}): {1}" -f $AnyDeskConfigRoot,

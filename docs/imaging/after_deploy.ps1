@@ -96,7 +96,9 @@ if (-not $sshdService) {
 Step 'AnyDesk: ID этого ПВЗ'
 if (Test-Path $AnyDeskConfigRoot) {
     # Файлы всех ПВЗ (ID и хэши паролей) — только Администраторы и SYSTEM, сотрудники под «Оператором» не читают
-    icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /T /Q | Out-Null
+    icacls $AnyDeskConfigRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' /grant:r '*S-1-5-32-544:(OI)(CI)F' /Q | Out-Null
+    # Права с наследованием — только на саму папку (у файлов флагов (OI)(CI) нет: /T оставлял файлы без прав)
+    if ($LASTEXITCODE -eq 0) { icacls (Join-Path $AnyDeskConfigRoot '*') /reset /T /Q | Out-Null }
     if ($LASTEXITCODE -ne 0) { Warn "icacls: права на $AnyDeskConfigRoot не выставлены" }
 }
 $anyDeskService = Get-Service -Name 'AnyDesk' -ErrorAction SilentlyContinue
