@@ -8,6 +8,10 @@ VideoMonitorScript.py
   Для камеры может быть задан индивидуальный корень через `camera.root_key` -> `LOCAL_ROOTS`.
 - Облачная проверка: по каждому uid камеры ищет записи за последние N часов (N задаётся в конфиге) в облачной директории.
 - Если для какой-либо камеры не найдено нужного количества файлов ни в одном из последних N часов — формируется уведомление.
+- Камера, которая выгружает записи с отставанием (Xiaomi с картой памяти догружает ночные часы днем — 144, 17–18.10.2026),
+  не считается пропавшей: если в ее самую свежую папку за проверяемые часы записывались файлы — «запись с отставанием».
+- Уведомления (при STATE_FILE): о новой пропавшей камере — сразу, пока не вернулась — раз в REMIND_HOURS, о вернувшихся —
+  «записи снова есть»; раньше одно и то же приходило каждый час.
 - Вся проверка — не дольше SCAN_TIMEOUT_SECONDS: если хранилище (облако «Диск-О:») зависло, отправляется уведомление
   «хранилище не отвечает» вместо тишины (раньше задачу молча убивал таймаут runner — 144, 05–10.10.2026).
 - Уведомления отправляются через scheduler_runner.utils.notifications (Telegram).
@@ -23,10 +27,11 @@ VideoMonitorScript.py
 
 Author: anikinjura
 """
-__version__ = '0.0.3'
+__version__ = '0.0.4'
 
-from typing import Callable
+from typing import Callable, Dict, List, Optional
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -205,6 +210,52 @@ def send_telegram_notification(message: str, main_logger=None) -> bool:
 
     return notification_result.get("success", False)
 
+CAMERA_DIRS = {
+    # тип камеры: (папка типа в корне, сколько уровней папок с датой до файлов)
+    "UNV": ("unv_camera", 2),           # <uid>/YYYYMMDD/HH/файлы
+    "Xiaomi": ("xiaomi_camera_videos", 1),  # <uid>/YYYYMMDDHH/файлы
+}
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def latest_write_time(camera_dir: Path, depth: int) -> Optional[tuple]:
+    """
+    Самая свежая по имени папка записей камеры (спуск по последним по имени папкам на depth уровней) и время последней
+    записи файла в ней: (имя папки, datetime) или None.
+    """
+    folder = camera_dir
+    for _ in range(depth):
+        try:
+            subfolders = [entry for entry in folder.iterdir() if entry.is_dir()]
+        except OSError:
+            return None
+        if not subfolders:
+            return None
+        folder = max(subfolders, key=lambda entry: entry.name)
+    try:
+        newest = max((entry.stat().st_mtime for entry in folder.iterdir() if entry.is_file()), default=None)
+    except OSError:
+        return None
+    if newest is None:
+        return None
+    return folder.relative_to(camera_dir).as_posix(), datetime.fromtimestamp(newest)
+
+
+def is_recording_with_lag(root_dir: Path, uid: str, camera_type: str, max_lookback_hours: int,
+                          logger: logging.Logger, now: datetime = None) -> bool:
+    """Камера пишет, но с отставанием: в ее самую свежую папку файлы записывались в последние max_lookback_hours часов."""
+    type_dir, depth = CAMERA_DIRS[camera_type]
+    latest = latest_write_time(root_dir / type_dir / uid, depth)
+    if latest is None:
+        return False
+    folder, written_at = latest
+    if (now or datetime.now()) - written_at <= timedelta(hours=max_lookback_hours):
+        logger.info(f"{camera_type} камера {uid}: записи идут с отставанием — последняя папка {folder}, "
+                    f"файлы записаны в {written_at.strftime('%d.%m %H:%M')}")
+        return True
+    return False
+
+
 def find_missing_records(cameras, scenario: str, default_root_dir: Path, local_roots, min_files: int,
                          max_lookback_hours: int, logger: logging.Logger, current_time: datetime = None) -> list:
     """Обходит все камеры и возвращает список «камера (зона)», для которых не найдено записей."""
@@ -226,12 +277,58 @@ def find_missing_records(cameras, scenario: str, default_root_dir: Path, local_r
                     root_dir = Path(resolved_root)
             # Для UNV-камер используем unv_path_builder, для Xiaomi — xiaomi_path_builder
             if cam_id.startswith("unv"):
-                if not has_recent_records(root_dir, uid, min_files, max_lookback_hours, unv_path_builder, logger, "UNV", current_time):
-                    missing_records.append(f"{cam_id} ({area})")
+                camera_type, path_builder = "UNV", unv_path_builder
             elif cam_id.startswith("xiaomi"):
-                if not has_recent_records(root_dir, uid, min_files, max_lookback_hours, xiaomi_path_builder, logger, "Xiaomi", current_time):
-                    missing_records.append(f"{cam_id} ({area})")
+                camera_type, path_builder = "Xiaomi", xiaomi_path_builder
+            else:
+                continue
+            if has_recent_records(root_dir, uid, min_files, max_lookback_hours, path_builder, logger, camera_type, current_time):
+                continue
+            if is_recording_with_lag(root_dir, uid, camera_type, max_lookback_hours, logger, current_time):
+                continue
+            missing_records.append(f"{cam_id} ({area})")
     return missing_records
+
+
+def load_state(path, logger: logging.Logger) -> Dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        logger.warning(f"Состояние мониторинга не прочитано ({path}): {e} — начинаем заново")
+        return {}
+
+
+def save_state(path, state: Dict, logger: logging.Logger) -> None:
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_suffix(".tmp")
+        temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
+    except OSError as e:
+        logger.warning(f"Состояние мониторинга не сохранено ({path}): {e}")
+
+
+def plan_notifications(state: Dict, missing: List[str], now: datetime, remind_hours: float) -> Dict:
+    """
+    Что сообщать: {"missing": [...] или [], "reminder": bool, "recovered": [...]}.
+
+    О новой пропавшей камере — сразу (в сообщении — все пропавшие), пока пропавшие не вернулись — напоминание раз в
+    remind_hours, о вернувшихся — отдельно.
+    """
+    previous = state.get("missing") or {}
+    new = [camera for camera in missing if camera not in previous]
+    recovered = [camera for camera in previous if camera not in missing]
+    last_alert = state.get("last_alert_at")
+    reminder = False
+    if missing and not new:
+        try:
+            reminder = last_alert is None or now - datetime.strptime(last_alert, TIME_FORMAT) >= timedelta(hours=remind_hours)
+        except ValueError:
+            reminder = True
+    return {"missing": missing if (new or reminder) else [], "reminder": reminder and not new, "recovered": recovered}
 
 def main() -> None:
     """
@@ -303,13 +400,43 @@ def main() -> None:
         send_telegram_notification(message, logger)
         sys.exit(1)
 
-    # Если есть камеры без записей — отправляем уведомление
+    pvz_id = SCRIPT_CONFIG.get('PVZ_ID', '-')
     if missing_records:
-        message = f"ПВЗ: {SCRIPT_CONFIG.get('PVZ_ID', '-')}, {check_type_str} отсутствуют записи для камер: {', '.join(missing_records)}"
-        send_telegram_notification(message, logger)
-        logger.warning(message)
+        logger.warning(f"ПВЗ: {pvz_id}, {check_type_str} отсутствуют записи для камер: {', '.join(missing_records)}")
     else:
         logger.info("Все камеры имеют записи за проверяемый период.")
+
+    state_file = scenario_config.get("STATE_FILE")
+    if not state_file:
+        # Без состояния — как раньше: уведомление на каждую проверку с пропавшими камерами
+        if missing_records:
+            send_telegram_notification(
+                f"ПВЗ: {pvz_id}, {check_type_str} отсутствуют записи для камер: {', '.join(missing_records)}", logger)
+        return
+
+    now = current_time or datetime.now()
+    state = load_state(state_file, logger)
+    plan = plan_notifications(state, missing_records, now, scenario_config.get("REMIND_HOURS", 3))
+    previous = state.get("missing") or {}
+    new_state = {"missing": {camera: previous.get(camera, now.strftime(TIME_FORMAT)) for camera in missing_records},
+                 "last_alert_at": state.get("last_alert_at") if missing_records else None}
+
+    if plan["missing"]:
+        if plan["reminder"]:
+            since = lambda camera: datetime.strptime(new_state["missing"][camera], TIME_FORMAT).strftime("%d.%m %H:%M")
+            details = ", ".join(f"{camera} (с {since(camera)})" for camera in plan["missing"])
+            message = f"🔴 ПВЗ: {pvz_id}, {check_type_str} по-прежнему отсутствуют записи для камер: {details}"
+        else:
+            message = f"🔴 ПВЗ: {pvz_id}, {check_type_str} отсутствуют записи для камер: {', '.join(plan['missing'])}"
+        if send_telegram_notification(message, logger):
+            new_state["last_alert_at"] = now.strftime(TIME_FORMAT)
+    if plan["recovered"]:
+        message = f"✅ ПВЗ: {pvz_id}, {check_type_str} снова есть записи для камер: {', '.join(plan['recovered'])}"
+        if not send_telegram_notification(message, logger):
+            # Не ушло — оставить в состоянии, чтобы сообщить при следующей проверке
+            for camera in plan["recovered"]:
+                new_state["missing"].setdefault(camera, previous[camera])
+    save_state(state_file, new_state, logger)
 
 if __name__ == "__main__":
     main()
