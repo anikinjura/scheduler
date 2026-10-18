@@ -22,6 +22,7 @@ tasks/system/
 ├── HealthMonitorScript.py       # Ежедневный сбор состояния компьютера (docs/HEALTH_MONITOR_PLAN.md)
 ├── health_probe.ps1             # Сбор данных Windows для HealthMonitorScript (только чтение, JSON)
 ├── health_alerts.py             # Правила тревог HealthMonitorScript и решение, о чем сообщать в ВК
+├── health_dashboard.py          # Лист «ДАШБОРД» в книге: сводка, диски, графики (запуск вручную, план, раздел 13)
 ├── apps_script/health_watchdog.gs  # Apps Script книги: кто из ПВЗ молчит (вне компьютеров ПВЗ)
 ├── config/                      # Конфигурационные файлы
 │   ├── system_schedule.py       # Общее расписание задачи system
@@ -114,4 +115,4 @@ pythonw -m scheduler_runner.runner --user system --task UpdaterScript
 - [docs/BACKLOG.md](docs/BACKLOG.md) — согласованные, но не начатые задачи домена.
 - [docs/HEALTH_MONITOR_PLAN.md](docs/HEALTH_MONITOR_PLAN.md) — ежедневный мониторинг состояния компьютеров ПВЗ
   (диски/SMART, место, журналы Windows, состояние scheduler) в Google-таблицу, тревоги в ВК, проверка «кто молчит»,
-  дашборд в Looker Studio.
+  лист «ДАШБОРД» в книге (`python -m scheduler_runner.tasks.system.health_dashboard`, раздел 13).
