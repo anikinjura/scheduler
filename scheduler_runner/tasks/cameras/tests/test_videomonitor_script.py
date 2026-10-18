@@ -168,3 +168,92 @@ def test_main_no_cameras(monkeypatch):
     with pytest.raises(SystemExit) as e:
         vms.main()
     assert e.value.code == 1
+
+
+# --- Камера с отставанием и уведомления без повторов (144, 17–18.10.2026) ---
+
+import os
+from datetime import timedelta
+
+NOW = datetime(2026, 10, 18, 17, 30, 0)
+
+
+def write_file(folder: Path, name: str, at: datetime) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_text("x", encoding="utf-8")
+    os.utime(path, (at.timestamp(), at.timestamp()))
+
+
+def test_lagging_xiaomi_is_not_missing_but_dead_one_is():
+    root = make_temp_dir("vms_lag")
+    try:
+        # xiaomi_002 догружает 15-й час в 17:25 — пишет, но с отставанием; xiaomi_009 последний раз писала вчера
+        write_file(root / "xiaomi_camera_videos" / "788b2aab4458" / "2026101815", "00M40S_1.mp4", NOW - timedelta(minutes=5))
+        write_file(root / "xiaomi_camera_videos" / "dead00000001" / "2026101715", "00M40S_1.mp4", NOW - timedelta(hours=26))
+        cameras = {"клиентская зона": [make_cam("788b2aab4458", "xiaomi_002"), make_cam("dead00000001", "xiaomi_009")]}
+        missing = vms.find_missing_records(cameras, "local", root, {"default": root}, 1, 2, DummyLogger(), NOW)
+        assert missing == ["xiaomi_009 (клиентская зона)"]
+    finally:
+        cleanup_dir(root)
+
+
+def test_latest_write_time_descends_unv_day_and_hour():
+    root = make_temp_dir("vms_unv_latest")
+    try:
+        write_file(root / "20261017" / "21", "a.jpg", NOW - timedelta(hours=20))
+        write_file(root / "20261018" / "16", "b.jpg", NOW - timedelta(minutes=40))
+        write_file(root / "20261018" / "09", "c.jpg", NOW - timedelta(hours=8))
+        folder, written_at = vms.latest_write_time(root, 2)
+        assert folder == "20261018/16" and written_at == (NOW - timedelta(minutes=40)).replace(microsecond=0)
+        assert vms.latest_write_time(root / "nothing", 2) is None
+    finally:
+        cleanup_dir(root)
+
+
+def test_plan_notifications_new_reminder_and_recovered():
+    plan = vms.plan_notifications({}, ["xiaomi_002 (зона)"], NOW, 3)
+    assert plan == {"missing": ["xiaomi_002 (зона)"], "reminder": False, "recovered": []}
+    state = {"missing": {"xiaomi_002 (зона)": "2026-10-18 14:30:00"}, "last_alert_at": "2026-10-18 16:30:00"}
+    assert vms.plan_notifications(state, ["xiaomi_002 (зона)"], NOW, 3)["missing"] == []          # через час — тишина
+    later = vms.plan_notifications(state, ["xiaomi_002 (зона)"], NOW + timedelta(hours=2), 3)
+    assert later["missing"] == ["xiaomi_002 (зона)"] and later["reminder"] is True
+    both = vms.plan_notifications(state, ["xiaomi_002 (зона)", "unv_001 (склад)"], NOW, 3)
+    assert both["missing"] == ["xiaomi_002 (зона)", "unv_001 (склад)"] and both["reminder"] is False
+    back = vms.plan_notifications(state, [], NOW, 3)
+    assert back == {"missing": [], "reminder": False, "recovered": ["xiaomi_002 (зона)"]}
+
+
+def run_local_monitor(monkeypatch, root, state_file, when, sent):
+    config = {
+        "PVZ_ID": "ЧЕБОКСАРЫ_144",
+        "CAMERAS": {"клиентская зона": [make_cam("u-miss", "xiaomi_002")]},
+        "local": {"CHECK_DIR": str(root), "LOCAL_ROOTS": {"default": root}, "MAX_LOOKBACK_HOURS": 2,
+                  "DETAILED_LOGS": False, "USER": "test", "TASK_NAME": "VideoMonitorScript_local",
+                  "STATE_FILE": state_file, "REMIND_HOURS": 3},
+    }
+    monkeypatch.setattr(vms, "SCRIPT_CONFIG", config)
+    monkeypatch.setattr(vms, "configure_logger", lambda **kwargs: DummyLogger())
+    monkeypatch.setattr(vms, "send_telegram_notification", lambda message, main_logger=None: sent.append(message) or True)
+    monkeypatch.setattr(sys, "argv", ["VideoMonitorScript.py", "--check_type", "local",
+                                      "--current-time", when.strftime("%Y-%m-%d %H:%M:%S")])
+    vms.main()
+
+
+def test_main_hourly_checks_alert_once_remind_and_report_recovery(monkeypatch):
+    root = make_temp_dir("vms_dedupe")
+    try:
+        state_file = root / "state.json"
+        sent = []
+        for hour in (9, 10, 11):
+            run_local_monitor(monkeypatch, root, state_file, NOW.replace(hour=hour), sent)
+        assert len(sent) == 1 and "xiaomi_002" in sent[0] and "по-прежнему" not in sent[0]
+        run_local_monitor(monkeypatch, root, state_file, NOW.replace(hour=12), sent)
+        assert len(sent) == 2 and "по-прежнему" in sent[1] and "(с 18.10 09:30)" in sent[1]
+        write_file(root / "xiaomi_camera_videos" / "u-miss" / "2026101813", "00M40S_1.mp4", NOW.replace(hour=13))
+        run_local_monitor(monkeypatch, root, state_file, NOW.replace(hour=13), sent)
+        assert len(sent) == 3 and "снова есть записи" in sent[2]
+        run_local_monitor(monkeypatch, root, state_file, NOW.replace(hour=14), sent)
+        assert len(sent) == 3
+    finally:
+        cleanup_dir(root)

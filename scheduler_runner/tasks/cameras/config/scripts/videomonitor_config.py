@@ -4,9 +4,9 @@ videomonitor_config.py
 - local: проверка локальных записей по одному или нескольким корням (`LOCAL_ROOTS`).
 - network: проверка целевого архива (`CAMERAS_NETWORK`).
 """
-__version__ = '0.0.3'
+__version__ = '0.0.4'
 
-from config.base_config import PVZ_ID
+from config.base_config import BASE_DIR, PVZ_ID
 from scheduler_runner.tasks.cameras.config.cameras_list import CAMERAS_BY_PVZ
 from scheduler_runner.tasks.cameras.config.cameras_paths import CAMERAS_PATHS
 
@@ -24,6 +24,10 @@ SCRIPT_CONFIG = {
         "LOCAL_ROOTS": CAMERAS_PATHS.get("LOCAL_ROOTS", {"default": CAMERAS_PATHS["CAMERAS_LOCAL"]}),
         "MAX_LOOKBACK_HOURS": 2,
         "SCAN_TIMEOUT_SECONDS": 40,     # вся проверка не дольше — иначе «хранилище не отвечает» (меньше таймаута задачи)
+        # Уведомления: о новой пропавшей камере — сразу, напоминание — раз в REMIND_HOURS, о вернувшейся — один раз
+        # (раньше одно и то же — каждый час: 144, 17–18.10.2026). Состояние — в reports/ (вне git)
+        "STATE_FILE": BASE_DIR / "reports" / "video_monitor_local_state.json",
+        "REMIND_HOURS": 3,
         "DETAILED_LOGS": False,
         "USER": "operator",
         "TASK_NAME": "VideoMonitorScript_local",
@@ -32,6 +36,8 @@ SCRIPT_CONFIG = {
         "CHECK_DIR": CAMERAS_PATHS["CAMERAS_NETWORK"],
         "MAX_LOOKBACK_HOURS": 24,
         "SCAN_TIMEOUT_SECONDS": 40,     # зависший «Диск-О:» — уведомление, а не тихое убийство задачи по таймауту
+        "STATE_FILE": BASE_DIR / "reports" / "video_monitor_network_state.json",
+        "REMIND_HOURS": 3,              # проверка раз в день — напоминание при каждой проверке
         "DETAILED_LOGS": False,
         "USER": "operator",
         "TASK_NAME": "VideoMonitorScript_network",
