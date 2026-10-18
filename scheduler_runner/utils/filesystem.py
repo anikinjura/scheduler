@@ -26,6 +26,10 @@ filesystem.py
     - FileSystemUtils.validate_writable_path(path: Path) -> bool
         Проверяет, существует ли путь и доступен ли для записи.
 
+    - remove_old_dated_folders(target_folder: Path, days_threshold: int, logger, time_budget_seconds=None) -> Dict
+        Удаляет целиком папки записей с датой в имени (YYYYMMDD, YYYYMMDDHH) старше порога — без чтения каждого
+        файла; для облачного архива, где обход всех файлов не укладывается в таймаут.
+
     - call_with_timeout(func, timeout, *args, **kwargs) -> Tuple[bool, Any]
         Выполняет func не дольше timeout секунд (для сетевых дисков, которые могут зависнуть).
 
@@ -41,9 +45,11 @@ Author: anikinjura
 __version__ = '0.0.1'
 
 import os
+import re
 import shutil
 import datetime
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 import logging
@@ -194,6 +200,100 @@ class FileSystemUtils:
         if path.exists() and os.access(path, os.W_OK):
             return path
         return None
+
+
+DATED_FOLDER_PATTERN = re.compile(r"^(\d{8})(\d{2})?$")
+
+
+def _dated_folder_span(name: str) -> Optional[Tuple[datetime.datetime, datetime.datetime]]:
+    """Начало и конец периода записей по имени папки: YYYYMMDD — сутки, YYYYMMDDHH — час; иначе None."""
+    match = DATED_FOLDER_PATTERN.match(name)
+    if not match:
+        return None
+    try:
+        if match.group(2) is None:
+            start = datetime.datetime.strptime(match.group(1), "%Y%m%d")
+            return start, start + datetime.timedelta(days=1)
+        start = datetime.datetime.strptime(name, "%Y%m%d%H")
+        return start, start + datetime.timedelta(hours=1)
+    except ValueError:
+        return None
+
+
+def remove_old_dated_folders(
+    target_folder: Path,
+    days_threshold: int,
+    logger: logging.Logger,
+    time_budget_seconds: Optional[float] = None,
+    max_depth: int = 4,
+    now: Optional[datetime.datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Удаляет целиком папки записей, у которых дата в имени старше days_threshold дней.
+
+    Записи камер лежат в папках с датой: UNV — unv_camera/<uid>/YYYYMMDD/HH/..., Xiaomi —
+    xiaomi_camera_videos/<uid>/YYYYMMDDHH/.... Функция листает только каталоги до уровня даты (не глубже max_depth) и
+    не заходит внутрь папок с датой: в облаке это сотни запросов вместо сотен тысяч (обход всех файлов не укладывался
+    в таймаут — 143, 144, 10.2026). Папка удаляется, если весь ее период (сутки/час) старше порога.
+
+    Самые старые папки удаляются первыми; при time_budget_seconds удаление останавливается по исчерпании времени —
+    следующий запуск продолжит с оставшихся.
+
+    Возвращает: removed_folders, errors, remaining_old (старые, но не удаленные из-за лимита времени),
+    oldest_kept (YYYY-MM-DD самой старой оставшейся папки с датой или None), budget_exhausted.
+    """
+    started = time.monotonic()
+    current = now or datetime.datetime.now()
+    cutoff = current - datetime.timedelta(days=days_threshold)
+    old: list = []
+    kept_starts: list = []
+    errors = 0
+
+    pending = [(Path(target_folder), 0)]
+    while pending:
+        folder, depth = pending.pop()
+        try:
+            entries = [entry for entry in os.scandir(folder) if entry.is_dir(follow_symlinks=False)]
+        except OSError as e:
+            logger.warning(f"Ошибка при чтении папки {folder}: {e}")
+            errors += 1
+            continue
+        for entry in entries:
+            span = _dated_folder_span(entry.name)
+            if span is None:
+                if depth + 1 < max_depth:
+                    pending.append((Path(entry.path), depth + 1))
+            elif span[1] <= cutoff:
+                old.append((span[0], Path(entry.path)))
+            else:
+                kept_starts.append(span[0])
+
+    old.sort(key=lambda item: item[0])
+    removed = 0
+    budget_exhausted = False
+    for index, (start, path) in enumerate(old):
+        if time_budget_seconds is not None and time.monotonic() - started >= time_budget_seconds:
+            budget_exhausted = True
+            kept_starts.extend(item[0] for item in old[index:])
+            break
+        try:
+            shutil.rmtree(path)
+            removed += 1
+            logger.debug(f"Удалена папка записей: {path}")
+        except OSError as e:
+            errors += 1
+            kept_starts.append(start)
+            logger.warning(f"Ошибка при удалении папки {path}: {e}")
+
+    remaining_old = len(old) - removed
+    oldest_kept = min(kept_starts).strftime("%Y-%m-%d") if kept_starts else None
+    return {
+        "removed_folders": removed,
+        "errors": errors,
+        "remaining_old": remaining_old,
+        "oldest_kept": oldest_kept,
+        "budget_exhausted": budget_exhausted,
+    }
 
 
 def call_with_timeout(func: Callable[..., Any], timeout: float, *args, **kwargs) -> Tuple[bool, Any]:
