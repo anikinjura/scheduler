@@ -36,14 +36,7 @@
 перезагрузки, WHEA, ошибки дисков по дням), scheduler (версия кода, результаты задач, последние успешные запуски).
 По этим данным заодно уточнить пороги тревог (`SCRIPT_CONFIG["ALERTS"]`) и срок хранения строк.
 
-## 6. `CleanupScript_network` не укладывается в 60 с (143, 144)
-
-Очистка облака (срок 120 дней) обходит все дерево `O:\cameras\<ПВЗ>` и каждый день упирается в таймаут runner 60 с
-(на 143 облако при этом исправно — просто медленно). Задать задаче явный `timeout` (например, 600 с) в
-`tasks/cameras/config/scripts/cleanup_config.py` и/или обходить только каталоги дат старше срока хранения; обращения к
-облаку — через `call_with_timeout`, как у CloudMonitor/CopyScript (`tasks/cameras/README.md`, «Зависание целевого архива»).
-
-## 7. Падающий тест `test_establish_connection_success`
+## 6. Падающий тест `test_establish_connection_success`
 
 `utils/uploader/core/tests/test_google_sheets_uploader.py` — падает и на `main` до слияния `feature/health-monitor`
 (06.10.2026), не связан с мониторингом. Разобрать.

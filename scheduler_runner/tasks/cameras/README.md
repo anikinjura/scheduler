@@ -42,7 +42,8 @@
   - `INPUT_DIRS` (fallback: `INPUT_DIR`), `OUTPUT_DIR`.
 - `config/scripts/cleanup_config.py`
   - `local`: `CLEANUP_DIRS` (fallback: `CLEANUP_DIR`), `MAX_AGE_DAYS` из `cameras_retention.py`.
-  - `network`: `CLEANUP_DIR`, `MAX_AGE_DAYS` из `cameras_retention.py`.
+  - `network`: `CLEANUP_DIR`, `MAX_AGE_DAYS` из `cameras_retention.py`; `DATED_FOLDERS`, `TIME_BUDGET_SECONDS`,
+    `DIR_CHECK_TIMEOUT_SECONDS` (раздел «Очистка облака»).
 - `config/scripts/openingmonitor_config.py`
   - `SEARCH_DIRS` (fallback: `SEARCH_DIR`).
 - `config/scripts/cloudmonitor_config.py`
@@ -68,6 +69,23 @@
 Что делать по уведомлению: перезапустить «Диск-О:» под «Оператором» (или перезагрузить компьютер) и проверить, что
 диск `O:` открывается. CopyScript копирует только последние `MAX_AGE_DAYS` (3) дня — более старые записи за время
 простоя докопировать вручную (`CopyScript --max_age_days N`, без `--shutdown`).
+
+## Очистка облака (`CleanupScript_network`)
+
+Раньше очистка обходила все файлы `O:\cameras\<ПВЗ>` и запрашивала дату каждого по сети: за 120 дней хранения это
+сотни тысяч запросов, задачу каждый день убивал таймаут 60 с, и облако на 143/144 фактически не очищалось (10.2026).
+
+Теперь (`DATED_FOLDERS: True`) удаляются целиком папки записей с датой в имени — UNV `unv_camera\<uid>\YYYYMMDD`,
+Xiaomi `xiaomi_camera_videos\<uid>\YYYYMMDDHH` (`remove_old_dated_folders` в `utils/filesystem.py`):
+- листаются только каталоги до уровня даты, внутрь папок с датой — не заходим;
+- папка удаляется, если весь ее период (сутки/час) старше срока хранения;
+- самые старые — первыми; не дольше `TIME_BUDGET_SECONDS` (480 с) за запуск, остаток — при следующем запуске
+  (в логе «Время очистки … исчерпано»); таймаут задачи — 600 с;
+- проверка доступа к облаку — не дольше `DIR_CHECK_TIMEOUT_SECONDS` (60 с), зависшее облако — выход с ошибкой
+  (уведомит CloudMonitor);
+- итог — строка «Сводка (…): удалено папок с датой=…, осталось старых=…, самая старая оставшаяся дата=…».
+
+Файлы вне папок с датой не удаляются. Очистка локальных дисков (`CleanupScript_local`) — прежняя, по файлам.
 
 ## Запуск скриптов вручную
 
